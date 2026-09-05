@@ -5,6 +5,26 @@ on:
     branches: [main]
 
 jobs:
+  # The harness child-process lifecycle has a platform-specific branch: Linux reaps a
+  # stabilized process tree through /proc, Windows terminates it with `taskkill /T /F`.
+  # The Windows branch is skipped on every ubuntu runner, so without this job a
+  # regression in it would leave the whole gate green. Focused on purpose: this runs the
+  # harness lifecycle controls only, never the P0-LAUNCH-06 release rehearsal.
+  windows-harness-lifecycle:
+    name: Windows Harness Lifecycle
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      # Invoked through npm so the lifecycle sets npm_execpath, which the F3 npm-identity
+      # controls read. No package.json script is needed for this.
+      - name: Harness child lifecycle (native Windows)
+        run: npm exec -- tsx --test tests/harness-child-lifecycle.test.ts
+
   governance-gate:
     name: Governance Gate
     runs-on: ubuntu-latest
@@ -12,7 +32,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
       - run: npm ci
       - name: Typecheck

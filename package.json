@@ -37,6 +37,7 @@
     "check:beta-environment": "tsx scripts/check-beta-environment.mjs",
     "start:closed-free-beta": "npm run check:beta-environment && next start",
     "check:beta-onboarding-operational-readiness": "tsx --test tests/acceptance/p0-launch-05-beta-onboarding-operational-readiness.test.ts",
+    "check:beta-release-rehearsal": "tsx --test tests/acceptance/p0-launch-06-beta-release-rehearsal.test.ts",
     "diag:runtime": "node scripts/runtime-diagnostics-report.mjs",
     "check:launch-readiness": "node scripts/check-launch-readiness.mjs",
     "smoke-test:vault": "node scripts/smoke-test-vault-digestion.mjs",

@@ -31,6 +31,44 @@ mkdirSync(LOG_DIR, { recursive: true });
 const MAX_OUTPUT_BUFFER = 64 * 1024 * 1024;
 
 /** @type {Array<{name: string, command: string, severity: "blocking" | "advisory"}>} */
+/**
+ * RELEASE-ENVIRONMENT PRECONDITION, checked before any gate runs.
+ *
+ * The blocking P0-LAUNCH-06 rehearsal creates a Supabase client, and
+ * @supabase/realtime-js requires a native WebSocket, which arrives in Node 22. Under
+ * Node 20 the gate used to fail deep inside a dependency with "WebSocket is not
+ * defined", presenting an unsupported RUNTIME as a product NO-GO. CI is pinned to 22;
+ * this makes the same requirement explicit for local operators and any other automation.
+ * There is no upper bound: 23, 24 and later are accepted, since nothing in this
+ * repository establishes a maximum.
+ *
+ * Pure and exported so the contract is testable without installing another Node.
+ */
+const MINIMUM_NODE_MAJOR = 22;
+
+export function classifyNodeRuntime(version, minimumMajor = MINIMUM_NODE_MAJOR) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(version ?? "").trim());
+  if (!match) {
+    return { supported: false, reason: `NODE_RUNTIME_UNSUPPORTED required=>=${minimumMajor} actual=<unparseable>` };
+  }
+  const major = Number(match[1]);
+  if (major < minimumMajor) {
+    return { supported: false, major, reason: `NODE_RUNTIME_UNSUPPORTED required=>=${minimumMajor} actual=${major}.x` };
+  }
+  return { supported: true, major };
+}
+
+const nodeRuntime = classifyNodeRuntime(process.versions.node);
+if (!nodeRuntime.supported) {
+  console.error(`\n${nodeRuntime.reason}`);
+  console.error(
+    "The canonical beta release gate runs the blocking P0-LAUNCH-06 rehearsal, which needs a native " +
+      "WebSocket (Node 22+). Refusing BEFORE any gate executes so an unsupported runtime is never " +
+      "reported as a product NO-GO. CI is pinned to Node 22.\n",
+  );
+  process.exit(1);
+}
+
 const GATES = [
   { name: "Governance Ownership Boundary", command: "npm run check:governance-boundary", severity: "blocking" },
   { name: "Typecheck", command: "npm run typecheck", severity: "blocking" },
@@ -46,6 +84,14 @@ const GATES = [
   { name: "Launch Smoke", command: "npm run test:launch-smoke", severity: "blocking" },
   { name: "Auth Bypass Scan", command: "npm run check:no-local-auth-bypass", severity: "blocking" },
   { name: "Enterprise UX", command: "npm run check:enterprise-ux", severity: "advisory" },
+  // P0-LAUNCH-06 is the CURRENT closed-beta end-to-end release rehearsal, and it is
+  // BLOCKING: the release decision must be incapable of GO / CONDITIONAL GO if the
+  // rehearsal fails. It needs an isolated Supabase fixture, which Release Governance
+  // provisions before invoking this orchestrator (see release-governance.yml). A missing
+  // fixture therefore FAILS this gate — there is deliberately no skip, no advisory
+  // downgrade and no environment-conditional execution, because a gate that can be
+  // skipped cannot block anything.
+  { name: "P0-LAUNCH-06 Beta Release Rehearsal", command: "npm run check:beta-release-rehearsal", severity: "blocking" },
   { name: "Dependency Security", command: "node scripts/check-dependency-security.mjs", severity: "advisory" },
 ];
 
