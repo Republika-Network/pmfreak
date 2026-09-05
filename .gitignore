@@ -62,3 +62,7 @@ uploads/
 /test-results/
 /playwright-report/
 /.playwright/
+
+# RR-BACKUP local logical-backup artifacts (P0-LAUNCH-06 restore rehearsal).
+# Contain full database schema + data dumps; NEVER committed.
+/.rr-backup-artifacts/

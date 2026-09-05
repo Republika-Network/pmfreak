@@ -310,7 +310,18 @@ const runKey = `p0-launch-03-${Date.now()}`;
  * and is falsy everywhere the product checks it.
  */
 function productionEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
-  return { ...process.env, [FRONTERA_STORE_ENV]: STORE_PATH, ...overrides };
+  // P0-LAUNCH-06 tightened the certified runtime contract: a Next.js PRODUCTION SERVER
+  // must declare an explicit recognized PMFREAK_OPERATING_PROFILE, and a missing, blank
+  // or unknown profile now refuses startup (src/instrumentation.ts). These harnesses
+  // start real production servers, so they must declare the profile like any other
+  // certified start. This adds ONLY that declaration — no assertion, lifecycle,
+  // evidence claim or fixture semantic changes.
+  return {
+    ...process.env,
+    PMFREAK_OPERATING_PROFILE: "closed-free-beta",
+    [FRONTERA_STORE_ENV]: STORE_PATH,
+    ...overrides,
+  };
 }
 
 /** Only the lifecycle this file owns; the provisioning helpers own the rest of the surface. */
@@ -968,43 +979,45 @@ test("J(DENY): an operator revocation made OUT OF PROCESS is observed by the run
 
 // ═══════════════════════ P / T — fail closed ═══════════════════════
 
-test("P: a production process missing a required server secret reports NOT READY", async () => {
+test("P: a production process missing a required server secret REFUSES TO START", async () => {
+  // CONTRACT CHANGE, not a weakening. This case previously required the process to start
+  // and then answer NOT READY. Under the closed-beta runtime contract that P0-LAUNCH-06
+  // certified, required startup configuration is enforced by the in-process guard BEFORE
+  // the server can become operational, so the observable boundary moves from
+  // RUNNING_NOT_READY to the strictly stronger BOOT_REFUSED. The control's intent —
+  // invalid required runtime configuration must fail closed — is unchanged, and the
+  // historical NOT-READY evidence remains true for its historical SHA.
   const port = await freePort();
-  const outcome = await startProductionServer({ port, env: productionEnv({ SUPABASE_SERVICE_ROLE_KEY: "" }) });
-  if (!outcome.started) assert.fail(`expected the process to start and report NOT READY, but: ${outcome.reason}\n${outcome.log.slice(-2000)}`);
-  try {
-    const response = await new HttpSession(outcome.handle.baseUrl).request("/api/ready");
-    assert.equal(response.status, 503, `missing SUPABASE_SERVICE_ROLE_KEY must yield NOT READY, got ${response.status}: ${response.text.slice(0, 300)}`);
-    const body = response.json<{ status: string; checks: { name: string; status: string; detail?: string }[] }>();
-    assert.equal(body.status, "not_ready");
-    const configuration = body.checks.find((check) => check.name === "configuration");
-    assert.equal(configuration?.status, "fail", `the configuration check did not fail: ${JSON.stringify(body.checks)}`);
-    // Legible to an operator, and naming the variable rather than any value.
-    assert.match(String(configuration?.detail), /SUPABASE_SERVICE_ROLE_KEY/, "the failure does not name the missing variable");
-    assert.doesNotMatch(response.text, /eyJ[A-Za-z0-9_-]{10,}/, "the readiness failure leaked a credential-shaped value");
-  } finally {
+  const outcome = await startProductionServer({ port, env: productionEnv({ SUPABASE_SERVICE_ROLE_KEY: "" }), timeoutMs: 90_000 });
+  if (outcome.started) {
     await shutdownProductionServer(outcome.handle, { label: "P: missing server secret", graceMs: 10_000 });
+    assert.fail("a production server became operational without a required server secret");
   }
+  // Not merely "it failed": the refusal must be attributable to THIS misconfiguration.
+  assert.match(outcome.log, /missing_beta_environment/, "the refusal is not attributable to the missing beta environment requirement");
+  assert.match(outcome.log, /SUPABASE_SERVICE_ROLE_KEY/, "the refusal does not name the missing variable");
+  // Names the variable, never a value.
+  assert.doesNotMatch(outcome.log, /eyJ[A-Za-z0-9_-]{10,}/, "the startup refusal leaked a credential-shaped value");
+  assert.deepEqual(outcome.survivors, [], "the refused start left surviving processes");
 });
 
-test("P: readiness fails closed when a declared dependency is misconfigured", async () => {
+test("P: a misconfigured declared dependency REFUSES TO START", async () => {
+  // Same contract change as above: enabling governance capability signing without its
+  // secret is part of the closed-beta startup contract, so it now fails closed at boot
+  // rather than surfacing later as a readiness failure.
   const port = await freePort();
-  // Enabling governance capability signing without its secret is a
-  // misconfiguration the product declares as a readiness failure.
   const outcome = await startProductionServer({
     port,
     env: productionEnv({ PMFREAK_GOVERNANCE_CAPABILITY_ENABLED: "true", PMFREAK_CAPABILITY_CLAIM_SECRET: "" }),
+    timeoutMs: 90_000,
   });
-  if (!outcome.started) assert.fail(`expected NOT READY, but: ${outcome.reason}\n${outcome.log.slice(-2000)}`);
-  try {
-    const response = await new HttpSession(outcome.handle.baseUrl).request("/api/ready");
-    assert.equal(response.status, 503, `expected NOT READY, got ${response.status}: ${response.text.slice(0, 300)}`);
-    const body = response.json<{ status: string; checks: { name: string; status: string }[] }>();
-    assert.equal(body.status, "not_ready");
-    assert.equal(body.checks.find((check) => check.name === "governance_capability")?.status, "fail");
-  } finally {
+  if (outcome.started) {
     await shutdownProductionServer(outcome.handle, { label: "P: misconfigured declared dependency", graceMs: 10_000 });
+    assert.fail("a production server became operational with an enabled capability and no claim secret");
   }
+  assert.match(outcome.log, /missing_governance_secret/, "the refusal is not attributable to the missing governance secret");
+  assert.doesNotMatch(outcome.log, /eyJ[A-Za-z0-9_-]{10,}/, "the startup refusal leaked a credential-shaped value");
+  assert.deepEqual(outcome.survivors, [], "the refused start left surviving processes");
 });
 
 test("P: an unconfigured Frontera authority store denies as an OUTAGE, never as ALLOW", async () => {

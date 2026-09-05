@@ -215,9 +215,17 @@ unconditionally and returned a passing `auth` entry outside the profile. The
 readiness *verdict* was unaffected, but the declared dependency **set** silently
 widened for every non-beta consumer, and
 `tests/observability-readiness.test.mjs:115` — which pins that set — failed. The
-fix was to make the code match the claim rather than to relax the test. So
-P0-LAUNCH-04's recorded `authFailureReadiness: 200 ready` remains accurate and
-the predecessor contract really is preserved, not merely described as preserved.
+fix was to make the code match the claim rather than to relax the test.
+
+**SUPERSEDED (historical).** The sentence that stood here — that P0-LAUNCH-04's
+recorded `authFailureReadiness: 200 ready` remains accurate — was true only while
+that gate ran outside the beta profile. P0-LAUNCH-04 now starts its server with
+`PMFREAK_OPERATING_PROFILE=closed-free-beta`, so auth **is** a declared readiness
+dependency there and its auth outage correctly reports `503 not_ready` with
+`auth=fail`. The current recorded value is
+`503 not_ready — authentication IS a declared readiness dependency`. What is
+genuinely preserved is the narrower claim above: outside the beta profile the
+check is absent from `checks` entirely.
 
 ## 6. CLOSED_BETA_AUTHORITY_MODEL = INVITATION_CONTROLLED_TENANT_AUTHORITY
 
