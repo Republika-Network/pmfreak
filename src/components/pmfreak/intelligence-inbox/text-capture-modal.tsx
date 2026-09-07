@@ -32,17 +32,30 @@ export function TextCaptureModal({ mode, workspaceId, projectId, onClose, onCapt
   const [content, setContent] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  // Observer judgement, asked for rather than assumed — these ride onto immutable Evidence
-  // that an Observation may cite, so nothing here is defaulted away to shorten the form.
-  const [assertionType, setAssertionType] = useState<"INFERENCE" | "ASSUMPTION">("ASSUMPTION");
-  const [classification, setClassification] = useState("UNCLASSIFIED");
-  const [missingDataState, setMissingDataState] = useState<"UNKNOWN" | "PARTIAL" | "COMPLETE">("UNKNOWN");
-  const [confidenceScore, setConfidenceScore] = useState("0.50");
+  // Observer judgement, asked for rather than assumed.
+  //
+  // UNANSWERED is the only honest initial state. These opened on
+  // ASSUMPTION / UNCLASSIFIED / UNKNOWN / 0.50 — a complete set of judgements nobody made,
+  // which the LIVE Evidence row then records as observer-supplied and an Observation
+  // inherits. A weak-looking default is still a fabricated one. Same fix, same reasoning
+  // and same canonical vocabularies as the Command Center intake panel.
+  const [assertionType, setAssertionType] = useState<"INFERENCE" | "ASSUMPTION" | "">("");
+  const [classification, setClassification] = useState("");
+  const [missingDataState, setMissingDataState] = useState<"UNKNOWN" | "PARTIAL" | "COMPLETE" | "">("");
+  const [confidenceScore, setConfidenceScore] = useState("");
   const [result, setResult] = useState<EvidenceProvenanceResult | null>(null);
   const copy = COPY[mode];
 
+  // Answered, not merely valid — drives the disabled button below.
+  const judgementsAnswered = assertionType !== "" && classification !== "" && missingDataState !== "";
+
   const submit = async () => {
     if (!content.trim()) { setError("Add content before capture."); return; }
+    // The explicit comparison rather than `!judgementsAnswered`, so the compiler narrows
+    // the three unions here: the canonical contract accepts no empty member.
+    if (assertionType === "" || classification === "" || missingDataState === "") {
+      setError("Answer assertion type, classification and missing data before capture."); return;
+    }
     const confidenceEntered = confidenceScore.trim();
     const confidence = Number(confidenceEntered);
     // EMPTY is not EXPLICIT ZERO. `Number("")` is 0, so an emptied or whitespace-only field
@@ -106,15 +119,15 @@ export function TextCaptureModal({ mode, workspaceId, projectId, onClose, onCapt
       <label className="sr-only" htmlFor="manual-provenance-content">Project context</label>
       <textarea id="manual-provenance-content" value={content} onChange={(event) => setContent(event.target.value)} rows={7} placeholder={copy.placeholder} autoFocus className="mt-3 w-full rounded-xl border border-slate-200 bg-slate-50/60 p-3 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-cyan-300 focus:ring-2 focus:ring-cyan-100" />
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
-        <label className="text-xs text-slate-600">Assertion type<select value={assertionType} onChange={(e) => setAssertionType(e.target.value as "INFERENCE" | "ASSUMPTION")} className="mt-1 w-full rounded-lg border border-slate-200 bg-white p-2"><option value="ASSUMPTION">Assumption</option><option value="INFERENCE">Inference</option></select></label>
-        <label className="text-xs text-slate-600">Classification<select value={classification} onChange={(e) => setClassification(e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-white p-2"><option value="UNCLASSIFIED">Unclassified</option><option value="PROJECT_STATUS">Project status</option><option value="RISK">Risk</option><option value="ISSUE">Issue</option><option value="DECISION_CONTEXT">Decision context</option><option value="DELIVERY">Delivery</option></select></label>
-        <label className="text-xs text-slate-600">Missing data<select value={missingDataState} onChange={(e) => setMissingDataState(e.target.value as "UNKNOWN" | "PARTIAL" | "COMPLETE")} className="mt-1 w-full rounded-lg border border-slate-200 bg-white p-2"><option value="UNKNOWN">Unknown</option><option value="PARTIAL">Partial</option><option value="COMPLETE">Complete</option></select></label>
-        <label className="text-xs text-slate-600">Confidence (0–1)<input type="number" min="0" max="1" step="0.01" value={confidenceScore} onChange={(e) => setConfidenceScore(e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-white p-2" /></label>
+        <label className="text-xs text-slate-600">Assertion type<select value={assertionType} onChange={(e) => setAssertionType(e.target.value as "INFERENCE" | "ASSUMPTION")} className="mt-1 w-full rounded-lg border border-slate-200 bg-white p-2"><option value="" disabled>Select…</option><option value="ASSUMPTION">Assumption</option><option value="INFERENCE">Inference</option></select></label>
+        <label className="text-xs text-slate-600">Classification<select value={classification} onChange={(e) => setClassification(e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-white p-2"><option value="" disabled>Select…</option><option value="UNCLASSIFIED">Unclassified</option><option value="PROJECT_STATUS">Project status</option><option value="RISK">Risk</option><option value="ISSUE">Issue</option><option value="DECISION_CONTEXT">Decision context</option><option value="DELIVERY">Delivery</option></select></label>
+        <label className="text-xs text-slate-600">Missing data<select value={missingDataState} onChange={(e) => setMissingDataState(e.target.value as "UNKNOWN" | "PARTIAL" | "COMPLETE")} className="mt-1 w-full rounded-lg border border-slate-200 bg-white p-2"><option value="" disabled>Select…</option><option value="UNKNOWN">Unknown</option><option value="PARTIAL">Partial</option><option value="COMPLETE">Complete</option></select></label>
+        <label className="text-xs text-slate-600">Confidence (0–1)<input type="number" min="0" max="1" step="0.01" placeholder="Enter a value" value={confidenceScore} onChange={(e) => setConfidenceScore(e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-white p-2" /></label>
       </div>
       {error && <p role="alert" className="mt-2 text-xs text-rose-600">{error}</p>}
       <div className="mt-4 flex items-center justify-end gap-2">
         <button type="button" onClick={onClose} className="rounded-lg border border-slate-200 px-3.5 py-2 text-xs font-medium text-slate-600">Cancel</button>
-        <button type="button" onClick={submit} disabled={busy || !content.trim()} className="rounded-lg border border-cyan-200 bg-cyan-50/80 px-3.5 py-2 text-xs font-semibold text-cyan-800 disabled:cursor-not-allowed disabled:opacity-50">{busy ? "Capturing and deriving…" : "Capture, then derive Evidence"}</button>
+        <button type="button" onClick={submit} disabled={busy || !content.trim() || !judgementsAnswered || confidenceScore.trim() === ""} className="rounded-lg border border-cyan-200 bg-cyan-50/80 px-3.5 py-2 text-xs font-semibold text-cyan-800 disabled:cursor-not-allowed disabled:opacity-50">{busy ? "Capturing and deriving…" : "Capture, then derive Evidence"}</button>
       </div>
     </Modal>
   );

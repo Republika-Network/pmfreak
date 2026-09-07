@@ -42,13 +42,21 @@ export function VaultIntakePanel({ workspaceId, projectId, onClose, onIntakeComp
   const [content, setContent] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  // P2-09 evidence quality, supplied by the observer rather than assumed. Asked for, not
-  // defaulted away: an Observation that cites this Evidence carries these judgements, and
-  // inventing them to shorten the form would fabricate exactly what P2-09 asks a human for.
-  const [assertionType, setAssertionType] = useState<(typeof ASSERTION_TYPES)[number]>("INFERENCE");
-  const [classification, setClassification] = useState<string>("PROJECT_STATUS");
-  const [missingDataState, setMissingDataState] = useState<(typeof MISSING_DATA_STATES)[number]>("COMPLETE");
-  const [confidenceScore, setConfidenceScore] = useState("0.90");
+  // P2-09 evidence quality, supplied by the observer rather than assumed.
+  //
+  // UNANSWERED is the only honest initial state. These four fields used to open on
+  // INFERENCE / PROJECT_STATUS / COMPLETE / 0.90 — a complete, plausible, entirely
+  // invented set of judgements a PM could submit without ever reading. The Evidence row
+  // records them as observer-supplied either way, and an Observation that cites it
+  // inherits them, so a preselection is not a convenience: it is the fabrication P2-09
+  // exists to prevent, performed by the form instead of the person.
+  //
+  // `""` is outside every canonical vocabulary below, which is what makes it unsubmittable
+  // rather than merely untouched. The vocabularies themselves are unchanged.
+  const [assertionType, setAssertionType] = useState<(typeof ASSERTION_TYPES)[number] | "">("");
+  const [classification, setClassification] = useState<string>("");
+  const [missingDataState, setMissingDataState] = useState<(typeof MISSING_DATA_STATES)[number] | "">("");
+  const [confidenceScore, setConfidenceScore] = useState("");
 
   // Scoped ids: the Command Center mounts responsive surfaces simultaneously, and a
   // hardcoded id would produce duplicate document ids and break label association.
@@ -63,9 +71,16 @@ export function VaultIntakePanel({ workspaceId, projectId, onClose, onIntakeComp
   // Observation citing that Evidence would inherit a judgement nobody gave. A deliberate
   // 0 stays valid; the absence of an answer does not become one.
   const confidenceValid = confidenceEntered !== "" && Number.isFinite(confidence) && confidence >= 0 && confidence <= 1;
+  // Answered, not merely valid. Kept separate from `confidenceValid` so an out-of-range
+  // number still reports a range problem rather than an unanswered one.
+  const judgementsAnswered = assertionType !== "" && classification !== "" && missingDataState !== "";
+  const canSubmit = content.trim() !== "" && judgementsAnswered && confidenceValid;
 
   const submit = async () => {
     if (!content.trim()) { setError("Paste some notes before capture."); return; }
+    if (assertionType === "" || classification === "" || missingDataState === "") {
+      setError("Answer assertion type, classification and missing data before capture."); return;
+    }
     if (!confidenceValid) { setError("Confidence must be a number between 0 and 1."); return; }
     setBusy(true); setError("");
     try {
@@ -136,31 +151,34 @@ export function VaultIntakePanel({ workspaceId, projectId, onClose, onIntakeComp
         <label className="text-[11px] text-zinc-400">
           Assertion type
           <select value={assertionType} onChange={(e) => setAssertionType(e.target.value as (typeof ASSERTION_TYPES)[number])} className="mt-1 w-full rounded-lg border border-white/10 bg-zinc-900 p-2 text-xs text-zinc-100">
+            <option value="" disabled>Select…</option>
             {ASSERTION_TYPES.map((value) => <option key={value} value={value}>{labelize(value)}</option>)}
           </select>
         </label>
         <label className="text-[11px] text-zinc-400">
           Classification
           <select value={classification} onChange={(e) => setClassification(e.target.value)} className="mt-1 w-full rounded-lg border border-white/10 bg-zinc-900 p-2 text-xs text-zinc-100">
+            <option value="" disabled>Select…</option>
             {CLASSIFICATIONS.map((value) => <option key={value} value={value}>{labelize(value)}</option>)}
           </select>
         </label>
         <label className="text-[11px] text-zinc-400">
           Missing data
           <select value={missingDataState} onChange={(e) => setMissingDataState(e.target.value as (typeof MISSING_DATA_STATES)[number])} className="mt-1 w-full rounded-lg border border-white/10 bg-zinc-900 p-2 text-xs text-zinc-100">
+            <option value="" disabled>Select…</option>
             {MISSING_DATA_STATES.map((value) => <option key={value} value={value}>{labelize(value)}</option>)}
           </select>
         </label>
         <label className="text-[11px] text-zinc-400">
           Confidence (0–1)
-          <input type="number" min="0" max="1" step="0.01" value={confidenceScore} onChange={(e) => setConfidenceScore(e.target.value)} className="mt-1 w-full rounded-lg border border-white/10 bg-zinc-900 p-2 text-xs text-zinc-100" />
+          <input type="number" min="0" max="1" step="0.01" placeholder="Enter a value" value={confidenceScore} onChange={(e) => setConfidenceScore(e.target.value)} className="mt-1 w-full rounded-lg border border-white/10 bg-zinc-900 p-2 text-xs text-zinc-100" />
         </label>
       </div>
 
       {error && <p role="alert" className="mt-2 text-xs text-rose-400">{error}</p>}
       <div className="mt-3 flex items-center justify-end gap-2">
         <button type="button" onClick={onClose} className="rounded-lg border border-white/10 px-3 py-1.5 text-xs font-medium text-zinc-300 transition hover:bg-white/5">Cancel</button>
-        <button type="button" onClick={submit} disabled={busy || !content.trim()} className="rounded-lg border border-sky-500/25 bg-sky-500/10 px-3 py-1.5 text-xs font-medium text-sky-300 transition hover:bg-sky-500/15 disabled:cursor-not-allowed disabled:opacity-50">
+        <button type="button" onClick={submit} disabled={busy || !canSubmit} className="rounded-lg border border-sky-500/25 bg-sky-500/10 px-3 py-1.5 text-xs font-medium text-sky-300 transition hover:bg-sky-500/15 disabled:cursor-not-allowed disabled:opacity-50">
           {busy ? "Capturing and deriving…" : "Capture and derive Evidence"}
         </button>
       </div>

@@ -21,6 +21,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { ROUTE_GUARD_REGISTRY } from "../src/lib/security/route-guard-registry.ts";
 
@@ -126,6 +127,113 @@ test("UX-P0-01: nothing promotes fixture Evidence to LIVE", () => {
       `${file} must never assign fixture_state = LIVE`,
     );
   }
+});
+
+// ─────────── UX-P0-01 review remediation — no fabricated observer judgement ─────────────
+//
+// The first cut of UX-P0-01 moved both customer surfaces onto the LIVE contract but left
+// their P2-09 quality fields preselected (INFERENCE / PROJECT_STATUS / COMPLETE / 0.90 in
+// the panel, ASSUMPTION / UNCLASSIFIED / UNKNOWN / 0.50 in the modal). A PM could submit
+// without reading them, and the Evidence row recorded them as observer-supplied anyway —
+// the form fabricating exactly the judgement P2-09 asks a human to make. Independent review
+// raised it as a P1 merge blocker.
+
+/** Server-rendered initial state of both customer capture surfaces. Real behaviour: source
+ *  reading cannot prove "the form opens unanswered", rendering it can. */
+const initialState = JSON.parse(
+  execFileSync(process.execPath, ["node_modules/tsx/dist/cli.mjs", "tests/ux-w0-capture-defaults-harness.tsx"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "inherit"],
+  }),
+);
+
+for (const [surface, label] of [
+  ["vaultIntakePanel", "Command Center intake panel"],
+  ["textCaptureModal", "Project Memory capture modal"],
+]) {
+  test(`UX-P0-01: the ${label} opens with every observer judgement unanswered`, () => {
+    const rendered = initialState[surface];
+    assert.equal(rendered.selects.length, 3, "assertion type, classification and missing data");
+    for (const select of rendered.selects) {
+      // Nothing is preselected — the chosen option is the empty placeholder.
+      assert.equal(select.selected, "", `a vocabulary select opened preselected: ${select.options.join("/")}`);
+      // The placeholder is not a submittable answer.
+      assert.ok(select.placeholderDisabled, "the unanswered placeholder must not be selectable as an answer");
+      // The canonical vocabulary itself is untouched — "" is added alongside it, never
+      // instead of a member of it.
+      assert.ok(select.options.length > 1, "the canonical vocabulary must still be offered");
+      assert.ok(select.options.filter((v) => v === "").length === 1, "exactly one empty placeholder");
+    }
+    assert.equal(rendered.confidenceValue, "", "confidence must open with no value");
+  });
+
+  test(`UX-P0-01: the ${label} cannot be submitted while a judgement is unanswered`, () => {
+    assert.equal(initialState[surface].submitDisabled, true, "submit must be disabled in the unanswered state");
+  });
+}
+
+test("UX-P0-01: neither customer surface initializes an epistemic field to a canonical value", () => {
+  // The defect in source form, so a regression is caught at the line that would reintroduce
+  // it rather than only at render time.
+  const VOCABULARY = ["FACT", "INFERENCE", "ASSUMPTION", "UNCLASSIFIED", "PROJECT_STATUS", "RISK", "ISSUE", "DECISION_CONTEXT", "DELIVERY", "COMPLETE", "PARTIAL", "UNKNOWN"];
+  for (const file of [CUSTOMER_INTAKE_PANEL, CUSTOMER_CAPTURE_MODAL]) {
+    const code = codeOnly(readFileSync(file, "utf8"));
+    for (const initializer of code.matchAll(/useState<[^>]*>\(([^)]*)\)|useState\(("[^"]*")\)/g)) {
+      const seed = (initializer[1] ?? initializer[2] ?? "").trim();
+      const literal = /^"(.*)"$/.exec(seed)?.[1];
+      if (literal === undefined) continue;
+      assert.ok(
+        !VOCABULARY.includes(literal),
+        `${file} seeds state with the canonical value "${literal}" — an observer judgement nobody made`,
+      );
+      assert.ok(
+        !/^0?\.\d+$|^[01](\.\d+)?$/.test(literal),
+        `${file} seeds state with the confidence value "${literal}" — a judgement nobody made`,
+      );
+    }
+  }
+});
+
+test("UX-P0-01: an explicit confidence of 0 is still a valid answer, and an empty field is not", () => {
+  // The distinction the whole field rests on. `Number("")` is 0, so a falsy check would
+  // silently equate "no answer" with "no confidence at all" — the strongest claim available.
+  const panel = codeOnly(readFileSync(CUSTOMER_INTAKE_PANEL, "utf8"));
+  const modal = codeOnly(readFileSync(CUSTOMER_CAPTURE_MODAL, "utf8"));
+  assert.match(panel, /confidenceEntered !== "" && Number\.isFinite\(confidence\)/);
+  assert.match(panel, /confidence >= 0 && confidence <= 1/);
+  assert.match(modal, /confidenceEntered === "" \|\| !Number\.isFinite\(confidence\)/);
+  assert.match(modal, /confidence < 0 \|\| confidence > 1/);
+  for (const [name, code] of [["panel", panel], ["modal", modal]]) {
+    assert.ok(!/!confidence\b/.test(code), `${name} must not treat a deliberate 0 as unanswered`);
+    assert.ok(!/confidence > 0/.test(code), `${name} must not require a confidence above 0`);
+  }
+});
+
+test("UX-P0-01: the submit path refuses an unanswered judgement even if the control were enabled", () => {
+  // A disabled button is a UI affordance, not a guarantee. The write path checks too, and
+  // the check is written as the explicit comparison so the compiler narrows the unions —
+  // the canonical contract accepts no empty member.
+  for (const file of [CUSTOMER_INTAKE_PANEL, CUSTOMER_CAPTURE_MODAL]) {
+    const src = readFileSync(file, "utf8");
+    const submitBody = src.slice(src.indexOf("const submit = async ()"), src.indexOf("try {"));
+    assert.match(
+      submitBody,
+      /if \(assertionType === "" \|\| classification === "" \|\| missingDataState === ""\)/,
+      `${file} must refuse an unanswered judgement before any canonical write`,
+    );
+  }
+});
+
+test("UX-P0-01: the remediation did not disturb the durable attempt identity or the fixture path", () => {
+  // The retry-reconciliation seam and the internal fixture surface are outside this fix and
+  // must be untouched by it.
+  assert.match(read(CUSTOMER_INTAKE_PANEL), /intakeAttemptKey\(workspaceId, projectId, mode, await sha256Hex\(content\.trim\(\)\)\)/);
+  assert.match(read(CUSTOMER_CAPTURE_MODAL), /intakeAttemptKey\(workspaceId, projectId, "live", await sha256Hex\(content\.trim\(\)\)\)/);
+  const fixturePanel = read(INTERNAL_FIXTURE_PANEL);
+  assert.match(fixturePanel, /captureAndDeriveDemoEvidence\(workspaceId, projectId,/);
+  // The fixture path derives no observer judgement at all, so it has none to leave
+  // unanswered — it must not have grown a quality form in this change.
+  assert.ok(!/assertionType|confidenceScore/.test(fixturePanel), "the fixture surface must stay as it was");
 });
 
 // ──────────────────── UX-P0-02 — certification panel out of customer UX ─────────────────
