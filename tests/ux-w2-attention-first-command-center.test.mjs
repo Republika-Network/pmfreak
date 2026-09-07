@@ -25,11 +25,15 @@ import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { SIGNAL_TYPES } from "../src/lib/operational-flow/types.ts";
 import { SIGNAL_CHANGE_LABELS, deriveWhatChanged } from "../src/modules/workspace/presentation/command-center/change-read-model.ts";
+import { assessAttentionCompleteness } from "../src/modules/workspace/presentation/command-center/attention-completeness.ts";
+import { ACTIVITY_TIMESTAMP_FIELDS, ACTIVITY_COLLECTIONS } from "../src/modules/workspace/presentation/command-center/activity-read-model.ts";
 import { getPrimaryNavigation } from "../src/lib/workspace/navigation-hierarchy.ts";
 
 const read = (p) => readFileSync(p, "utf8");
 const layout = read("src/modules/workspace/screens/command-center/command-center-layout.tsx");
 const canvasSrc = read("src/modules/workspace/presentation/command-center/command-center-canvas.tsx");
+const executionQueueSrc = read("src/modules/workspace/presentation/command-center/execution-queue.tsx");
+const chainReadModel = read("src/modules/workspace/presentation/command-center/execution-read-model.ts");
 
 /** Real render output of the Command Center, produced by the harness. */
 const harness = JSON.parse(
@@ -349,4 +353,230 @@ test("W2: the change projection is pure — the same payload and instant always 
   const payload = { signals: harness.readModels.changes.map((c) => ({ id: c.id, signal_type: "schedule_risk", severity: "high", summary: c.detail, created_at: c.occurredAt })) };
   const at = new Date("2026-09-06T12:00:00.000Z");
   assert.deepEqual(deriveWhatChanged(payload, at), deriveWhatChanged(payload, at));
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// W2 REVIEW REMEDIATION — three honesty defects found on 6fea049f
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ───────── W2-P1-01: "In Progress" contains actual progress only ─────────────
+//
+// `buildExecutionChains` deliberately projects EVERY decided chain, terminal ones
+// included, and that completeness is correct. The defect was the heading: rendering a
+// rejected Decision, an achieved Outcome and a superseded Outcome under the word
+// "In Progress" makes the list say something false even though each badge is right.
+//
+// The original W2 fixture held one live chain, which is precisely the case that cannot
+// expose this. These run against six chains — one per canonical outcome of the projection.
+
+/** What each fixture chain is, by canonical status label. */
+const CHAIN_EXPECTATIONS = [
+  { decisionId: "dec-live", statusLabel: "In progress", group: "in_progress" },
+  { decisionId: "dec-noaction", statusLabel: "No action yet", group: "not_progressing" },
+  { decisionId: "dec-expired", statusLabel: "Authorization expired", group: "not_progressing" },
+  { decisionId: "dec-rejected", statusLabel: "Decision rejected", group: "closed" },
+  { decisionId: "dec-achieved", statusLabel: "Outcome achieved", group: "closed" },
+  { decisionId: "dec-superseded", statusLabel: "Outcome superseded", group: "closed" },
+];
+
+test("W2-P1-01: the fixture really does exercise every canonical chain outcome", () => {
+  // Without this the rest of the section could pass vacuously against chains that never
+  // reached the states in question.
+  assert.deepEqual(
+    harness.chainProgress.statuses.map((entry) => ({
+      decisionId: entry.decisionId,
+      statusLabel: entry.statusLabel,
+      group: entry.group,
+    })),
+    CHAIN_EXPECTATIONS,
+  );
+});
+
+test("W2-P1-01: no terminal or stopped chain is rendered as work in progress", () => {
+  const rendered = harness.chainProgress.rendered;
+  assert.deepEqual(rendered.inProgressTitles, ["LIVE work under way"]);
+  for (const terminal of ["REJECTED decision", "ACHIEVED outcome", "SUPERSEDED outcome"]) {
+    assert.ok(!rendered.inProgressTitles.includes(terminal), `"${terminal}" must not be shown as in progress`);
+  }
+  // The count beside the heading counts the heading's own claim, not the section.
+  assert.equal(rendered.headingCount, String(rendered.inProgressTitles.length));
+});
+
+test("W2-P1-01: the four non-live states are decided explicitly, not called progress", () => {
+  // A Decision is not work, and an Action nothing may be dispatched against is not work
+  // continuing. Both are open loops, so neither is buried with the terminal chains either.
+  assert.deepEqual(harness.chainProgress.groups.notProgressing, ["dec-noaction", "dec-expired"]);
+  assert.deepEqual(harness.chainProgress.rendered.notProgressingTitles, [
+    "DECIDED with no action",
+    "EXPIRED authorization",
+  ]);
+  // Expanded, not collapsed: requesting the first governed Action, or a replacement after
+  // an authorization lapsed, is the PM's next move and this row is how they reach it.
+  assert.equal(harness.chainProgress.rendered.notProgressingGroupPresent, true);
+  assert.match(harness.chainProgress.rendered.markup, /Not progressing/);
+});
+
+test("W2-P1-01: terminal chains are preserved and reachable, behind a collapsed disclosure", () => {
+  assert.deepEqual(harness.chainProgress.groups.closed, ["dec-rejected", "dec-achieved", "dec-superseded"]);
+  assert.deepEqual(harness.chainProgress.rendered.closedTitles, [
+    "REJECTED decision",
+    "ACHIEVED outcome",
+    "SUPERSEDED outcome",
+  ]);
+  // Hiding them would be its own dishonesty; they are one click away, and closed by default.
+  const tag = harness.chainProgress.rendered.closedDetailsTag;
+  assert.ok(tag, "the closed disclosure must exist");
+  assert.doesNotMatch(tag.slice(0, tag.indexOf(">")), /\bopen\b/, "closed chains must not be expanded by default");
+  assert.match(harness.chainProgress.rendered.markup, /Closed \(3\)/);
+});
+
+test("W2-P1-01: every chain lands in exactly one group — the projection drops nothing", () => {
+  const { inProgress, notProgressing, closed } = harness.chainProgress.groups;
+  const all = [...inProgress, ...notProgressing, ...closed];
+  assert.equal(all.length, harness.chainProgress.statuses.length);
+  assert.equal(new Set(all).size, all.length, "no chain may appear in two groups");
+  assert.deepEqual([...all].sort(), harness.chainProgress.statuses.map((s) => s.decisionId).sort());
+});
+
+test("W2-P1-01: the presentation grouping reconciles with the canonical status reading", () => {
+  // The selector reads persisted state, never `status.label`. This proves the two agree
+  // anyway, which is what makes the grouping trustworthy rather than a parallel opinion.
+  for (const entry of harness.chainProgress.statuses) {
+    assert.equal(
+      entry.group === "in_progress",
+      entry.statusLabel === "In progress",
+      `${entry.decisionId}: grouping and canonical status must agree`,
+    );
+  }
+});
+
+test("W2-P1-01: the canonical execution read model is untouched", () => {
+  // The fix is a selector over the projection, not a change to it: every decided chain,
+  // terminal ones included, is still projected.
+  assert.equal(harness.chainProgress.statuses.length, 6, "all six decided chains are still projected");
+  // Rejected Decisions are still built (the read model's own comment commits to this).
+  assert.match(chainReadModel, /Rejected\s*\n?\s*\*\s*Decisions ARE included/);
+  // The queue derives its groups; it does not filter by reading a display string.
+  assert.match(executionQueueSrc, /projectChainProgress\(chains\)/);
+  assert.doesNotMatch(executionQueueSrc, /status\.label ===/);
+});
+
+// ───────── W2-P1-02: attention completeness spans BOTH sources ────────────────
+//
+// "Needs your attention" is fed by two independent reads. The screen used to decide the
+// whole section's state from the operational flow alone, so a still-loading or failed
+// suggestion read could be reported as "You're clear."
+
+test("W2-P1-02: completeness requires every attention source, not the first one", () => {
+  const governed = { label: "governed recommendations", loading: false, failed: false };
+  assert.equal(assessAttentionCompleteness([governed, { label: "suggested actions", loading: true, failed: false }]).complete, false);
+  assert.equal(assessAttentionCompleteness([governed, { label: "suggested actions", loading: false, failed: true }]).complete, false);
+  assert.equal(assessAttentionCompleteness([governed, { label: "suggested actions", loading: false, failed: false }]).complete, true);
+  // A failure is reported as a failure, never as "still loading".
+  const failed = assessAttentionCompleteness([governed, { label: "suggested actions", loading: false, failed: true }]);
+  assert.equal(failed.failed, true);
+  assert.equal(failed.loading, false);
+  assert.deepEqual(failed.unresolved, ["suggested actions"]);
+});
+
+test("W2-P1-02 (A): zero governed items with suggestions still loading is not 'You're clear'", () => {
+  const { completeness, needsYou, header } = harness.attentionCompleteness.raidLoading;
+  assert.equal(completeness.complete, false);
+  assert.doesNotMatch(needsYou, /You&#x27;re clear\./);
+  assert.match(needsYou, /Checking what needs your attention/);
+  // No definitive count while an attention source is unresolved.
+  assert.ok(!/needs? your attention/.test(text(header)));
+  assert.ok(!/Nothing needs your attention/.test(text(header)));
+});
+
+test("W2-P1-02 (B): a failed suggestion read is a visible failure, not an empty success", () => {
+  const { completeness, needsYou, header } = harness.attentionCompleteness.raidFailed;
+  assert.equal(completeness.failed, true);
+  assert.match(needsYou, /We couldn&#x27;t load project attention\./);
+  assert.match(needsYou, /Try again/);
+  assert.doesNotMatch(needsYou, /You&#x27;re clear\./);
+  assert.ok(!/needs? your attention/.test(text(header)));
+});
+
+test("W2-P1-02 (C): known governed items stay visible while suggestions are still loading", () => {
+  const { needsYou, header } = harness.attentionCompleteness.governedKnownRaidLoading;
+  // Hiding real attention would be its own dishonesty.
+  assert.match(needsYou, /Agree a replan for the delayed milestone/);
+  // ...but the list says it is not the whole answer, and the header states no count.
+  assert.match(needsYou, /Still checking suggested actions\./);
+  assert.match(needsYou, /data-testid="cc-attention-incomplete"/);
+  assert.ok(!/needs? your attention/.test(text(header)));
+});
+
+test("W2-P1-02 (D): only when both sources resolve may the product say 'You're clear'", () => {
+  const { completeness, needsYou, header } = harness.attentionCompleteness.bothComplete;
+  assert.equal(completeness.complete, true);
+  assert.match(needsYou, /You&#x27;re clear\./);
+  assert.match(text(header), /Nothing needs your attention/);
+});
+
+test("W2-P1-02: the screen binds completeness to both reads, and merges neither model", () => {
+  assert.match(layout, /const \{ data: raidActions, error: raidError, mutate: mutateRaidActions \}/);
+  assert.match(layout, /const raidLoading = Boolean\(selectedProject\?\.id\) && raidActions === undefined && !raidError;/);
+  assert.match(layout, /\{ label: "governed recommendations", loading: flowLoading, failed: Boolean\(flowError\) \}/);
+  assert.match(layout, /\{ label: "suggested actions", loading: raidLoading, failed: Boolean\(raidError\) \}/);
+  assert.match(layout, /const needsYouCount = attention\.complete \? needsYouItems\.length : null;/);
+  assert.match(layout, /const attentionErrorMessage = attention\.failed \? "We couldn't load project attention\." : null;/);
+  // The two collections stay distinct business objects with distinct write paths.
+  assert.deepEqual(harness.attentionCompleteness.raidItemsAreStillTheirOwnKind, ["raid_suggestion"]);
+  assert.match(layout, /deriveNeedsYou\(flowData, handleDecide\)/);
+  assert.match(layout, /deriveRaidNeedsYou\(raidActions, handleRaidDecide\)/);
+});
+
+test("W2-P1-02: a suggestion failure does not make the activity sections claim they failed", () => {
+  // What changed / In Progress / Monitoring read only the operational flow, so they must
+  // not inherit an attention-only failure.
+  assert.match(layout, /const activityErrorMessage = flowError \? "We couldn't load project attention\." : null;/);
+  assert.match(layout, /activityErrorMessage=\{activityErrorMessage\}/);
+  assert.match(layout, /activityLoading=\{flowLoading\}/);
+  assert.match(layout, /attentionLoading=\{attention\.loading\}/);
+});
+
+// ───────── W2-P1-03: header freshness reads real activity ────────────────────
+
+test("W2-P1-03: freshness resolves from the newest activity, including everything downstream of a Decision", () => {
+  // Evidence and the Decision are a day old; an execution completed five minutes ago and
+  // an Observation was recorded two minutes ago. The header must say two minutes.
+  assert.equal(harness.headerFreshness.downstreamLatest, "2026-09-06T11:58:00.000Z");
+  assert.equal(harness.headerFreshness.downstreamLabel, "2 minutes ago");
+  assert.match(harness.headerFreshness.renderedHeader, /Updated 2 minutes ago/);
+});
+
+test("W2-P1-03: the derivation reads every record collection, and no deadline field", () => {
+  for (const collection of ["materialActions", "materialActionEvaluations", "tasks", "executions", "outcomes", "observations"]) {
+    assert.ok(ACTIVITY_COLLECTIONS.includes(collection), `${collection} must contribute to freshness`);
+  }
+  for (const field of ["completed_at", "recorded_at", "observed_at", "evaluated_at", "last_transition_at"]) {
+    assert.ok(ACTIVITY_TIMESTAMP_FIELDS.includes(field), `${field} records something that happened`);
+  }
+  // Deadlines are in the future. Reading them would date the project forward.
+  for (const deadline of ["expires_at", "valid_until", "stale_at", "due_date", "deferred_until"]) {
+    assert.ok(!ACTIVITY_TIMESTAMP_FIELDS.includes(deadline), `${deadline} is a deadline, not activity`);
+  }
+  // `observationEligibleEvidence` re-projects rows already counted through `evidence`.
+  assert.ok(!ACTIVITY_COLLECTIONS.includes("observationEligibleEvidence"));
+});
+
+test("W2-P1-03: absent, unparseable and future timestamps never become 'now'", () => {
+  assert.equal(harness.headerFreshness.unusableLatest, null);
+  assert.equal(harness.headerFreshness.unusableLabel, null);
+  // A human-entered `observed_at` in the future is not an answer to "when was this updated".
+  assert.equal(harness.headerFreshness.futureOnlyLatest, null);
+});
+
+test("W2-P1-03: the summary's fetch time is not reported as project activity", () => {
+  // `generatedAt` is set on this fixture and every collection is empty. If fetch time were
+  // being read, this would return a timestamp instead of null.
+  assert.equal(harness.headerFreshness.fetchedButEmptyLatest, null);
+  const activitySrc = read("src/modules/workspace/presentation/command-center/activity-read-model.ts");
+  assert.doesNotMatch(activitySrc.replace(/\/\*[\s\S]*?\*\//g, ""), /generatedAt/);
+  // The screen no longer carries its own three-collection freshness helper.
+  assert.doesNotMatch(layout, /function deriveLastUpdatedLabel/);
+  assert.match(layout, /deriveLastUpdatedLabel\(flowData, projectionNow\)/);
 });

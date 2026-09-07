@@ -20,10 +20,13 @@ export function NeedsYouQueue({
   onAddNotes,
   variant = "rail",
   emptyStateNote = null,
+  incompleteNote = null,
 }: {
   items: NeedsYouItem[];
   onSelect: (item: NeedsYouItem) => void;
-  /** True while the operational flow for the active project is still loading. */
+  /** True while ANY source of attention is still resolving. Attention is fed by two
+   *  independent reads, and this queue may only report emptiness once both have answered —
+   *  so this is deliberately not "the operational flow is loading". */
   loading?: boolean;
   /** Set when project attention could not be loaded. Shown instead of a misleading empty state. */
   errorMessage?: string | null;
@@ -35,6 +38,10 @@ export function NeedsYouQueue({
   variant?: "canvas" | "rail";
   /** Real monitoring context to show beneath an honest empty state. Never invented. */
   emptyStateNote?: string | null;
+  /** Set when the items below are real but not yet the whole answer, because another
+   *  attention source has not resolved. Keeps known items visible without letting the
+   *  list read as complete. */
+  incompleteNote?: string | null;
 }) {
   const showEmpty = !loading && !errorMessage && items.length === 0;
   // `CommandCenterLayout` may mount this component more than once across responsive
@@ -57,6 +64,13 @@ export function NeedsYouQueue({
       {/* Loading and failure are announced, so the state change is not visual-only. */}
       <div role="status" aria-live="polite">
         {loading && items.length === 0 && <SectionLoadingState label="Checking what needs your attention…" />}
+        {/* Items already known stay on screen while another source answers — hiding real
+            attention would be its own dishonesty — but the list says it is not final. */}
+        {loading && items.length > 0 && incompleteNote && (
+          <p className="mt-2 px-1 text-[11px] text-zinc-500" data-testid="cc-attention-incomplete">
+            {incompleteNote}
+          </p>
+        )}
         {errorMessage && (
           <div className="mt-2 rounded-xl border border-rose-500/25 bg-rose-500/[0.08] px-3 py-3">
             <p className="text-sm text-rose-200">{errorMessage}</p>

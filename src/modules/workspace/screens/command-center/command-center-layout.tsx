@@ -24,6 +24,8 @@ import type { DecisionStatus } from "../../presentation/command-center/operation
 import { isBranchLive } from "../../presentation/command-center/execution-read-model";
 import type { ExecutionOperation, GovernedExecutionChain } from "../../presentation/command-center/execution-read-model";
 import { deriveWhatChanged } from "../../presentation/command-center/change-read-model";
+import { deriveLastUpdatedLabel } from "../../presentation/command-center/activity-read-model";
+import { assessAttentionCompleteness } from "../../presentation/command-center/attention-completeness";
 import { chatMessagesToConversationTurns, conversationResultToAssistantMessage, postConversationMessage } from "../../presentation/command-center/conversation-data";
 import { ProjectSidebar } from "../../presentation/command-center/project-sidebar";
 import { CommandCenterCanvas } from "../../presentation/command-center/command-center-canvas";
@@ -54,28 +56,6 @@ function deriveMemory(data: OperationalSummary | undefined): MemoryItem[] {
     risks > 0 ? { id: "risks", label: `Risks · ${risks}` } : null,
     commitments > 0 ? { id: "commitments", label: `Commitments · ${commitments}` } : null,
   ].filter(Boolean) as MemoryItem[];
-}
-
-/** Newest timestamp across real operational records, as a human-readable relative label.
- *  Returns undefined when there is no data — the UI then shows no timestamp at all. */
-function deriveLastUpdatedLabel(data: OperationalSummary | undefined): string | undefined {
-  if (!data) return undefined;
-  let latest = 0;
-  for (const record of [...data.evidence, ...data.signals, ...data.decisions]) {
-    for (const key of ["updated_at", "created_at"]) {
-      const raw = record[key];
-      if (typeof raw !== "string") continue;
-      const time = Date.parse(raw);
-      if (!Number.isNaN(time) && time > latest) latest = time;
-    }
-  }
-  if (latest === 0) return undefined;
-  const minutes = Math.floor((Date.now() - latest) / 60000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
-  return new Date(latest).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 function buildRealMessages(project: ProjectListItem, needsYou: NeedsYouItem[]): ChatMessage[] {
@@ -158,9 +138,12 @@ export function CommandCenterLayout({
   );
 
   const { data: flowData, error: flowError, mutate: mutateFlow, successGeneration } = useOperationalFlow(workspaceId, selectedProject?.id ?? "");
-  const { data: raidActions, mutate: mutateRaidActions } = useRaidRecommendedActions(selectedProject?.id ?? "");
+  const { data: raidActions, error: raidError, mutate: mutateRaidActions } = useRaidRecommendedActions(selectedProject?.id ?? "");
   const hasRealData = Boolean(flowData && flowData.evidence.length > 0);
   const flowLoading = flowData === undefined && !flowError;
+  // SWR is given a null key when there is no project, and then never resolves. That is not
+  // a pending read, so it must not read as one.
+  const raidLoading = Boolean(selectedProject?.id) && raidActions === undefined && !raidError;
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [userInteracted, setUserInteracted] = useState(false);
@@ -286,7 +269,9 @@ export function CommandCenterLayout({
   const changes = useMemo(() => deriveWhatChanged(flowData, projectionNow), [flowData, projectionNow]);
   const monitoring = useMemo(() => deriveMonitoring(flowData), [flowData]);
   const memoryReal = useMemo(() => deriveMemory(flowData), [flowData]);
-  const lastUpdatedLabel = useMemo(() => deriveLastUpdatedLabel(flowData), [flowData]);
+  // Reads every collection of persisted records the summary carries — including everything
+  // downstream of a Decision — against the server-anchored instant, never `generatedAt`.
+  const lastUpdatedLabel = useMemo(() => deriveLastUpdatedLabel(flowData, projectionNow), [flowData, projectionNow]);
 
   // Real data or nothing: sections render honest empty states instead of fixtures.
   // RAID-derived suggestions are real extracted intelligence, so they show even
@@ -295,11 +280,26 @@ export function CommandCenterLayout({
   const repositoryItems = repositoryReal;
   const agentItems = hasRealData ? agentsReal : [];
 
-  const attentionErrorMessage = flowError ? "We couldn't load project attention." : null;
-  // A header must not answer "how much needs me?" with a number it does not have: while the
-  // read is loading or failed, there is no count, and the header states none. A successful
-  // read of zero is a real answer and is stated as one.
-  const needsYouCount = flowLoading || flowError ? null : needsYouItems.length;
+  /**
+   * Needs You is fed by two independent reads, so its completeness is a property of BOTH.
+   * The governed path and the RAID suggestion path stay separate business objects with
+   * separate write paths — only the question "have we heard from everything?" is combined.
+   */
+  const attention = assessAttentionCompleteness([
+    { label: "governed recommendations", loading: flowLoading, failed: Boolean(flowError) },
+    { label: "suggested actions", loading: raidLoading, failed: Boolean(raidError) },
+  ]);
+  // Either attention read failing is an attention failure. It is reported as one rather
+  // than allowed to become a reassuring empty state.
+  const attentionErrorMessage = attention.failed ? "We couldn't load project attention." : null;
+  // Project ACTIVITY — what changed, what is in progress, what is being monitored — comes
+  // only from the operational flow, so a failed suggestion read must not make those three
+  // sections claim they failed.
+  const activityErrorMessage = flowError ? "We couldn't load project attention." : null;
+  // A header must not answer "how much needs me?" with a number it does not have. Only a
+  // COMPLETE read produces a count; a successful read of zero is a real answer and is
+  // stated as one.
+  const needsYouCount = attention.complete ? needsYouItems.length : null;
   // Shown beneath an empty attention queue. Built from the real monitored families, and
   // only once this project actually has evidence for PMFreak to read — otherwise "clear"
   // would be paired with a claim that something is watching, which nothing is yet.
@@ -525,8 +525,17 @@ export function CommandCenterLayout({
             needsYouItems={needsYouItems}
             needsYouCount={needsYouCount}
             onSelectNeedsYou={handleNeedsYouSelect}
+            attentionLoading={attention.loading}
             attentionErrorMessage={attentionErrorMessage}
-            onRetryAttention={() => void mutateFlow()}
+            attentionIncompleteNote={
+              attention.loading && !attention.failed && needsYouItems.length > 0
+                ? `Still checking ${attention.unresolved.join(" and ")}.`
+                : null
+            }
+            onRetryAttention={() => {
+              void mutateFlow();
+              void mutateRaidActions();
+            }}
             onAddNotes={() => setNotesOpen(true)}
             monitoringNote={monitoringNote}
             changes={changes}
@@ -549,7 +558,8 @@ export function CommandCenterLayout({
                 onOpenNotes={() => setNotesOpen((v) => !v)}
               />
             }
-            loading={flowLoading}
+            activityLoading={flowLoading}
+            activityErrorMessage={activityErrorMessage}
             intakeSlot={
               notesOpen ? (
                 <div className="border-b border-white/10 p-4">

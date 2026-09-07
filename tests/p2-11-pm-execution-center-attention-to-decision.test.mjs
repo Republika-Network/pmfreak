@@ -375,8 +375,12 @@ test("P2-11 L: a load failure is not silently treated as 'still loading'", () =>
   assert.match(layout, /const flowLoading = flowData === undefined && !flowError;/);
   // UX-W2 lifted this into a named value the screen passes to every attention surface, so
   // one failed read cannot be a failure in one section and an empty success in the next.
-  assert.match(layout, /const attentionErrorMessage = flowError \? "We couldn't load project attention\." : null;/);
+  // The W2 review then widened it: attention is fed by TWO reads, and EITHER failing is an
+  // attention failure — a still-pending suggestion read is not a reason to report zero.
+  assert.match(layout, /const attentionErrorMessage = attention\.failed \? "We couldn't load project attention\." : null;/);
   assert.match(layout, /attentionErrorMessage=\{attentionErrorMessage\}/);
+  assert.match(layout, /const raidLoading = Boolean\(selectedProject\?\.id\) && raidActions === undefined && !raidError;/);
+  assert.match(layout, /const needsYouCount = attention\.complete \? needsYouItems\.length : null;/);
 });
 
 // ── M. Accessibility ─────────────────────────────────────────────────────────

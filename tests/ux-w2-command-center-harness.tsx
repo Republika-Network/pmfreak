@@ -21,8 +21,14 @@ import {
   deriveExecutionChains,
   deriveMonitoring,
   deriveNeedsYou,
+  deriveRaidNeedsYou,
   deriveAgents,
+  type RaidRecommendedAction,
 } from "../src/modules/workspace/presentation/command-center/operational-data";
+import { projectChainProgress, classifyChainProgress } from "../src/modules/workspace/presentation/command-center/in-progress-read-model";
+import { assessAttentionCompleteness } from "../src/modules/workspace/presentation/command-center/attention-completeness";
+import { deriveLastUpdatedLabel, latestOperationalActivityAt } from "../src/modules/workspace/presentation/command-center/activity-read-model";
+import { ExecutionQueue } from "../src/modules/workspace/presentation/command-center/execution-queue";
 import { deriveWhatChanged } from "../src/modules/workspace/presentation/command-center/change-read-model";
 import { CommandCenterCanvas } from "../src/modules/workspace/presentation/command-center/command-center-canvas";
 import { AgentDock } from "../src/modules/workspace/presentation/command-center/agent-dock";
@@ -283,6 +289,7 @@ function renderCanvas(data: OperationalSummary | undefined, overrides: CanvasOve
       needsYouItems={hasRealData ? needsYouItems : []}
       needsYouCount={hasRealData ? needsYouItems.length : 0}
       onSelectNeedsYou={noop}
+      attentionLoading={false}
       attentionErrorMessage={null}
       onRetryAttention={noop}
       onAddNotes={noop}
@@ -298,6 +305,8 @@ function renderCanvas(data: OperationalSummary | undefined, overrides: CanvasOve
       onToggleChat={noop}
       chatMessageCount={2}
       chat={<CommandFeed messages={[]} onSendMessage={noop} onSourceClick={noop} onActionClick={noop} />}
+      activityLoading={false}
+      activityErrorMessage={null}
       {...overrides}
     />
   );
@@ -314,7 +323,8 @@ const noProjectData = renderCanvas(summary({ evidence: [], signals: [], recommen
 const readFailed = renderCanvas(undefined, {
   needsYouCount: null,
   attentionErrorMessage: "We couldn't load project attention.",
-  loading: false,
+  activityErrorMessage: "We couldn't load project attention.",
+  activityLoading: false,
   monitoringActive: false,
 });
 
@@ -330,6 +340,264 @@ const mainRegion = (() => {
   const end = screen.indexOf("</main>", start);
   return start < 0 ? "" : screen.slice(start, end + 7);
 })();
+
+
+// ── W2-P1-01: chain-progress fixtures ────────────────────────────────────────
+//
+// The original W2 fixture carried one non-terminal post-decision chain, which is exactly
+// the case that CANNOT reveal the defect: every chain in it was genuinely in progress. So
+// this builds one summary holding six Decisions, one per canonical outcome of the chain
+// projection, and asserts what the rendered "In Progress" list actually contains.
+
+const PROGRESS_NOW = new Date("2026-08-17T12:00:00.000Z");
+const PROGRESS_ACTOR = "actor-pm";
+
+const progressRecommendations = [
+  { id: "prec-live", recommendation: "LIVE work under way" },
+  { id: "prec-noaction", recommendation: "DECIDED with no action" },
+  { id: "prec-expired", recommendation: "EXPIRED authorization" },
+  { id: "prec-rejected", recommendation: "REJECTED decision" },
+  { id: "prec-achieved", recommendation: "ACHIEVED outcome" },
+  { id: "prec-superseded", recommendation: "SUPERSEDED outcome" },
+];
+
+const progressDecision = (id: string, recommendationId: string, status = "accepted") => ({
+  id,
+  decision_status: status,
+  decided_by: PROGRESS_ACTOR,
+  recommendation_id: recommendationId,
+  rationale: "W2 chain-progress fixture",
+  created_at: "2026-08-17T10:00:00Z",
+});
+
+const progressAction = (id: string, decisionId: string, over: Record<string, unknown> = {}) => ({
+  id,
+  source_decision_id: decisionId,
+  proposed_by: PROGRESS_ACTOR,
+  action_class: "external_write",
+  materiality: "material",
+  proposal_digest: "sha256:abcdef0123456789abcdef",
+  correlation_id: `corr-${id}`,
+  causation_id: decisionId,
+  proposal: { actionType: "governed_project_change", evidenceReferenceIds: ["ev-1"] },
+  created_at: "2026-08-17T10:02:00Z",
+  persisted_at: "2026-08-17T10:02:00Z",
+  expires_at: "2026-08-17T13:00:00Z",
+  ...over,
+});
+
+const progressEvaluation = (actionId: string, over: Record<string, unknown> = {}) => ({
+  action_id: actionId,
+  governance_state: "authorized",
+  can_commit_action: true,
+  can_execute: false,
+  evaluated_at: "2026-08-17T10:05:00Z",
+  valid_until: "2026-08-17T13:00:00Z",
+  policy_decision_reference: "pmfreak-governance-event:gov-1",
+  grant_references: [`workspace-role-grant:owner:${PROGRESS_ACTOR}`],
+  ...over,
+});
+
+const progressTask = (id: string, actionId: string, over: Record<string, unknown> = {}) => ({
+  id,
+  title: "Governed task",
+  status: "in_progress",
+  created_at: "2026-08-17T10:10:00Z",
+  completed_at: null,
+  source_payload: { source: "governed_action", sourceActionId: actionId },
+  ...over,
+});
+
+const progressExecution = (id: string, taskId: string, actionId: string, over: Record<string, unknown> = {}) => ({
+  id,
+  task_id: taskId,
+  source_action_id: actionId,
+  status: "completed",
+  attempt_count: 1,
+  provider_key: "pmfreak/internal-state-machine:v1",
+  dispatched_by: PROGRESS_ACTOR,
+  queued_at: "2026-08-17T10:11:00Z",
+  started_at: "2026-08-17T10:12:00Z",
+  completed_at: "2026-08-17T10:20:00Z",
+  ...over,
+});
+
+const progressOutcome = (id: string, taskId: string, actionId: string, state: string) => ({
+  id,
+  task_id: taskId,
+  source_action_id: actionId,
+  internal_execution_id: `exec-${taskId}`,
+  state,
+  expected_result: "The client confirms the revised scope in writing.",
+});
+
+const progressSummary: OperationalSummary = {
+  generatedAt: PROGRESS_NOW.toISOString(),
+  sources: [],
+  rawInputs: [],
+  normalizedEvents: [],
+  evidence: [{ id: "ev-1", title: "Client confirmation email" }],
+  signals: [],
+  risksIssues: [],
+  governanceEvents: [],
+  recommendations: progressRecommendations,
+  decisions: [
+    progressDecision("dec-live", "prec-live"),
+    progressDecision("dec-noaction", "prec-noaction"),
+    progressDecision("dec-expired", "prec-expired"),
+    progressDecision("dec-rejected", "prec-rejected", "rejected"),
+    progressDecision("dec-achieved", "prec-achieved"),
+    progressDecision("dec-superseded", "prec-superseded"),
+  ],
+  evidenceLinks: [],
+  materialActions: [
+    progressAction("act-live", "dec-live"),
+    // Authorization window closed before NOW: no new work may be dispatched against it.
+    progressAction("act-expired", "dec-expired", { expires_at: "2026-08-17T11:00:00Z" }),
+    progressAction("act-achieved", "dec-achieved"),
+    progressAction("act-superseded", "dec-superseded"),
+  ],
+  materialActionEvaluations: [
+    progressEvaluation("act-live"),
+    progressEvaluation("act-expired"),
+    progressEvaluation("act-achieved"),
+    progressEvaluation("act-superseded"),
+  ],
+  tasks: [
+    progressTask("task-live", "act-live"),
+    progressTask("task-achieved", "act-achieved", { status: "completed", completed_at: "2026-08-17T10:20:00Z" }),
+    progressTask("task-superseded", "act-superseded", { status: "completed", completed_at: "2026-08-17T10:20:00Z" }),
+  ],
+  executions: [
+    progressExecution("exec-task-live", "task-live", "act-live", { status: "running", completed_at: null }),
+    progressExecution("exec-task-achieved", "task-achieved", "act-achieved"),
+    progressExecution("exec-task-superseded", "task-superseded", "act-superseded"),
+  ],
+  outcomes: [
+    progressOutcome("out-achieved", "task-achieved", "act-achieved", "achieved"),
+    progressOutcome("out-superseded", "task-superseded", "act-superseded", "superseded"),
+  ],
+  observations: [],
+  lineages: [],
+  assurance: {} as OperationalSummary["assurance"],
+  actor: { role: "owner", userId: PROGRESS_ACTOR, canCreateEvidence: true },
+};
+
+const progressChains = deriveExecutionChains(progressSummary, PROGRESS_NOW);
+const progressGroups = projectChainProgress(progressChains);
+const progressQueueMarkup = renderToStaticMarkup(<ExecutionQueue chains={progressChains} onSelect={noop} />);
+
+/** The chain titles rendered under a given test id, in document order. */
+function titlesFor(markup: string, testId: string): string[] {
+  return [...markup.matchAll(new RegExp(`data-testid="${testId}"[\\s\\S]*?<span class="block truncate text-sm[^"]*">([^<]*)<`, "g"))].map((m) => m[1]);
+}
+
+// ── W2-P1-02: attention completeness scenarios ───────────────────────────────
+//
+// Mirrors exactly how the screen binds completeness to the canvas, so the four scenarios
+// below are the ones a PM would really see.
+
+const RAID_ACTION: RaidRecommendedAction = {
+  id: "raid-1",
+  raid_item_id: "raid-item-1",
+  title: "Confirm the integration owner",
+  description: "The notes mention an unowned integration dependency.",
+  recommended_action_type: "clarify_dependency",
+  status: "proposed",
+  confidence_score: 0.8,
+  impact_level: "medium",
+  recommended_owner: "Delivery lead",
+  recommended_due_window: "this week",
+  evidence_summary: { raidTitle: "Integration owner unknown", raidCategory: "dependency" },
+  created_at: "2026-09-06T12:00:00.000Z",
+};
+
+function renderAttention(input: {
+  flowLoading: boolean;
+  flowFailed: boolean;
+  raidLoading: boolean;
+  raidFailed: boolean;
+  governedItems: number;
+}) {
+  const attention = assessAttentionCompleteness([
+    { label: "governed recommendations", loading: input.flowLoading, failed: input.flowFailed },
+    { label: "suggested actions", loading: input.raidLoading, failed: input.raidFailed },
+  ]);
+  const data = input.governedItems > 0 ? populatedSummary : summary({ recommendations: [], risksIssues: [], governanceEvents: [] });
+  const needsYouItems = input.flowFailed ? [] : deriveNeedsYou(data, noopDecide);
+  const markup = renderCanvas(populatedSummary, {
+    needsYouItems,
+    needsYouCount: attention.complete ? needsYouItems.length : null,
+    attentionLoading: attention.loading,
+    attentionErrorMessage: attention.failed ? "We couldn't load project attention." : null,
+    attentionIncompleteNote:
+      attention.loading && !attention.failed && needsYouItems.length > 0
+        ? `Still checking ${attention.unresolved.join(" and ")}.`
+        : null,
+  });
+  return {
+    completeness: attention,
+    needsYou: section(markup, "cc-section-needs-you"),
+    header: section(markup, "cc-project-header"),
+  };
+}
+
+// ── W2-P1-03: header freshness ───────────────────────────────────────────────
+
+const FRESHNESS_NOW = new Date("2026-09-06T12:00:00.000Z");
+
+/** The review's own example: everything upstream is a day old; the newest real activity
+ *  is an Observation two minutes ago and an execution five minutes ago. */
+const downstreamActivitySummary = summary({
+  evidence: [{ id: "ev-1", created_at: "2026-09-05T12:00:00.000Z", updated_at: "2026-09-05T12:00:00.000Z" }],
+  signals: [],
+  decisions: [{ id: "dec-1", decision_status: "accepted", created_at: "2026-09-05T12:00:00.000Z" }],
+  executions: [{ id: "exec-1", task_id: "task-1", status: "completed", completed_at: "2026-09-06T11:55:00.000Z" }],
+  observations: [{ id: "obs-1", outcome_id: "out-1", observation_state: "achieved", recorded_at: "2026-09-06T11:58:00.000Z" }],
+});
+
+/** Only unusable timestamps. Nothing here may become "now". */
+const unusableTimestampSummary = summary({
+  evidence: [{ id: "ev-1", created_at: null, updated_at: "not-a-date" }],
+  signals: [],
+  decisions: [{ id: "dec-1", decision_status: "accepted" }],
+  executions: [],
+  observations: [],
+});
+
+/** A human-entered `observed_at` in the future, and nothing else. "Updated in the future"
+ *  is not an answer, so the header states no time at all. */
+const futureOnlySummary = summary({
+  evidence: [],
+  signals: [],
+  decisions: [],
+  executions: [],
+  observations: [{ id: "obs-1", outcome_id: "out-1", observation_state: "achieved", observed_at: "2027-01-01T00:00:00.000Z" }],
+});
+
+/** No records at all, but the summary itself was fetched just now. Fetch time is not
+ *  project activity. */
+const fetchedButEmptySummary = summary({
+  generatedAt: FRESHNESS_NOW.toISOString(),
+  evidence: [],
+  signals: [],
+  risksIssues: [],
+  governanceEvents: [],
+  recommendations: [],
+  decisions: [],
+  executions: [],
+  observations: [],
+});
+
+/** The header rendered from the REAL derivation rather than a literal. */
+const freshnessHeader = section(
+  renderCanvas(downstreamActivitySummary, {
+    lastUpdatedLabel: deriveLastUpdatedLabel(downstreamActivitySummary, FRESHNESS_NOW),
+    needsYouCount: 0,
+  }),
+  "cc-project-header"
+);
+
 
 process.stdout.write(
   JSON.stringify(
@@ -388,6 +656,51 @@ process.stdout.write(
         monitoringEmpty: deriveMonitoring(undefined),
         chainIds: deriveExecutionChains(populatedSummary, NOW).map((chain) => ({ id: chain.id, decisionId: chain.decisionId, title: chain.title })),
         agentNames: deriveAgents(populatedSummary, false).map((agent) => agent.name),
+      },
+      chainProgress: {
+        statuses: progressChains.map((chain) => ({
+          decisionId: chain.decisionId,
+          title: chain.title,
+          statusLabel: chain.status.label,
+          group: classifyChainProgress(chain),
+        })),
+        groups: {
+          inProgress: progressGroups.inProgress.map((chain) => chain.decisionId),
+          notProgressing: progressGroups.notProgressing.map((chain) => chain.decisionId),
+          closed: progressGroups.closed.map((chain) => chain.decisionId),
+        },
+        rendered: {
+          inProgressTitles: titlesFor(progressQueueMarkup, "cc-in-progress-item"),
+          notProgressingTitles: titlesFor(progressQueueMarkup, "cc-not-progressing-item"),
+          closedTitles: titlesFor(progressQueueMarkup, "cc-closed-chain-item"),
+          headingCount: /In Progress\s*<\/h2>\s*<span[^>]*>(\d+)<\/span>/.exec(progressQueueMarkup)?.[1] ?? null,
+          closedDetailsTag: (() => {
+            const at = progressQueueMarkup.indexOf('data-testid="cc-closed-chains"');
+            return at < 0 ? null : progressQueueMarkup.slice(progressQueueMarkup.lastIndexOf("<details", at), at + 60);
+          })(),
+          notProgressingGroupPresent: progressQueueMarkup.includes('data-testid="cc-not-progressing-group"'),
+          markup: progressQueueMarkup,
+        },
+      },
+      attentionCompleteness: {
+        // A) flow success with zero governed items, RAID still loading.
+        raidLoading: renderAttention({ flowLoading: false, flowFailed: false, raidLoading: true, raidFailed: false, governedItems: 0 }),
+        // B) flow success with zero governed items, RAID failed.
+        raidFailed: renderAttention({ flowLoading: false, flowFailed: false, raidLoading: false, raidFailed: true, governedItems: 0 }),
+        // C) governed items known, RAID still loading.
+        governedKnownRaidLoading: renderAttention({ flowLoading: false, flowFailed: false, raidLoading: true, raidFailed: false, governedItems: 1 }),
+        // D) both resolved successfully, both empty.
+        bothComplete: renderAttention({ flowLoading: false, flowFailed: false, raidLoading: false, raidFailed: false, governedItems: 0 }),
+        raidItemsAreStillTheirOwnKind: deriveRaidNeedsYou([RAID_ACTION], async () => {}).map((item) => item.kind),
+      },
+      headerFreshness: {
+        downstreamLatest: latestOperationalActivityAt(downstreamActivitySummary, FRESHNESS_NOW),
+        downstreamLabel: deriveLastUpdatedLabel(downstreamActivitySummary, FRESHNESS_NOW),
+        unusableLatest: latestOperationalActivityAt(unusableTimestampSummary, FRESHNESS_NOW),
+        unusableLabel: deriveLastUpdatedLabel(unusableTimestampSummary, FRESHNESS_NOW),
+        futureOnlyLatest: latestOperationalActivityAt(futureOnlySummary, FRESHNESS_NOW),
+        fetchedButEmptyLatest: latestOperationalActivityAt(fetchedButEmptySummary, FRESHNESS_NOW),
+        renderedHeader: text(freshnessHeader),
       },
     },
     null,

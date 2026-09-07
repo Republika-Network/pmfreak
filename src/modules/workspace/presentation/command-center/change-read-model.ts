@@ -1,4 +1,5 @@
 import type { OperationalSummary } from "@/lib/operational-flow/types";
+import { relativeLabel } from "./activity-read-model";
 import type { StatusTone } from "./types";
 
 /**
@@ -81,19 +82,6 @@ function humaniseType(signalType: string): string {
   const words = signalType.replaceAll("_", " ").trim();
   if (words.length === 0) return "Change detected";
   return words.charAt(0).toUpperCase() + words.slice(1);
-}
-
-/** Relative label for a past instant. Future-dated rows read "just now" rather than
- *  claiming a change that has not happened yet. */
-function relativeLabel(occurredMs: number, nowMs: number): string {
-  const minutes = Math.floor((nowMs - occurredMs) / 60000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`;
-  return new Date(occurredMs).toISOString().slice(0, 10);
 }
 
 function text(value: unknown): string | null {

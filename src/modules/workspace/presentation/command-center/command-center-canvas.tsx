@@ -44,7 +44,9 @@ export function CommandCenterCanvas({
   needsYouItems,
   needsYouCount,
   onSelectNeedsYou,
+  attentionLoading = false,
   attentionErrorMessage,
+  attentionIncompleteNote = null,
   onRetryAttention,
   onAddNotes,
   monitoringNote,
@@ -62,7 +64,8 @@ export function CommandCenterCanvas({
   chatMessageCount,
   chat,
 
-  loading = false,
+  activityLoading = false,
+  activityErrorMessage = null,
   /** Rendered above the attention canvas when the screen supplies one (onboarding). */
   headerSlot,
   /** Rendered above the attention canvas (notes intake, when open). */
@@ -73,16 +76,21 @@ export function CommandCenterCanvas({
 }: {
   project: ProjectListItem;
   sources: RepositoryItem[];
-  lastUpdatedLabel?: string;
+  lastUpdatedLabel?: string | null;
   onOpenProjects: () => void;
   onSourceClick?: (source: RepositoryItem) => void;
   onAttach?: () => void;
 
   needsYouItems: NeedsYouItem[];
-  /** Null while the read is loading or failed — the header then states no count at all. */
+  /** Null until EVERY attention source has resolved successfully — the header then states
+   *  no count at all rather than a number that is only half an answer. */
   needsYouCount: number | null;
   onSelectNeedsYou: (item: NeedsYouItem) => void;
+  /** True while ANY attention source is still resolving (governed or RAID suggestions). */
+  attentionLoading?: boolean;
   attentionErrorMessage: string | null;
+  /** Set when known items are shown but another attention source has not answered yet. */
+  attentionIncompleteNote?: string | null;
   onRetryAttention?: () => void;
   onAddNotes?: () => void;
   monitoringNote?: string | null;
@@ -100,7 +108,12 @@ export function CommandCenterCanvas({
   chatMessageCount: number;
   chat: ReactNode;
 
-  loading?: boolean;
+  /** True while the operational flow — the source of changes, chains and monitoring — is
+   *  still loading. Deliberately separate from `attentionLoading`: a slow suggestion read
+   *  must not make the other three sections claim they are still loading. */
+  activityLoading?: boolean;
+  /** Set when the operational flow itself failed. Never set by an attention-only failure. */
+  activityErrorMessage?: string | null;
   headerSlot?: ReactNode;
   intakeSlot?: ReactNode;
   footerSlot?: ReactNode;
@@ -134,8 +147,9 @@ export function CommandCenterCanvas({
               variant="canvas"
               items={needsYouItems}
               onSelect={onSelectNeedsYou}
-              loading={loading}
+              loading={attentionLoading}
               errorMessage={attentionErrorMessage}
+              incompleteNote={attentionIncompleteNote}
               onRetry={onRetryAttention}
               onAddNotes={onAddNotes}
               emptyStateNote={monitoringNote}
@@ -146,15 +160,15 @@ export function CommandCenterCanvas({
           <div className="min-w-0 xl:col-start-1 xl:row-start-2">
             <WhatChangedPanel
               items={changes}
-              loading={loading}
-              errorMessage={attentionErrorMessage}
+              loading={activityLoading}
+              errorMessage={activityErrorMessage}
               onRetry={onRetryAttention}
             />
           </div>
 
           {/* 4 — in progress. Right rail on a wide screen, third section on a phone. */}
           <div className="min-w-0 self-start xl:col-start-2 xl:row-start-1">
-            <ExecutionQueue chains={chains} onSelect={onSelectChain} loading={loading} />
+            <ExecutionQueue chains={chains} onSelect={onSelectChain} loading={activityLoading} />
           </div>
 
           {/* 5 — monitoring, with the specialist roster collapsed beneath it. */}
@@ -162,8 +176,8 @@ export function CommandCenterCanvas({
             <MonitoringPanel
               summary={monitoring}
               active={monitoringActive}
-              loading={loading}
-              errorMessage={attentionErrorMessage}
+              loading={activityLoading}
+              errorMessage={activityErrorMessage}
               onRetry={onRetryAttention}
               onAddContext={onAddNotes}
               detail={agentDetail}

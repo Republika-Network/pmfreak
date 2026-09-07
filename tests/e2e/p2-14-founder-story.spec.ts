@@ -107,6 +107,29 @@ function attentionCanvas(target: Page = page) {
   return target.getByTestId("command-center-canvas");
 }
 
+/**
+ * The governed chain row on the post-decision surface, wherever it currently sits.
+ *
+ * The W2 review closed a defect where every decided chain — rejected, achieved,
+ * superseded, expired — was listed beneath the heading "In Progress". The surface now
+ * groups by whether work is actually progressing, so ONE chain moves between groups as it
+ * advances: no Action yet is "Not progressing", live work is "In Progress", an achieved
+ * Outcome is "Closed" behind a disclosure. This follows the row instead of assuming a
+ * position, expanding the disclosure first when the chain has reached a terminal state —
+ * which is exactly what a PM would have to do.
+ */
+async function governedChainRow(target: Page = page) {
+  const canvas = attentionCanvas(target);
+  const closed = canvas.getByTestId("cc-closed-chains");
+  if (await closed.count()) {
+    const alreadyOpen = await closed.evaluate((el) => (el as HTMLDetailsElement).open);
+    if (!alreadyOpen) await closed.locator("summary").click();
+  }
+  return canvas
+    .locator('[data-testid="cc-in-progress-item"], [data-testid="cc-not-progressing-item"], [data-testid="cc-closed-chain-item"]')
+    .first();
+}
+
 test.describe.serial("P2-14 authenticated two-tenant Founder browser story", () => {
   test.beforeAll(async ({ browser }) => {
     context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
@@ -273,8 +296,7 @@ test.describe.serial("P2-14 authenticated two-tenant Founder browser story", () 
 
   test("STEP 11 — governed Material Action is explicitly proposed and authorized through the real AOC boundary", async () => {
     await openCommandCenter();
-    const canvas = attentionCanvas();
-    await canvas.getByRole("heading", { name: "In Progress" }).locator("xpath=../..").getByRole("button").first().click();
+    await (await governedChainRow()).click();
 
     const drawer = page.getByRole("dialog");
     await expect(drawer).toBeVisible();
@@ -404,8 +426,7 @@ test.describe.serial("P2-14 authenticated two-tenant Founder browser story", () 
 
   test("STEP 13 — Internal Execution runs through the real canonical lifecycle", async () => {
     await openCommandCenter();
-    const canvas = attentionCanvas();
-    await canvas.getByRole("heading", { name: "In Progress" }).locator("xpath=../..").getByRole("button").first().click();
+    await (await governedChainRow()).click();
     const drawer = page.getByRole("dialog");
     await expect(drawer).toBeVisible();
 
@@ -579,8 +600,7 @@ test.describe.serial("P2-14 authenticated two-tenant Founder browser story", () 
     }
 
     // Now the Observation, through the real P2-12 surface.
-    const canvas = attentionCanvas();
-    await canvas.getByRole("heading", { name: "In Progress" }).locator("xpath=../..").getByRole("button").first().click();
+    await (await governedChainRow()).click();
     const drawer = page.getByRole("dialog");
     await expect(drawer).toBeVisible();
     await drawer.getByLabel("What does the evidence say?").selectOption("achieved");
@@ -841,8 +861,7 @@ test.describe.serial("P2-14 authenticated two-tenant Founder browser story", () 
     expect(duplicates, "duplicate document ids").toEqual([]);
 
     // The attention item is keyboard reachable and activates on Enter, and focus is not lost.
-    const canvas = attentionCanvas();
-    const chainButton = canvas.getByRole("heading", { name: "In Progress" }).locator("xpath=../..").getByRole("button").first();
+    const chainButton = await governedChainRow();
     await chainButton.focus();
     await expect(chainButton).toBeFocused();
     await page.keyboard.press("Enter");

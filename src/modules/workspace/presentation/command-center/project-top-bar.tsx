@@ -37,8 +37,9 @@ export function ProjectTopBar({
   onSourceClick?: (source: RepositoryItem) => void;
   /** Opens the notes/context intake — the way new context gets attached. */
   onAttach?: () => void;
-  /** Human-readable timestamp of the newest real operational record. Omitted when no data exists. */
-  lastUpdatedLabel?: string;
+  /** How fresh this project's newest persisted activity is. Null when no record carries a
+    *  usable timestamp — the header then states no time rather than guessing one. */
+  lastUpdatedLabel?: string | null;
   /** Items currently awaiting this PM. Null while the read is loading or failed — a
    *  header must not answer "how much needs me?" with a number it does not have. */
   needsYouCount?: number | null;
