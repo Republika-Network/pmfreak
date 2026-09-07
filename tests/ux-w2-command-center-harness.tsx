@@ -34,6 +34,7 @@ import { deriveWhatChanged } from "../src/modules/workspace/presentation/command
 import { CommandCenterCanvas } from "../src/modules/workspace/presentation/command-center/command-center-canvas";
 import { AgentDock } from "../src/modules/workspace/presentation/command-center/agent-dock";
 import { CommandFeed } from "../src/modules/workspace/presentation/command-center/command-feed";
+import { AskPmfreakPanel } from "../src/modules/workspace/presentation/command-center/ask-pmfreak-panel";
 import { CommandCenterLayout } from "../src/modules/workspace/screens/command-center/command-center-layout";
 import type { ProjectListItem } from "../src/modules/workspace/presentation/command-center/types";
 
@@ -711,6 +712,47 @@ const freshnessHeader = section(
 );
 
 
+
+// ── W2 Codex remediation: the copilot panel never unmounts the conversation ──
+//
+// An unsent draft is `CommandFeed`'s own local state, and local state survives exactly as
+// long as the component stays mounted. React preserves it when the same element type sits
+// at the same position across renders, so the property that decides whether a draft
+// survives collapse is: IS THE CHILD RENDERED IN BOTH STATES, IN THE SAME PLACE?
+//
+// The panel used to render `{open ? children : null}`, which answered no. These two renders
+// answer it directly, against real markup rather than the source text.
+
+function askPanelMarkup(open: boolean): string {
+  return renderToStaticMarkup(
+    <AskPmfreakPanel open={open} onToggle={noop} messageCount={2}>
+      <CommandFeed messages={[]} onSendMessage={noop} onSourceClick={noop} onActionClick={noop} />
+    </AskPmfreakPanel>
+  );
+}
+
+/** The conversation region's own attributes, and where the composer sits inside it. */
+function askPanelShape(open: boolean) {
+  const markup = askPanelMarkup(open);
+  const regionAt = markup.indexOf('data-testid="cc-ask-pmfreak-region"');
+  const regionOpenTag = regionAt < 0 ? null : markup.slice(markup.lastIndexOf("<div", regionAt), markup.indexOf(">", regionAt) + 1);
+  const composerAt = markup.indexOf("<input");
+  return {
+    regionPresent: regionAt >= 0,
+    regionHidden: regionOpenTag !== null && /\shidden\b/.test(regionOpenTag),
+    // The composer is rendered in BOTH states — that is what keeps the draft alive.
+    composerRendered: composerAt >= 0,
+    // ...and it is rendered INSIDE the region, so hiding the region hides it.
+    composerInsideRegion: regionAt >= 0 && composerAt > regionAt,
+    composerInstances: (markup.match(/<input/g) ?? []).length,
+    disclosureRendered: markup.includes("chat-determinism-disclosure"),
+    /** Bytes from the region's opening tag to the composer: the child's position, which must
+     *  be identical in both states for React to treat it as the same instance. */
+    composerOffsetInRegion: regionAt >= 0 && composerAt >= 0 ? composerAt - regionAt : null,
+  };
+}
+
+
 process.stdout.write(
   JSON.stringify(
     {
@@ -724,6 +766,10 @@ process.stdout.write(
         monitoring: section(populated, "cc-section-monitoring"),
         askPmfreak: section(populated, "cc-section-ask-pmfreak"),
         header: section(populated, "cc-project-header"),
+      },
+      askPanel: {
+        collapsed: askPanelShape(false),
+        expanded: askPanelShape(true),
       },
       chatExpanded: {
         askPmfreak: section(chatExpanded, "cc-section-ask-pmfreak"),

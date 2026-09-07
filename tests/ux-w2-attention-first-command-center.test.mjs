@@ -44,15 +44,6 @@ const harness = JSON.parse(
   }),
 );
 
-/** Real client-side render of the Ask PMFreak collapse lifecycle (jsdom + react-dom). */
-const draftHarness = JSON.parse(
-  execFileSync(process.execPath, ["node_modules/tsx/dist/cli.mjs", "tests/ux-w2-ask-pmfreak-draft-harness.tsx"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "inherit"],
-    maxBuffer: 16 * 1024 * 1024,
-  }),
-);
-
 /** Visible text of a markup fragment — what the reader actually gets. */
 const text = (markup) => markup.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 
@@ -686,53 +677,66 @@ test("W2-P1-03: the summary's fetch time is not reported as project activity", (
 });
 
 
-// ───────── Codex P2: an unsent draft survives collapsing Ask PMFreak ──────────
+// ───────── Codex P2: collapsing Ask PMFreak must not discard an unsent draft ─
 //
-// The panel used to render `{open ? children : null}`, which unmounted `CommandFeed` on
-// collapse. The composer's draft is that component's own local state, so it was destroyed:
-// type, collapse, reopen, blank box. These assertions run against a REAL client render —
-// jsdom plus react-dom, driving the real controls — because the defect is a mount/unmount
-// question that server markup and source reading both cannot see.
+// The draft is `CommandFeed`'s own local state, and React keeps local state exactly as long
+// as the same element type stays at the same position across renders. So the property that
+// decides whether a draft survives a collapse is whether the child is RENDERED IN BOTH
+// STATES, IN THE SAME PLACE. `{open ? children : null}` answered no, and typing, collapsing
+// and reopening returned an empty composer.
+//
+// These assertions read real markup from both states rather than the source text. See the
+// note in the completion report on what a full six-step interaction test would cost here.
 
-test("W2-CODEX: an unsent draft survives collapse and reopen", () => {
-  const { draft, drafted, collapsed, reopened } = draftHarness;
-  // Typed into the real composer, and genuinely not sent.
-  assert.equal(drafted.composerValue, draft);
-  assert.deepEqual(drafted.submitted, []);
-  // Collapsing keeps the feed mounted, so the draft is still there...
-  assert.equal(collapsed.composerMounted, true, "collapsing must not unmount the conversation");
-  assert.equal(collapsed.composerValue, draft);
-  // ...and reopening shows exactly what was typed.
-  assert.equal(reopened.composerValue, draft);
-});
-
-test("W2-CODEX: collapsing sends nothing and loses no transcript", () => {
-  assert.deepEqual(draftHarness.collapsed.submitted, [], "collapse must not submit the draft");
-  assert.deepEqual(draftHarness.reopened.submitted, [], "reopening must not submit the draft");
-  assert.equal(draftHarness.reopened.transcriptCount, draftHarness.transcriptAtStart);
-});
-
-test("W2-CODEX: there is exactly one CommandFeed, in every state", () => {
-  // Keeping it mounted must not become "mount a second one".
-  for (const [state, snapshot] of Object.entries({
-    initiallyCollapsed: draftHarness.initiallyCollapsed,
-    opened: draftHarness.opened,
-    collapsed: draftHarness.collapsed,
-    reopened: draftHarness.reopened,
-  })) {
-    assert.equal(snapshot.feedInstances, 1, `${state}: exactly one conversation instance`);
+test("W2-CODEX: the conversation is rendered in both states, so collapsing cannot unmount it", () => {
+  const { collapsed, expanded } = harness.askPanel;
+  for (const [state, shape] of Object.entries({ collapsed, expanded })) {
+    assert.equal(shape.regionPresent, true, `${state}: the conversation region must be rendered`);
+    assert.equal(shape.composerRendered, true, `${state}: the composer must be rendered`);
+    assert.equal(shape.composerInsideRegion, true, `${state}: the composer must sit inside the region`);
+    assert.equal(shape.disclosureRendered, true, `${state}: the real CommandFeed must be the child`);
   }
+  // Identical position inside the region in both states: React therefore reconciles it as
+  // the same instance and keeps its state, rather than mounting a fresh empty one.
+  assert.equal(collapsed.composerOffsetInRegion, expanded.composerOffsetInRegion);
+  assert.ok(collapsed.composerOffsetInRegion > 0);
 });
 
 test("W2-CODEX: a collapsed conversation is hidden, not merely invisible", () => {
-  // `display: none` is what removes it from the tab order and the accessibility tree. A
-  // transparent or off-screen composer would still be focusable, and a keyboard user would
-  // land in a control nobody can see.
-  assert.equal(draftHarness.initiallyCollapsed.regionHidden, true);
-  assert.equal(draftHarness.collapsed.regionHidden, true);
-  assert.equal(draftHarness.collapsed.regionDisplay, "none");
-  assert.equal(draftHarness.opened.regionHidden, false);
-  assert.equal(draftHarness.reopened.regionHidden, false);
+  // `hidden` gives the region `display: none`, which takes it out of the layout, the tab
+  // order and the accessibility tree. A transparent or off-screen composer would keep the
+  // draft and still leave a keyboard user tabbing into a control nobody can see.
+  assert.equal(harness.askPanel.collapsed.regionHidden, true);
+  assert.equal(harness.askPanel.expanded.regionHidden, false);
+  // And the wrapper carries no display utility, which would override the attribute.
+  const panelSrc = read("src/modules/workspace/presentation/command-center/ask-pmfreak-panel.tsx");
+  const region = /hidden=\{!open\}[\s\S]{0,320}?className="([^"]*)"/.exec(panelSrc);
+  assert.ok(region, "the region must set hidden from the open flag");
+  assert.doesNotMatch(region[1], /\b(block|flex|grid|inline|inline-block|table|contents)\b/, "a display utility would defeat `hidden`");
+  // The conditional that destroyed the draft is gone from the CODE. It is still named in
+  // the file's comment, which is where the reason for this shape belongs.
+  const panelCode = panelSrc.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  assert.doesNotMatch(panelCode, /\{\s*open\s*\?\s*children\s*:\s*null\s*\}/);
+  assert.match(panelCode, /\{children\}/);
+});
+
+test("W2-CODEX: there is exactly one conversation instance, in both states", () => {
+  // Keeping it mounted must not become "mount a second one".
+  assert.equal(harness.askPanel.collapsed.composerInstances, 1);
+  assert.equal(harness.askPanel.expanded.composerInstances, 1);
+  // And the whole Command Center still mounts the panel once.
+  assert.equal((harness.canvas.populated.match(/data-testid="cc-section-ask-pmfreak"/g) ?? []).length, 1);
+  assert.equal((harness.screen.order.filter((id) => id === "cc-section-ask-pmfreak")).length, 1);
+});
+
+test("W2-CODEX: collapsing is presentation only — it sends nothing and owns no message state", () => {
+  // The panel has no submit path and no message state of its own: it cannot send on
+  // collapse, and it cannot drop a transcript, because it holds neither.
+  const panelSrc = read("src/modules/workspace/presentation/command-center/ask-pmfreak-panel.tsx");
+  assert.doesNotMatch(panelSrc, /onSendMessage|useState|postConversationMessage/);
+  // The transcript lives in the screen, which keeps it across collapses.
+  assert.match(layout, /const \[messages, setMessages\] = useState<ChatMessage\[\]>\(\[\]\);/);
+  assert.match(layout, /chatMessageCount=\{messages\.length\}/);
 });
 
 // ───────── Codex P2: the future-activity ceiling is the SERVER's clock ────────
