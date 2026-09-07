@@ -1849,7 +1849,85 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
    * `signals`, `risksIssues` or `governanceEvents` — those keep their recent-window
    * meaning, which "What changed" and "PMFreak is monitoring" are built on.
    */
-  const rootRecommendations = (recommendations.data ?? []) as unknown as SummaryRow[];
+  /*
+   * The governed attention ROOT.
+   *
+   * `recommendations` above is a recent HISTORY window: `governance_event_id is not null`,
+   * newest 30, every status. Thirty newer accepted/rejected/modified Recommendations push an
+   * older still-`proposed` one out of it — and an attention queue rooted on that window
+   * would then render "You're clear." while a real governed decision waited. History and
+   * attention are different questions, so they get different reads.
+   *
+   * This one asks only the attention question: which governed Recommendations are open? It
+   * is workspace- and project-scoped, filtered to `status = 'proposed'`, and PAGED to
+   * completion rather than capped at a row count — an attention queue should be able to
+   * show every unresolved item. A safety bound exists so a pathological project cannot
+   * spin here, and crossing it is reported as incompleteness rather than silently truncating.
+   */
+  const ATTENTION_ROOT_MAX_PAGES = 20;
+  const openGovernedRecommendations: SummaryRow[] = [];
+  let attentionRootDrained = false;
+  for (let page = 0; page < ATTENTION_ROOT_MAX_PAGES; page += 1) {
+    const offset = page * ROW_PAGE_SIZE;
+    const result = await client
+      .from("recommended_actions")
+      .select("*")
+      .eq("workspace_id", workspaceId)
+      .eq("project_id", projectId)
+      .not("governance_event_id", "is", null)
+      .eq("status", "proposed")
+      .order("created_at", { ascending: false })
+      .range(offset, offset + ROW_PAGE_SIZE - 1);
+    if (result.error) throw new Error(`load_operational_summary: ${result.error.message}`);
+    const rows = (result.data ?? []) as unknown as SummaryRow[];
+    openGovernedRecommendations.push(...rows);
+    // A short page is the last page.
+    if (rows.length < ROW_PAGE_SIZE) {
+      attentionRootDrained = true;
+      break;
+    }
+  }
+  // Deterministic order, applied here rather than relying on a multi-column PostgREST sort:
+  // newest first, ties broken by canonical id, so the same open set always renders the same
+  // sequence regardless of how the pages came back.
+  openGovernedRecommendations.sort((a, b) => {
+    const at = String(b.created_at ?? "").localeCompare(String(a.created_at ?? ""));
+    return at !== 0 ? at : String(a.id ?? "").localeCompare(String(b.id ?? ""));
+  });
+
+  /**
+   * Project-wide open count, from the assurance RPC — the same aggregate the server already
+   * computes over `recommended_actions` with `status = 'proposed'`. Never counted from a
+   * presentation window, because counting a window is how this defect arose.
+   */
+  const assuranceSummary = assuranceResult.data as OperationalSummary["assurance"];
+  const governedAttentionTotal = Number(assuranceSummary?.openRecommendations ?? 0);
+  /**
+   * Completeness is PROVEN, not assumed. A request that succeeded says nothing about
+   * whether it returned everything; only comparing what was loaded against the project-wide
+   * aggregate does. Loading at least as many as the aggregate reports counts as complete —
+   * the two readings are taken moments apart and a new Recommendation between them makes
+   * the loaded set larger, never a false claim of completeness.
+   */
+  const governedAttentionComplete =
+    attentionRootDrained && openGovernedRecommendations.length >= governedAttentionTotal;
+
+  /*
+   * Lineage is completed for the attention roots AND for the history window.
+   *
+   * The roots are what Needs You is built from. The history window is still needed so a
+   * drawer left open on a Recommendation can reconcile once a Decision makes it terminal
+   * and it leaves the open set (P2-11) — without its context that drawer would lose its
+   * evidence and authority the moment the decision landed.
+   */
+  const rootRecommendations: SummaryRow[] = (() => {
+    const byId = new Map<string, SummaryRow>();
+    for (const row of openGovernedRecommendations) byId.set(String(row.id), row);
+    for (const row of (recommendations.data ?? []) as unknown as SummaryRow[]) {
+      if (!byId.has(String(row.id))) byId.set(String(row.id), row);
+    }
+    return [...byId.values()];
+  })();
   const linkedGovernanceById = new Map(
     (await linkedRows("governance_events", "id", [
       ...new Set(rootRecommendations.map((row) => String(row.governance_event_id ?? "")).filter(Boolean)),
@@ -1896,7 +1974,8 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
     governedAttentionContexts.map((context) => [context.recommendationId, context]),
   );
 
-  const safeRecommendations = rootRecommendations.map((row) => {
+  /** Server-evaluated per-status authority, from the EXACT linked Governance Event. */
+  const withActorAuthority = (row: SummaryRow) => {
     // The exact linked Governance Event, resolved by id — never the windowed map. The
     // "baseline review" fallback now represents a Governance Event that genuinely does not
     // exist, which is the only thing it was ever meant to represent.
@@ -1904,7 +1983,11 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
       attentionContextByRecommendationId.get(String(row.id))?.authorityRequired ?? "baseline review";
     const evaluations = (["accepted", "rejected", "modified", "escalated", "needs_more_evidence"] as DecisionStatus[]).map((status) => [status, evaluateOperationalDecisionAuthority({ actorRole, authorityRequired, decisionStatus: status })]);
     return { ...row, actor_authority: Object.fromEntries(evaluations) };
-  });
+  };
+  // The history window keeps its own contract and its own membership; only the authority
+  // projection is shared, so both collections speak about authority the same way.
+  const safeRecommendations = ((recommendations.data ?? []) as unknown as SummaryRow[]).map(withActorAuthority);
+  const safeGovernedAttentionRecommendations = openGovernedRecommendations.map(withActorAuthority);
 
   const lineages = await getCompleteLineageProjection(client, workspaceId, projectId);
 
@@ -1928,9 +2011,12 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
     observations: allObservations,
     tasks: allTasks,
     executions: allExecutions,
+    governedAttentionRecommendations: safeGovernedAttentionRecommendations,
+    governedAttentionComplete,
+    governedAttentionTotal,
     governedAttentionContexts,
     lineages,
-    assurance: assuranceResult.data as OperationalSummary["assurance"],
+    assurance: assuranceSummary,
     // `userId` is the requesting actor's own id. P2-06 refuses a Material Action whose
     // source Decision was recorded by a different actor, so the experience needs it to
     // avoid offering a control the server would always deny. It is never authority.

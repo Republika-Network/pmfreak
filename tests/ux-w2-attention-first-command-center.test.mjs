@@ -573,7 +573,11 @@ test("W2-P1-02 (D): only when both sources resolve may the product say 'You're c
 test("W2-P1-02: the screen binds completeness to both reads, and merges neither model", () => {
   assert.match(layout, /const \{ data: raidActions, error: raidError, mutate: mutateRaidActions \}/);
   assert.match(layout, /const raidLoading = Boolean\(selectedProject\?\.id\) && raidActions === undefined && !raidError;/);
-  assert.match(layout, /\{ label: "governed recommendations", loading: flowLoading, failed: Boolean\(flowError\) \}/);
+  // UX-W3 added a third fact to the governed source: a request that finished may still have
+  // returned less than the project holds, proven against `assurance.openRecommendations`.
+  // The binding is otherwise unchanged.
+  assert.match(layout, /\{ label: "governed recommendations", loading: flowLoading, failed: Boolean\(flowError\), partial: governedAttentionPartial \}/);
+  assert.match(layout, /const governedAttentionPartial = flowData !== undefined && flowData\.governedAttentionComplete === false;/);
   assert.match(layout, /\{ label: "suggested actions", loading: raidLoading, failed: Boolean\(raidError\) \}/);
   assert.match(layout, /const needsYouCount = attention\.complete \? needsYouItems\.length : null;/);
   assert.match(layout, /const attentionErrorMessage = attention\.failed \? "We couldn't load project attention\." : null;/);

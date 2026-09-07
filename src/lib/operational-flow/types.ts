@@ -276,6 +276,28 @@ export type OperationalSummary = {
    * recent-window meaning, which "What changed" and "PMFreak is monitoring" depend on, and
    * nothing here is unioned into them.
    */
+  /**
+   * The governed Recommendations that currently need human attention — every one whose
+   * `status` is `proposed`, fetched for Needs You specifically.
+   *
+   * DISTINCT from `recommendations` above, which is a recent HISTORY window across all
+   * statuses. Thirty newer accepted/rejected/modified Recommendations push an older
+   * still-open one out of that window, and an attention queue rooted on it would then show
+   * nothing and tell the PM they are clear while a real decision waited.
+   */
+  governedAttentionRecommendations?: Array<Record<string, unknown>>;
+  /**
+   * Whether the set above provably represents every open governed Recommendation in the
+   * project, checked against the assurance RPC's own project-wide count.
+   *
+   * A successful request is NOT completeness. This is false whenever fewer open
+   * Recommendations were loaded than the project actually has, and the surface must then
+   * never state a definitive total or tell the PM they are clear.
+   */
+  governedAttentionComplete?: boolean;
+  /** Project-wide count of open governed Recommendations, from `assurance.openRecommendations`
+   *  — never counted from a presentation window. */
+  governedAttentionTotal?: number;
   governedAttentionContexts?: GovernedAttentionContext[];
   lineages?: CompleteLineageProjection[];
   assurance: OperationalAssuranceSummary;

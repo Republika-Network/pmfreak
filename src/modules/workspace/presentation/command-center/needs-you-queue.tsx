@@ -27,6 +27,7 @@ export function NeedsYouQueue({
   variant = "rail",
   emptyStateNote = null,
   incompleteNote = null,
+  incomplete = false,
 }: {
   items: NeedsYouItem[];
   onSelect: (item: NeedsYouItem) => void;
@@ -44,12 +45,20 @@ export function NeedsYouQueue({
   variant?: "canvas" | "rail";
   /** Real monitoring context to show beneath an honest empty state. Never invented. */
   emptyStateNote?: string | null;
-  /** Set when the items below are real but not yet the whole answer, because another
-   *  attention source has not resolved. Keeps known items visible without letting the
-   *  list read as complete. */
+  /** Set when the items below are real but not yet the whole answer — another source has
+   *  not resolved, or a source resolved knowing it returned less than exists. Keeps known
+   *  items visible without letting the list read as complete. */
   incompleteNote?: string | null;
+  /**
+   * True when the answer is known to be partial even though nothing is still loading — a
+   * governed read that proved, against the project-wide open count, that it does not have
+   * every open item. An incomplete queue may never say "You're clear."
+   */
+  incomplete?: boolean;
 }) {
-  const showEmpty = !loading && !errorMessage && items.length === 0;
+  // "You're clear." is a claim about the whole project. It requires a complete answer, not
+  // merely a finished request.
+  const showEmpty = !loading && !errorMessage && !incomplete && items.length === 0;
   const groups = groupAttentionItems(items);
   // `CommandCenterLayout` may mount this component more than once across responsive
   // surfaces, so a document-global id would appear twice and `aria-labelledby` would
@@ -63,7 +72,9 @@ export function NeedsYouQueue({
         <h2 id={headingId} className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
           Needs your attention
         </h2>
-        {!loading && !errorMessage && items.length > 0 && (
+        {/* A bare count is a claim that this IS the amount waiting on you. An incomplete
+            answer states its scope in the note below instead. */}
+        {!loading && !errorMessage && !incomplete && items.length > 0 && (
           <span className="shrink-0 text-[11px] text-zinc-500">{items.length}</span>
         )}
       </div>
@@ -73,7 +84,7 @@ export function NeedsYouQueue({
         {loading && items.length === 0 && <SectionLoadingState label="Checking what needs your attention…" />}
         {/* Items already known stay on screen while another source answers — hiding real
             attention would be its own dishonesty — but the list says it is not final. */}
-        {loading && items.length > 0 && incompleteNote && (
+        {(loading || incomplete) && !errorMessage && incompleteNote && (
           <p className="mt-2 px-1 text-[11px] text-zinc-500" data-testid="cc-attention-incomplete">
             {incompleteNote}
           </p>

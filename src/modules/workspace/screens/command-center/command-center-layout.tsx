@@ -288,8 +288,20 @@ export function CommandCenterLayout({
    * The governed path and the RAID suggestion path stay separate business objects with
    * separate write paths — only the question "have we heard from everything?" is combined.
    */
+  /**
+   * The governed source proves its own completeness against the project-wide open count.
+   *
+   * The operational flow request finishing is not the same fact as "we have every governed
+   * item that needs you". `governedAttentionComplete` is the server's comparison of what it
+   * loaded against `assurance.openRecommendations`; when it is false there are open
+   * Recommendations this page has not got, and the surface must not state a total or say
+   * the PM is clear.
+   */
+  const governedAttentionPartial = flowData !== undefined && flowData.governedAttentionComplete === false;
+  const governedAttentionTotal = flowData?.governedAttentionTotal ?? null;
+
   const attention = assessAttentionCompleteness([
-    { label: "governed recommendations", loading: flowLoading, failed: Boolean(flowError) },
+    { label: "governed recommendations", loading: flowLoading, failed: Boolean(flowError), partial: governedAttentionPartial },
     { label: "suggested actions", loading: raidLoading, failed: Boolean(raidError) },
   ]);
   // Either attention read failing is an attention failure. It is reported as one rather
@@ -529,11 +541,16 @@ export function CommandCenterLayout({
             needsYouCount={needsYouCount}
             onSelectNeedsYou={handleNeedsYouSelect}
             attentionLoading={attention.loading}
+            attentionIncomplete={attention.partial}
             attentionErrorMessage={attentionErrorMessage}
             attentionIncompleteNote={
-              attention.loading && !attention.failed && needsYouItems.length > 0
-                ? `Still checking ${attention.unresolved.join(" and ")}.`
-                : null
+              // A known-partial governed read gets the server's own numbers, so the PM is
+              // told how much of the answer they are looking at rather than a vague caveat.
+              governedAttentionPartial && !attention.failed && governedAttentionTotal !== null
+                ? `Showing ${needsYouItems.filter((item) => item.kind === "governed_recommendation").length} of ${governedAttentionTotal} governed items needing review.`
+                : attention.loading && !attention.failed && needsYouItems.length > 0
+                  ? `Still checking ${attention.unresolved.join(" and ")}.`
+                  : null
             }
             onRetryAttention={() => {
               void mutateFlow();

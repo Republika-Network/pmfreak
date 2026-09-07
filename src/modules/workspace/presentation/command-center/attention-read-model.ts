@@ -316,9 +316,30 @@ export function buildCanonicalAttention(summary: OperationalSummary | undefined)
   const attentionContextById = new Map(
     (summary.governedAttentionContexts ?? []).map((context) => [context.recommendationId, context]),
   );
+  /**
+   * The Recommendations this projection walks.
+   *
+   * `governedAttentionRecommendations` is the authoritative OPEN set, fetched for Needs You
+   * and paged rather than windowed. `summary.recommendations` is the recent history window,
+   * and it is unioned in — not as an attention source, but because a drawer left open on a
+   * Recommendation must still resolve after a Decision makes it terminal and drops it out
+   * of the open set (P2-11). Deduped by canonical id, so no item can appear twice.
+   *
+   * Without the projection (older payload, fixture) the history window is all there is, and
+   * the surface's own completeness reporting says the answer may be partial.
+   */
+  const attentionRoots = (() => {
+    const byId = new Map<string, AnyRecord>();
+    for (const row of summary.governedAttentionRecommendations ?? []) byId.set(String(row.id), row);
+    for (const row of summary.recommendations ?? []) {
+      if (!byId.has(String(row.id))) byId.set(String(row.id), row);
+    }
+    return [...byId.values()];
+  })();
+
   const items: CanonicalAttentionItem[] = [];
 
-  for (const recommendation of summary.recommendations ?? []) {
+  for (const recommendation of attentionRoots) {
     const recommendationId = String(recommendation.id);
     const context = attentionContextById.get(recommendationId);
 

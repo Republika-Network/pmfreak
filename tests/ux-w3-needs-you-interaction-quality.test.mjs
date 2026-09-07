@@ -37,6 +37,16 @@ const operationalData = read("src/modules/workspace/presentation/command-center/
 const layout = read("src/modules/workspace/screens/command-center/command-center-layout.tsx");
 const cardSrc = read("src/modules/workspace/presentation/command-center/attention-card.tsx");
 
+/** The REAL `getOperationalSummary` against a faithful Data API stub, rooted on the open
+ *  governed set — false-clear, >30 open, and a known-incomplete read. */
+const roots = JSON.parse(
+  execFileSync(process.execPath, ["node_modules/tsx/dist/cli.mjs", "tests/ux-w3-attention-root-harness.tsx"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "inherit"],
+    maxBuffer: 64 * 1024 * 1024,
+  }),
+);
+
 /** The REAL `getOperationalSummary` against a faithful Data API stub, so the presentation
  *  windows truncate exactly as PostgREST would. */
 const lineage = JSON.parse(
@@ -737,4 +747,119 @@ test("W3: the authoritative context is separate — no window semantics changed"
   // for attention while staying out of the recent-signal window.
   assert.equal(lineage.windows.signalsContainsLinked, false);
   assert.equal(lineage.contexts.find((c) => c.recommendationId === "rec-old").lineageComplete, true);
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// W3-P1-05 — the governed attention ROOT must be the open set
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// `recommended_actions` is loaded as a recent HISTORY window: governed, newest 30, every
+// status. Thirty newer terminal Recommendations push an older still-open one out of it, and
+// an attention queue rooted there renders "You're clear." while a governed decision waits.
+
+test("W3-P1-05: the history window genuinely hides the open Recommendation", () => {
+  // Without this the fix could pass against a window that never truncated anything.
+  const s = roots.falseClear;
+  assert.equal(s.historicalWindowSize, 30, "the history window is full");
+  assert.equal(s.historicalWindowPendingCount, 0, "and holds NO pending item — the old root saw nothing");
+  // The project nonetheless has one open governed Recommendation, per the server aggregate.
+  assert.equal(s.assuranceOpenRecommendations, 1);
+});
+
+test("W3-P1-05: the authoritative root finds the older open Recommendation", () => {
+  const s = roots.falseClear;
+  assert.equal(s.attentionRootLoaded, 1);
+  assert.deepEqual(s.attentionRootIds, ["rec-old-open"]);
+  assert.equal(s.attentionRootAllProposed, true, "the root is the OPEN set, not history");
+  // ...and it reaches the PM, through the real read model and the real queue.
+  assert.equal(s.pendingCount, 1);
+  assert.equal(s.needsYouCount, 1);
+  assert.deepEqual(s.needsYouIds, ["governed-rec-rec-old-open"]);
+});
+
+test("W3-P1-05: 'You're clear.' is not rendered while a governed decision waits", () => {
+  const s = roots.falseClear;
+  assert.equal(s.youreClearVisible, false);
+  assert.match(s.queueText, /Needs your attention/);
+  assert.match(s.queueText, /Decisions/);
+  // Both reads finished cleanly — the old model would have called this complete and empty.
+  assert.equal(s.completeness.loading, false);
+  assert.equal(s.completeness.failed, false);
+  assert.equal(s.completeness.complete, true, "the answer IS complete — it simply is not empty");
+});
+
+test("W3-P1-05: more than thirty open Recommendations are all loaded", () => {
+  const s = roots.manyOpen;
+  assert.equal(s.assuranceOpenRecommendations, 35);
+  assert.equal(s.attentionRootLoaded, 35, "the root pages past the 30-row history window");
+  assert.equal(s.governedAttentionComplete, true);
+  assert.equal(s.needsYouCount, 35);
+  // The history window still holds only 30 — its contract is untouched.
+  assert.equal(s.historicalWindowSize, 30);
+});
+
+test("W3-P1-05: completeness is proven against the project-wide count, not assumed from a successful read", () => {
+  // 35 open rows loaded, aggregate reports 40 — a skew the service detects by comparing,
+  // not by trusting that the request finished.
+  const s = roots.knownIncomplete;
+  assert.equal(s.attentionRootLoaded, 35);
+  assert.equal(s.assuranceOpenRecommendations, 40);
+  assert.equal(s.governedAttentionComplete, false);
+  assert.equal(s.completeness.failed, false, "nothing failed");
+  assert.equal(s.completeness.loading, false, "nothing is loading");
+  assert.equal(s.completeness.partial, true, "and the answer is still not whole");
+  assert.equal(s.completeness.complete, false);
+  assert.deepEqual(s.completeness.unresolved, ["governed recommendations"]);
+});
+
+test("W3-P1-05: an incomplete answer shows every known item, says so, and states no total", () => {
+  const s = roots.knownIncomplete;
+  // Known items stay visible.
+  assert.equal(s.needsYouCount, 35);
+  // The scope is stated using the server's own numbers, not an invented one.
+  assert.equal(s.incompleteNote, "Showing 35 of 40 governed items needing review.");
+  assert.match(s.queueText, /Showing 35 of 40 governed items needing review\./);
+  // No "You're clear.", and no bare count presented as the definitive amount waiting.
+  assert.equal(s.youreClearVisible, false);
+  const heading = s.queueMarkup.slice(0, s.queueMarkup.indexOf("cc-attention-group-"));
+  assert.ok(!/<span class="shrink-0 text-\[11px\] text-zinc-500">\d+<\/span>/.test(heading), "no definitive count on a partial answer");
+});
+
+test("W3-P1-05: a complete answer still states its count", () => {
+  // The companion, so the fix cannot be "never show a count".
+  const complete = roots.manyOpen;
+  assert.equal(complete.governedAttentionComplete, true);
+  assert.equal(complete.incompleteNote, null);
+  const heading = complete.queueMarkup.slice(0, complete.queueMarkup.indexOf("cc-attention-group-"));
+  assert.match(heading, /<span class="shrink-0 text-\[11px\] text-zinc-500">35<\/span>/);
+});
+
+test("W3-P1-05: the attention root is a separate, bounded, exact query — the history window is untouched", () => {
+  const service = read("src/lib/operational-flow/operational-flow-service.ts");
+  // Its own read: governed, proposed, workspace- and project-scoped, paged by range.
+  assert.match(service, /\.eq\("status", "proposed"\)/);
+  assert.match(service, /const ATTENTION_ROOT_MAX_PAGES = 20;/);
+  assert.match(service, /\.range\(offset, offset \+ ROW_PAGE_SIZE - 1\)/);
+  // The history window's query is unchanged: all statuses, newest 30.
+  assert.match(service, /from\("recommended_actions"\)[\s\S]{0,220}not\("governance_event_id", "is", null\)\.order\("created_at", \{ ascending: false \}\)\.limit\(30\)/);
+  // The total comes from the assurance aggregate, never from a window.
+  assert.match(service, /const governedAttentionTotal = Number\(assuranceSummary\?\.openRecommendations \?\? 0\);/);
+  assert.match(service, /openGovernedRecommendations\.length >= governedAttentionTotal/);
+  // And the two collections stay distinct in the payload.
+  assert.match(service, /recommendations: safeRecommendations,/);
+  assert.match(service, /governedAttentionRecommendations: safeGovernedAttentionRecommendations,/);
+});
+
+test("W3-P1-05: decided-drawer reconciliation still works — history is unioned for lookup only", () => {
+  // P2-11 keeps a drawer resolvable after a Decision makes its Recommendation terminal and
+  // it leaves the open set. The read model unions the history window in for that, deduped
+  // by canonical id, so nothing appears twice.
+  const attentionModel = read("src/modules/workspace/presentation/command-center/attention-read-model.ts");
+  assert.match(attentionModel, /for \(const row of summary\.governedAttentionRecommendations \?\? \[\]\) byId\.set\(String\(row\.id\), row\);/);
+  assert.match(attentionModel, /if \(!byId\.has\(String\(row\.id\)\)\) byId\.set\(String\(row\.id\), row\);/);
+  // No duplicate reaches the queue in any scenario.
+  for (const [name, scenario] of Object.entries(roots)) {
+    assert.equal(new Set(scenario.needsYouIds).size, scenario.needsYouIds.length, `${name}: no duplicated item`);
+  }
 });
