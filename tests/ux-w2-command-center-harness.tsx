@@ -575,6 +575,48 @@ const futureOnlySummary = summary({
   observations: [{ id: "obs-1", outcome_id: "out-1", observation_state: "achieved", observed_at: "2027-01-01T00:00:00.000Z" }],
 });
 
+/**
+ * A Raw Input captured two minutes ago, with nothing downstream of it yet.
+ *
+ * `operational_raw_inputs` carries no `created_at`/`updated_at`; `captured_at` is its
+ * persisted activity timestamp, and the summary query orders that collection by it. Until
+ * the capture produces a Normalized Event and Evidence there is no other new row, so a
+ * header that cannot read `captured_at` keeps reporting yesterday.
+ *
+ * `occurred_at` is set a day earlier on purpose: it is when the event happened in the
+ * world, which is a different fact from when PMFreak captured it, and reading only
+ * `occurred_at` would still report yesterday.
+ */
+const rawInputCaptureSummary = summary({
+  evidence: [{ id: "ev-1", created_at: "2026-09-05T12:00:00.000Z", updated_at: "2026-09-05T12:00:00.000Z" }],
+  signals: [],
+  decisions: [{ id: "dec-1", decision_status: "accepted", created_at: "2026-09-05T12:00:00.000Z" }],
+  rawInputs: [
+    {
+      id: "raw-1",
+      source_id: "src-1",
+      status: "captured",
+      occurred_at: "2026-09-05T09:00:00.000Z",
+      captured_at: "2026-09-06T11:58:00.000Z",
+    },
+  ],
+  normalizedEvents: [],
+  executions: [],
+  observations: [],
+});
+
+/** A capture dated after the authoritative instant. Consistent with every other field:
+ *  later-than-now is not "just now". */
+const futureCaptureSummary = summary({
+  evidence: [],
+  signals: [],
+  decisions: [],
+  rawInputs: [{ id: "raw-1", source_id: "src-1", status: "captured", captured_at: "2027-01-01T00:00:00.000Z" }],
+  normalizedEvents: [],
+  executions: [],
+  observations: [],
+});
+
 /** No records at all, but the summary itself was fetched just now. Fetch time is not
  *  project activity. */
 const fetchedButEmptySummary = summary({
@@ -699,6 +741,18 @@ process.stdout.write(
         unusableLatest: latestOperationalActivityAt(unusableTimestampSummary, FRESHNESS_NOW),
         unusableLabel: deriveLastUpdatedLabel(unusableTimestampSummary, FRESHNESS_NOW),
         futureOnlyLatest: latestOperationalActivityAt(futureOnlySummary, FRESHNESS_NOW),
+        rawInputCaptureLatest: latestOperationalActivityAt(rawInputCaptureSummary, FRESHNESS_NOW),
+        rawInputCaptureLabel: deriveLastUpdatedLabel(rawInputCaptureSummary, FRESHNESS_NOW),
+        futureCaptureLatest: latestOperationalActivityAt(futureCaptureSummary, FRESHNESS_NOW),
+        rawInputCaptureHeader: text(
+          section(
+            renderCanvas(rawInputCaptureSummary, {
+              lastUpdatedLabel: deriveLastUpdatedLabel(rawInputCaptureSummary, FRESHNESS_NOW),
+              needsYouCount: 0,
+            }),
+            "cc-project-header"
+          )
+        ),
         fetchedButEmptyLatest: latestOperationalActivityAt(fetchedButEmptySummary, FRESHNESS_NOW),
         renderedHeader: text(freshnessHeader),
       },

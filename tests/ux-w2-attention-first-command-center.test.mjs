@@ -563,6 +563,41 @@ test("W2-P1-03: the derivation reads every record collection, and no deadline fi
   assert.ok(!ACTIVITY_COLLECTIONS.includes("observationEligibleEvidence"));
 });
 
+test("W2-P1-03: a captured Raw Input is activity, before anything downstream of it exists", () => {
+  // `operational_raw_inputs` carries no `created_at`/`updated_at`. `captured_at` is its
+  // persisted activity timestamp — the column `load_operational_summary` orders that query
+  // by — so without it a capture stayed invisible to the header until it had produced a
+  // Normalized Event and Evidence. Everything else in this fixture is a day old.
+  assert.equal(harness.headerFreshness.rawInputCaptureLatest, "2026-09-06T11:58:00.000Z");
+  assert.equal(harness.headerFreshness.rawInputCaptureLabel, "2 minutes ago");
+  assert.match(harness.headerFreshness.rawInputCaptureHeader, /Updated 2 minutes ago/);
+  assert.ok(ACTIVITY_TIMESTAMP_FIELDS.includes("captured_at"));
+  // The fixture's `occurred_at` is a day old on purpose: when the event happened in the
+  // world is a different fact from when PMFreak captured it, so reading only `occurred_at`
+  // would still answer "yesterday". This is what makes the test discriminating.
+  assert.notEqual(harness.headerFreshness.rawInputCaptureLatest, "2026-09-05T09:00:00.000Z");
+});
+
+test("W2-P1-03: a capture dated after the authoritative instant is ignored like any other future value", () => {
+  assert.equal(harness.headerFreshness.futureCaptureLatest, null);
+});
+
+test("W2-P1-03: the allowlist was audited against the summary's own tables", () => {
+  // Two columns look like omissions and are not: both are written in the SAME statement as
+  // `updated_at = now()`, which is already read, so neither can carry activity this list
+  // misses. Recorded as assertions so a future widening has to argue with them.
+  const evidenceLoop = read("supabase/migrations/20260611000000_operational_evidence_decision_loop.sql");
+  assert.match(evidenceLoop, /set frozen_at = coalesce\(frozen_at, now\(\)\), updated_at = now\(\)/);
+  const raidDecision = read("src/lib/recommended-actions/decision-workflow.ts");
+  assert.match(raidDecision, /decided_at: now,[\s\S]{0,120}updated_at: now,/);
+  assert.ok(!ACTIVITY_TIMESTAMP_FIELDS.includes("frozen_at"));
+  assert.ok(!ACTIVITY_TIMESTAMP_FIELDS.includes("decided_at"));
+  // And the collection whose activity column this fix added is still read by that column
+  // in the authoritative loader — the reason `captured_at` belongs here at all.
+  const service = read("src/lib/operational-flow/operational-flow-service.ts");
+  assert.match(service, /from\("operational_raw_inputs"\)[\s\S]{0,200}order\("captured_at"/);
+});
+
 test("W2-P1-03: absent, unparseable and future timestamps never become 'now'", () => {
   assert.equal(harness.headerFreshness.unusableLatest, null);
   assert.equal(harness.headerFreshness.unusableLabel, null);
