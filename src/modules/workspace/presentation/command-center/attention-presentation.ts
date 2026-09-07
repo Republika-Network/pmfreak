@@ -15,14 +15,16 @@ import type { NeedsYouItem } from "./types";
  *             permitted by the server-evaluated `actor_authority` map already projected
  *             onto the item; for a RAID suggestion, accept and reject are both terminal and
  *             always open on the bounded triage path.
- *   review    the actor may inspect the item but cannot settle it. Two real persisted
- *             conditions produce this, and both are the contract's own behaviour rather
- *             than a category invented to fill out a heading:
+ *   review    the actor may inspect the item but cannot settle it. Three real persisted
+ *             conditions produce this, and all three are the contract's own behaviour
+ *             rather than a category invented to fill out a heading:
  *               - no status at all is permitted (a read-only role), or
  *               - only the NON-terminal statuses are permitted, which is precisely what
  *                 `evaluateOperationalDecisionAuthority` returns for, say, a project
  *                 manager against a rule requiring sponsor authority. They may escalate or
- *                 record that more evidence is needed; they may not close it.
+ *                 record that more evidence is needed; they may not close it, or
+ *               - the item's governed lineage is incomplete, so the canonical write would
+ *                 be refused however much authority the actor holds. See below.
  *             That is exactly "assess, but do not authorize".
  *   approval  RESERVED AND NOT PRODUCED. See `APPROVAL_ITEMS_AVAILABLE` below.
  */
@@ -74,7 +76,21 @@ export const HUMAN_JOB_ORDER: readonly AttentionHumanJob[] = ["decision", "revie
  * alternative would file something under "Decisions" that offers no decision.
  */
 export function humanJobFor(item: NeedsYouItem): AttentionHumanJob {
-  const controls = item.drawer.decisionPanel?.controls ?? [];
+  const panel = item.drawer.decisionPanel;
+  // Authority is not the only thing that decides whether a Decision can be recorded.
+  //
+  // `record_operational_decision` walks the governed lineage before it checks authority at
+  // all, and raises `governed_lineage_incomplete` when the governance event, risk, signal
+  // or evidence row is missing (20260611000000_operational_evidence_decision_loop.sql).
+  // The write is REFUSED for such an item no matter who is asking, so calling it a
+  // Decision because the actor holds authority would promise an action the server will not
+  // accept. `blockedReason` is the read model's projection of exactly that state.
+  //
+  // This reads a condition the read model already computed. It does not re-implement the
+  // server's gate, and it does not enable or disable any control — the panel's own
+  // `blockedReason` still governs what is offered.
+  if (panel?.blockedReason) return "review";
+  const controls = panel?.controls ?? [];
   return controls.some((control) => control.terminal && control.allowed) ? "decision" : "review";
 }
 

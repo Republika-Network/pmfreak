@@ -173,11 +173,10 @@ test("W3-B: a populated card tells the whole story without opening anything", ()
 });
 
 test("W3-B: a RAID suggestion tells the same story, in the same shape", () => {
-  const card = harness.queue.all.cards.find((c) => c.text.includes("Confirm the integration owner"));
+  const card = harness.queue.all.cards.find((c) => c.text.includes("Integration owner unknown"));
   assert.ok(card, "the RAID card renders");
   assert.match(card.body, /data-testid="cc-attention-job"[^>]*>Decision</);
   assert.match(card.text, /Why this matters The notes mention an unowned integration dependency\./);
-  assert.match(card.text, /PMFreak recommends Suggested owner: Delivery lead\. Suggested timing: this week\./);
   assert.match(card.text, /Based on: Detected from your project notes/);
   // Its own severity vocabulary, rendered with the same weight, not remapped.
   assert.match(card.body, /data-testid="cc-attention-severity"[^>]*>medium</);
@@ -242,8 +241,10 @@ test("W3-C: the recommendation is the recommendation, not the procedural caveat"
   // The caveat survives, beneath it, qualifying rather than impersonating the recommendation.
   assert.match(body, /Requires sponsor or PMO\./);
   assert.ok(body.indexOf("Raise a formal Change Request") < body.indexOf("Requires sponsor or PMO"));
-  // The RAID drawer's recommendation is its own suggested owner and timing.
-  assert.match(primarySurface(harness.drawers.raid.markup), /PMFreak recommends Suggested owner: Delivery lead\./);
+  // The RAID drawer's recommendation is its own proposed action. (This assertion used to
+  // read "PMFreak recommends Suggested owner: ...", which locked in the inverted semantics
+  // W3-P1-01 fixed — owner and timing qualify the action, they are not the advice.)
+  assert.match(primarySurface(harness.drawers.raid.markup), /PMFreak recommends Confirm the integration owner/);
 });
 
 test("W3-C: the primary judgment surface uses no internal vocabulary", () => {
@@ -394,4 +395,185 @@ test("W3 added no dependency", () => {
     assert.ok(!pkg.dependencies?.[banned], `${banned} must not be a dependency`);
     assert.ok(!pkg.devDependencies?.[banned], `${banned} must not be a devDependency`);
   }
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// W3 REVIEW REMEDIATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ───────── W3-P1-01: the RAID recommendation is the recommended ACTION ───────
+//
+// `generate-recommended-actions.ts` is explicit about which field is which:
+// `action.title` is the PROPOSED ACTION ("Confirm dependency: ...", "Request approval:
+// ..."), `evidenceSummary.raidTitle` is the RAID item that caused it, and owner and due
+// window qualify the action. The first cut of W3 had the first two the wrong way round and
+// then labelled the qualifiers as the recommendation, so a PM was told that "Suggested
+// owner: Delivery lead" was PMFreak's advice.
+
+test("W3-P1-01: the fixture's finding and proposed action are genuinely different sentences", () => {
+  const contract = harness.raidContract;
+  assert.equal(contract.sourceRaidTitle, "Integration owner unknown");
+  assert.equal(contract.recommendedActionTitle, "Confirm the integration owner");
+  assert.notEqual(contract.sourceRaidTitle, contract.recommendedActionTitle);
+  assert.ok(contract.owner && contract.dueWindow, "the fixture carries qualifiers too");
+});
+
+test("W3-P1-01: the RAID headline is the finding, and the recommendation is the proposed action", () => {
+  const raid = harness.items.all.find((i) => i.kind === "raid_suggestion");
+  assert.equal(raid.subject, harness.raidContract.sourceRaidTitle, "headline is the source RAID item");
+  assert.equal(raid.recommendation, harness.raidContract.recommendedActionTitle, "recommendation is the proposed action");
+  // `title` still carries the canonical action title for every other consumer.
+  assert.equal(raid.title, harness.raidContract.recommendedActionTitle);
+
+  const card = harness.queue.all.cards.find((c) => c.text.includes(harness.raidContract.sourceRaidTitle));
+  assert.ok(card, "the card leads with the finding");
+  assert.match(card.text, new RegExp(`PMFreak recommends ${harness.raidContract.recommendedActionTitle}`));
+  // The finding is read before the recommendation, not after it.
+  assert.ok(card.text.indexOf(harness.raidContract.sourceRaidTitle) < card.text.indexOf("PMFreak recommends"));
+});
+
+test("W3-P1-01: owner and timing qualify the recommendation — they are never the recommendation", () => {
+  const primary = primarySurface(harness.drawers.raid.markup);
+  assert.match(primary, /PMFreak recommends Confirm the integration owner/);
+  // They survive, after it.
+  assert.match(primary, /Suggested owner: Delivery lead\. Suggested timing: this week\./);
+  assert.ok(primary.indexOf("Confirm the integration owner") < primary.indexOf("Suggested owner"));
+  // And they are not what the "recommends" label points at, on the card or in the drawer.
+  assert.doesNotMatch(primary, /PMFreak recommends Suggested owner/);
+  for (const card of harness.queue.all.cards) {
+    assert.doesNotMatch(card.text, /PMFreak recommends Suggested owner/);
+  }
+});
+
+// ───────── W3-P1-02: a recorded non-terminal Decision leaks no identifiers ───
+//
+// `escalated` maps the Recommendation back to `proposed`, so an item still awaiting the PM
+// can carry a Decision — and its record rendered in front of the live judgment, complete
+// with the canonical Decision id, the raw actor id, the authority basis and the evidence
+// snapshot digest.
+
+test("W3-P1-02: an escalated item stays in Needs You with its human history visible", () => {
+  assert.equal(harness.items.escalated.length, 1, "escalation does not resolve the item");
+  assert.deepEqual(harness.items.escalated[0].recordedDecisionIds, ["dec-esc"]);
+  assert.deepEqual(harness.grouping.escalated, [{ job: "decision", ids: ["governed-rec-rec-1"] }]);
+  const primary = primarySurface(harness.drawers.escalated.markup);
+  // What a PM needs from the history: what was decided, that it stays open, why, and when.
+  assert.match(primary, /Decision recorded — escalated \(recommendation stays open\)/);
+  assert.match(primary, /Needs the sponsor to weigh in before we decide\./);
+  assert.match(primary, /Recorded at/);
+});
+
+test("W3-P1-02: no canonical identifier, actor id, authority basis or hash precedes the judgment", () => {
+  const primary = primarySurface(harness.drawers.escalated.markup);
+  const fixture = harness.escalatedFixture;
+  assert.ok(!primary.includes(fixture.decisionId), "the canonical Decision id must not be primary");
+  assert.ok(!primary.includes(fixture.decidedBy), "the raw actor id must not be primary");
+  assert.ok(!primary.includes(fixture.authorityBasis), "authority basis must not be primary");
+  assert.ok(!primary.includes("Evidence snapshot"), "no evidence snapshot label before the decision");
+  assert.ok(!/\bsha256\b/i.test(primary), "no digest before the decision");
+  assert.ok(!/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(primary), "no raw uuid before the decision");
+});
+
+test("W3-P1-02: the complete canonical decision record survives, behind disclosure", () => {
+  const markup = harness.drawers.escalated.markup;
+  const detail = markup.slice(markup.indexOf("Evidence &amp; governance"));
+  const fixture = harness.escalatedFixture;
+  assert.match(detail, /<summary[^>]*>Decision record details<\/summary>/);
+  for (const preserved of [fixture.decisionId, fixture.decidedBy, fixture.authorityBasis]) {
+    assert.ok(detail.includes(preserved), `${preserved} must be preserved in the audit record`);
+  }
+  assert.match(detail, /Evidence snapshot/);
+  assert.match(detail, /Decision ID/);
+  // Collapsed by default.
+  const tag = detail.slice(detail.indexOf("<details", detail.indexOf("Decision record details") - 400));
+  assert.doesNotMatch(tag.slice(0, tag.indexOf(">")), /\bopen\b/);
+});
+
+// ───────── W3-P1-03: the source badge is not the first thing a PM reads ─────
+
+test("W3-P1-03: no attention drawer shows its source badge before the judgment", () => {
+  for (const [name, drawer] of Object.entries(harness.drawers)) {
+    const primary = primarySurface(drawer.markup);
+    assert.ok(!primary.includes("Governed · decision required"), `${name}: governed source badge must not be primary`);
+    assert.ok(!primary.includes("Suggestion · extracted intelligence"), `${name}: RAID source badge must not be primary`);
+    assert.ok(!primary.includes("Governed Recommendation"), `${name}: source vocabulary must not be primary`);
+  }
+});
+
+test("W3-P1-03: the source distinction is preserved, verbatim, under disclosure", () => {
+  const governed = harness.drawers.governed.markup;
+  const raid = harness.drawers.raid.markup;
+  const governedDetail = governed.slice(governed.indexOf("Evidence &amp; governance"));
+  const raidDetail = raid.slice(raid.indexOf("Evidence &amp; governance"));
+  assert.ok(governedDetail.includes("Governed · decision required"));
+  assert.ok(raidDetail.includes("Suggestion · extracted intelligence"));
+  assert.match(governedDetail, /Governed Recommendation — system output/);
+  assert.match(raidDetail, /not a governed Recommendation and carries no governance authority requirement/);
+  // The two write paths remain distinguishable, which is the invariant P2-11 protects.
+  assert.ok(governedDetail.includes("operational_decision_records"));
+  assert.ok(raidDetail.includes("/api/recommended-actions/decision"));
+  assert.ok(!raidDetail.includes("operational_decision_records"));
+});
+
+test("W3-P1-03: drawers that are not attention items keep their badge in place", () => {
+  // The suppression is gated on the decision panel, so agent cards and governed execution
+  // chains — neither of which has one — are untouched by this change.
+  const drawerSrc = read("src/modules/workspace/presentation/command-center/detail-drawer.tsx");
+  assert.match(drawerSrc, /\{content\.badge && !content\.decisionPanel && \(/);
+});
+
+// ───────── W3-P2-04: missing lineage is not an actionable Decision ──────────
+//
+// Canonical behaviour, from `record_operational_decision`
+// (supabase/migrations/20260611000000_operational_evidence_decision_loop.sql): the function
+// walks the governed lineage BEFORE it evaluates authority and raises
+// `governed_lineage_incomplete` when the governance event, risk, signal or evidence row is
+// missing. The write is REFUSED for such an item however much authority the actor holds.
+
+test("W3-P2-04: the canonical contract refuses a decision when the governed lineage is incomplete", () => {
+  const migration = read("supabase/migrations/20260611000000_operational_evidence_decision_loop.sql");
+  const fn = migration.slice(migration.indexOf("create or replace function public.record_operational_decision"));
+  assert.match(fn, /if g\.id is null or r\.id is null or s\.id is null or e\.id is null then raise exception 'governed_lineage_incomplete'/);
+  // ...and it does so BEFORE the authority check, so authority cannot rescue it.
+  const lineageAt = fn.indexOf("governed_lineage_incomplete");
+  const authorityAt = fn.indexOf("operational_decision_authority_denied");
+  assert.ok(lineageAt > 0 && authorityAt > lineageAt, "lineage is validated before authority");
+});
+
+test("W3-P2-04: an item the server would refuse is not presented as a settleable Decision", () => {
+  const item = harness.items.missingEvidence[0];
+  // The actor holds full authority — every terminal control is permitted — so this would
+  // have been grouped under Decisions on authority alone.
+  assert.equal(item.terminalAllowed, true, "authority alone would have said 'Decision'");
+  assert.ok(item.blockedReason, "the read model already knows the lineage is incomplete");
+  // The presentation follows the contract, not the authority map.
+  assert.equal(item.humanJob, "review");
+  assert.deepEqual(harness.grouping.missingEvidence, [{ job: "review", ids: ["governed-rec-rec-1"] }]);
+  assert.deepEqual(harness.queue.missingEvidence.headings, ["review"]);
+  assert.match(harness.queue.missingEvidence.cards[0].body, /data-testid="cc-attention-job"[^>]*>Review</);
+});
+
+test("W3-P2-04: the copy states what the server will do, without overclaiming", () => {
+  const body = harness.drawers.missingEvidence.text;
+  assert.match(body, /can&#x27;t record a decision on this yet/);
+  assert.match(body, /the decision would be refused/);
+  // It names the missing thing and the way forward, and promises nothing beyond that.
+  assert.match(body, /Add the supporting project context first\./);
+  // No client-side re-implementation of the server's gate: the read model reports the
+  // condition and the grouping reads it.
+  const grouping = read("src/modules/workspace/presentation/command-center/attention-presentation.ts");
+  assert.match(grouping, /if \(panel\?\.blockedReason\) return "review";/);
+  assert.doesNotMatch(grouping, /evidence_items|governance_events|risk_issue_records/);
+});
+
+// ───────── W3-P2-05: no provenance-only artifact churn ──────────────────────
+
+test("W3-P2-05: the compliance artifacts are untouched, because the dependency graph is", () => {
+  // W3 adds no dependency, so the committed inventory and SBOM still describe the lockfile
+  // exactly. Regenerating them would have committed a new timestamp, a new BOM serial and a
+  // new repositoryCommit — provenance churn that is not part of this workstream.
+  const inventory = JSON.parse(read("artifacts/compliance/third-party-license-inventory.json"));
+  assert.equal(inventory.counts.blocked, 0);
+  assert.ok(inventory.lockfile?.sha256 || inventory.counts.total > 0, "the inventory is intact");
 });

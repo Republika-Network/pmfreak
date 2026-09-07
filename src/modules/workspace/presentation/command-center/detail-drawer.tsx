@@ -30,6 +30,19 @@ function DisclosureSection({ section }: { section: DetailSection }) {
   );
 }
 
+/**
+ * A Decision already recorded against this item, in the primary surface.
+ *
+ * A non-terminal Decision — `escalated`, `needs_more_evidence` — deliberately leaves the
+ * Recommendation open, so an item still awaiting the PM can carry one of these. This card
+ * therefore renders in front of a live judgment, and it used to print the canonical
+ * Decision id, the raw actor id, the authority basis and the evidence snapshot digest
+ * there. That is the audit record, not the history a PM needs to decide.
+ *
+ * What stays: what was decided, whether it closed the item, why, and when. What moves to
+ * `Evidence & governance`: every identifier and every governance internal. Nothing is
+ * dropped — see `RecordedDecisionAudit`.
+ */
 function RecordedDecisionCard({ decision }: { decision: RecordedDecision }) {
   return (
     <div className="mt-2 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.06] p-3">
@@ -39,15 +52,38 @@ function RecordedDecisionCard({ decision }: { decision: RecordedDecision }) {
       </p>
       <RowList
         rows={[
-          { label: "Decision ID", value: decision.decisionId },
-          ...(decision.recordedAt ? [{ label: "Recorded at", value: decision.recordedAt }] : []),
-          ...(decision.decidedBy ? [{ label: "Decided by", value: decision.decidedBy }] : []),
-          ...(decision.authorityBasis ? [{ label: "Authority basis", value: decision.authorityBasis }] : []),
           ...(decision.rationale ? [{ label: "Rationale", value: decision.rationale }] : []),
-          ...(decision.evidenceSnapshot ? [{ label: "Evidence snapshot", value: decision.evidenceSnapshot }] : []),
+          ...(decision.recordedAt ? [{ label: "Recorded at", value: decision.recordedAt }] : []),
         ]}
       />
     </div>
+  );
+}
+
+/** The same Decisions, complete, behind the disclosure. Every field the read model
+ *  projects is here — the canonical record is preserved in full, just not in front of a
+ *  human trying to make the next judgment. */
+function RecordedDecisionAudit({ decisions }: { decisions: RecordedDecision[] }) {
+  if (decisions.length === 0) return null;
+  return (
+    <details className="mt-2 rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2" data-testid="cc-decision-record-details">
+      <summary className="cursor-pointer text-xs font-medium text-zinc-300">Decision record details</summary>
+      {decisions.map((decision) => (
+        <div key={decision.decisionId} className="mt-2">
+          <p className="text-[11px] font-medium text-zinc-400">{labelize(decision.decisionStatus)}</p>
+          <RowList
+            rows={[
+              { label: "Decision ID", value: decision.decisionId },
+              ...(decision.recordedAt ? [{ label: "Recorded at", value: decision.recordedAt }] : []),
+              ...(decision.decidedBy ? [{ label: "Decided by", value: decision.decidedBy }] : []),
+              ...(decision.authorityBasis ? [{ label: "Authority basis", value: decision.authorityBasis }] : []),
+              ...(decision.rationale ? [{ label: "Rationale", value: decision.rationale }] : []),
+              ...(decision.evidenceSnapshot ? [{ label: "Evidence snapshot", value: decision.evidenceSnapshot }] : []),
+            ]}
+          />
+        </div>
+      ))}
+    </details>
   );
 }
 
@@ -239,7 +275,16 @@ export function DetailDrawer({ content, onClose }: { content: DrawerContent | nu
               </button>
             </div>
 
-            {content.badge && (
+            {/*
+              An attention item's badge names its SOURCE — "Governed · decision required",
+              "Suggestion · extracted intelligence". That distinction is a contract and is
+              preserved verbatim beneath `Evidence & governance`; it is simply not the first
+              thing a PM should read, because it answers a question about PMFreak's
+              architecture rather than about their project. Every other drawer type — agent
+              cards, governed execution chains — keeps its badge here, so this is gated on
+              the decision panel rather than applied to the component as a whole.
+            */}
+            {content.badge && !content.decisionPanel && (
               <div className="mt-2">
                 <StatusBadge tone={content.badge.tone}>{content.badge.label}</StatusBadge>
               </div>
@@ -310,9 +355,17 @@ export function DetailDrawer({ content, onClose }: { content: DrawerContent | nu
                     different language here and that difference is a contract, not styling.
                     They simply no longer sit above the judgment, where a table name in front
                     of a PM is noise rather than provenance. */}
-                {(content.kindSummary || content.decisionPanel?.writePathLabel) && (
+                {content.decisionPanel && (
+                  <RecordedDecisionAudit decisions={content.decisionPanel.decisions} />
+                )}
+                {(content.kindSummary || content.decisionPanel?.writePathLabel || content.badge) && (
                   <details className="mt-2 rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2">
                     <summary className="cursor-pointer text-xs font-medium text-zinc-300">What this is, and what a decision records</summary>
+                    {content.decisionPanel && content.badge && (
+                      <p className="mt-2">
+                        <StatusBadge tone={content.badge.tone}>{content.badge.label}</StatusBadge>
+                      </p>
+                    )}
                     {content.kindSummary && <p className="mt-2 text-[11px] leading-relaxed text-zinc-400">{content.kindSummary}</p>}
                     {content.decisionPanel?.writePathLabel && (
                       <p className="mt-2 text-[11px] leading-relaxed text-zinc-400">{content.decisionPanel.writePathLabel}</p>

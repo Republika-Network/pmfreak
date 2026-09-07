@@ -744,8 +744,12 @@ function toNeedsYouItem(
         })),
         anyAllowed: item.anyDecisionAllowed,
         readOnlyNote,
+        // Not a caution — a statement of what the server will do. `record_operational_decision`
+        // walks the governed lineage before it evaluates authority at all and raises
+        // `governed_lineage_incomplete` when the evidence row is absent, so the write is
+        // refused for this item regardless of who is asking.
         blockedReason: item.evidenceQuality.evidenceMissing
-          ? "This Decision cannot be safely evaluated because the supporting evidence is missing."
+          ? "PMFreak can't record a decision on this yet: the evidence behind it is missing, so the decision would be refused. Add the supporting project context first."
           : null,
         requiresRationale: true,
         onDecide: (status, rationale) => onDecide(item.recommendationId, status, rationale),
@@ -801,30 +805,49 @@ export function deriveRaidNeedsYou(
     // chain above: this is extracted intelligence in a bounded workflow, not a governed
     // Recommendation, and deciding it does NOT write an operational_decision_records row.
     const badge: ToneBadge = { tone, label: "Suggestion · extracted intelligence" };
-    // Card presentation (UX-W3). The suggestion's title is what was found; the suggested
-    // owner and timing are what PMFreak proposes, so the two are genuinely different
-    // sentences here and both are shown.
-    const recommendation = nextStepParts.length > 0 ? nextStepParts.join(" ") : null;
+    /*
+     * Card presentation (UX-W3), corrected after review.
+     *
+     * `generate-recommended-actions.ts` is explicit about which field is which, and the
+     * first cut had them the wrong way round:
+     *
+     *   action.title              the PROPOSED ACTION — "Confirm dependency: ...",
+     *                             "Request approval: ...", "Create mitigation plan: ..."
+     *   evidenceSummary.raidTitle the RAID item that CAUSED it — the finding
+     *   recommendedOwner/Window   qualifiers OF the proposed action
+     *
+     * So the finding is the headline and `action.title` is what PMFreak recommends. Owner
+     * and timing qualify that recommendation; they are not the recommendation, and
+     * presenting them as one told a PM that "Suggested owner: Delivery lead" was the advice.
+     *
+     * With no `raidTitle` there is no separate finding to show. The action title stays the
+     * headline and the recommendation line is dropped rather than inventing a source issue.
+     */
+    const subject = raidTitle ?? action.title;
+    const recommendation = subject === action.title ? null : action.title;
 
     return {
       id: `raid-action-${action.id}`,
       kind: "raid_suggestion",
       title: action.title,
       badge,
-      subject: action.title,
+      subject,
       // `impact_level` is this path's own persisted severity. It is NOT remapped onto the
       // governed severity vocabulary — only rendered with the same visual weight.
       severity: impact,
       whyItMatters: action.description,
-      evidenceSummary: raidTitle ? `Detected from your project notes: "${raidTitle}"` : null,
+      evidenceSummary: raidCategory ? `Detected from your project notes · ${raidCategory}` : "Detected from your project notes",
       recommendation,
       drawer: {
-        title: action.title,
+        // Opens on the same headline as the card the PM clicked.
+        title: subject,
         badge,
         kindSummary:
           "RAID-derived suggested action — extracted from your notes in a bounded workflow. It is not a governed Recommendation and carries no governance authority requirement.",
         why: action.description,
         evidence: evidenceLines.length ? evidenceLines : ["Extracted from the project's recorded notes."],
+        // The proposed action is the recommendation; owner and timing qualify it below.
+        recommendation: action.title,
         nextStep: nextStepParts.length ? nextStepParts.join(" ") : "Triage this suggested action.",
         sections: [
           {

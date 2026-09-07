@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:3acecd88-d938-43b9-80c1-bdbde7138bcb",
+  "serialNumber": "urn:uuid:d96a8185-99d5-46ab-ab28-4ffbc784ee84",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-09-07T20:19:09.743Z",
+    "timestamp": "2026-08-31T19:29:12.144Z",
     "tools": [
       {
         "vendor": "PMFreak",
@@ -26,7 +26,7 @@
       "properties": [
         {
           "name": "repositoryCommit",
-          "value": "d94afe8ed97b2122832221aa7a972e02f997e399"
+          "value": "e94eb3bcd130c1a4f7cabfb2a5d29c5bffb144ff"
         },
         {
           "name": "lockfileSha256",

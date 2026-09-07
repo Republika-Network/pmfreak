@@ -235,7 +235,62 @@ const mixedSummary = summary({
   actor: { role: "pm", userId: "user-7", canCreateEvidence: true },
 });
 
+/**
+ * A Recommendation whose governed lineage is incomplete — no signal, no evidence.
+ *
+ * `record_operational_decision` walks that lineage BEFORE it evaluates authority and raises
+ * `governed_lineage_incomplete` when the evidence row is absent, so the write is refused for
+ * this item however much authority the actor holds. Mirrors the P2-11 missing-evidence
+ * scenario: full admin authority, nothing behind the Recommendation.
+ */
+const missingEvidenceSummary = summary({
+  evidence: [],
+  signals: [],
+  risksIssues: [{ id: "risk-1", signal_id: null, type: "risk", status: "open", rationale: "Reported verbally at the steering committee." }],
+  governanceEvents: [GOVERNANCE],
+  recommendations: [
+    recommendation("rec-1", "gov-1", "risk-1", "Raise a formal Change Request", GOVERNANCE.authority_required, "admin"),
+  ],
+});
+
+/**
+ * A non-terminal Decision already recorded against a still-open item.
+ *
+ * `escalated` maps the Recommendation back to `proposed`, so this item legitimately stays
+ * in Needs You with a Decision attached — which is why its record renders in front of a
+ * live judgment and must not carry canonical identifiers there.
+ */
+const ESCALATED_DECISION = {
+  id: "dec-esc",
+  recommendation_id: "rec-1",
+  governance_event_id: "gov-1",
+  decision_status: "escalated",
+  decision: "Recommendation escalated by an authorized reviewer.",
+  rationale: "Needs the sponsor to weigh in before we decide.",
+  decided_by: "8f14e45f-ceea-467a-9f3a-1b2c3d4e5f60",
+  authority_basis: "admin workspace authority (PMFreak role mapping v1)",
+  created_at: "2026-09-05T09:00:00.000Z",
+};
+
+const escalatedSummary = summary({
+  recommendations: [
+    recommendation("rec-1", "gov-1", "risk-1", "Raise a formal Change Request", GOVERNANCE.authority_required, "admin"),
+  ],
+  decisions: [ESCALATED_DECISION],
+  evidenceLinks: [
+    {
+      decision_record_id: "dec-esc",
+      evidence_item_id: "ev-1",
+      evidence_hash_at_decision: EVIDENCE.evidence_hash,
+      evidence_version_at_decision: "3",
+      evidence_title_snapshot: EVIDENCE.title,
+    },
+  ],
+});
+
 const decidableItems = deriveNeedsYou(decidableSummary, noopDecide);
+const missingEvidenceItems = deriveNeedsYou(missingEvidenceSummary, noopDecide);
+const escalatedItems = deriveNeedsYou(escalatedSummary, noopDecide);
 const reviewOnlyItems = deriveNeedsYou(reviewOnlySummary, noopDecide);
 const mixedItems = deriveNeedsYou(mixedSummary, noopDecide);
 const raidItems = deriveRaidNeedsYou([RAID_ACTION], noopDecide);
@@ -282,6 +337,8 @@ const queueFailed = renderQueue([], { errorMessage: "We couldn't load project at
 const governedDrawer = renderToStaticMarkup(<DetailDrawer content={decidableItems[0].drawer} onClose={noop} />);
 const raidDrawer = renderToStaticMarkup(<DetailDrawer content={raidItems[0].drawer} onClose={noop} />);
 const reviewOnlyDrawer = renderToStaticMarkup(<DetailDrawer content={reviewOnlyItems[0].drawer} onClose={noop} />);
+const missingEvidenceDrawer = renderToStaticMarkup(<DetailDrawer content={missingEvidenceItems[0].drawer} onClose={noop} />);
+const escalatedDrawer = renderToStaticMarkup(<DetailDrawer content={escalatedItems[0].drawer} onClose={noop} />);
 
 /** Everything a card is allowed to know about one item, for the card-anatomy assertions. */
 const itemShape = (item: NeedsYouItem) => ({
@@ -305,12 +362,23 @@ const itemShape = (item: NeedsYouItem) => ({
   allowedStatuses: (item.drawer.decisionPanel?.controls ?? []).filter((c) => c.allowed).map((c) => c.status),
   requiresRationale: item.drawer.decisionPanel?.requiresRationale ?? null,
   writePathLabel: item.drawer.decisionPanel?.writePathLabel ?? null,
+  blockedReason: item.drawer.decisionPanel?.blockedReason ?? null,
+  recordedDecisionIds: (item.drawer.decisionPanel?.decisions ?? []).map((d) => d.decisionId),
 });
 
 process.stdout.write(
   JSON.stringify(
     {
       approvalItemsAvailable: APPROVAL_ITEMS_AVAILABLE,
+      raidContract: {
+        // The generator's own field meanings, so the assertions compare presentation
+        // against the contract rather than against itself.
+        sourceRaidTitle: (RAID_ACTION.evidence_summary as Record<string, unknown>).raidTitle,
+        recommendedActionTitle: RAID_ACTION.title,
+        owner: RAID_ACTION.recommended_owner,
+        dueWindow: RAID_ACTION.recommended_due_window,
+      },
+      escalatedFixture: { decisionId: ESCALATED_DECISION.id, decidedBy: ESCALATED_DECISION.decided_by, authorityBasis: ESCALATED_DECISION.authority_basis, evidenceHash: EVIDENCE.evidence_hash },
       groupLabels: HUMAN_JOB_GROUP_LABELS,
       canonicalDecisionOptions: DECISION_OPTIONS.map((option) => ({ status: option.status, label: option.label, terminal: option.terminal })),
 
@@ -319,10 +387,14 @@ process.stdout.write(
         reviewOnly: reviewOnlyItems.map(itemShape),
         mixed: mixedItems.map(itemShape),
         raid: raidItems.map(itemShape),
+        missingEvidence: missingEvidenceItems.map(itemShape),
+        escalated: escalatedItems.map(itemShape),
         all: allItems.map(itemShape),
       },
 
       grouping: {
+        missingEvidence: groupAttentionItems(missingEvidenceItems).map((g) => ({ job: g.job, ids: g.items.map((i) => i.id) })),
+        escalated: groupAttentionItems(escalatedItems).map((g) => ({ job: g.job, ids: g.items.map((i) => i.id) })),
         all: groupAttentionItems(allItems).map((group) => ({ job: group.job, label: group.label, ids: group.items.map((i) => i.id) })),
         decidable: groupAttentionItems(decidableItems).map((group) => ({ job: group.job, ids: group.items.map((i) => i.id) })),
         reviewOnly: groupAttentionItems(reviewOnlyItems).map((group) => ({ job: group.job, ids: group.items.map((i) => i.id) })),
@@ -335,6 +407,8 @@ process.stdout.write(
         decidable: { headings: groupHeadings(queueDecidable), cards: cards(queueDecidable) },
         reviewOnly: { headings: groupHeadings(queueReviewOnly), cards: cards(queueReviewOnly) },
         raidOnly: { headings: groupHeadings(queueRaidOnly), cards: cards(queueRaidOnly) },
+        missingEvidence: { headings: groupHeadings(renderQueue(missingEvidenceItems)), cards: cards(renderQueue(missingEvidenceItems)) },
+        escalated: { headings: groupHeadings(renderQueue(escalatedItems)), cards: cards(renderQueue(escalatedItems)) },
         empty: { headings: groupHeadings(queueEmpty), text: text(queueEmpty) },
         loadingWithKnown: { headings: groupHeadings(queueLoadingWithKnown), cardCount: cards(queueLoadingWithKnown).length, text: text(queueLoadingWithKnown) },
         failed: { headings: groupHeadings(queueFailed), text: text(queueFailed) },
@@ -344,6 +418,8 @@ process.stdout.write(
         governed: { markup: governedDrawer, text: text(governedDrawer) },
         raid: { markup: raidDrawer, text: text(raidDrawer) },
         reviewOnly: { markup: reviewOnlyDrawer, text: text(reviewOnlyDrawer) },
+        missingEvidence: { markup: missingEvidenceDrawer, text: text(missingEvidenceDrawer) },
+        escalated: { markup: escalatedDrawer, text: text(escalatedDrawer) },
       },
     },
     null,
