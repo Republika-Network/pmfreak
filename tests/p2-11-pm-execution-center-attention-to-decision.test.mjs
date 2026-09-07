@@ -359,17 +359,28 @@ test("P2-11 K: a recommendation from another project is not addressable from thi
 
 test("P2-11 L: loading, empty and error states all render honestly", () => {
   assert.match(text(harness.queue.loading), /Checking what needs your attention/);
-  assert.match(text(harness.queue.empty), /No human decisions currently require attention/);
+  // UX-W2 restated the empty state in the PM's own words. The invariant is unchanged and is
+  // what this asserts: an empty queue says there is nothing to decide, and says it plainly.
+  assert.match(text(harness.queue.empty), /You're clear\./);
+  assert.match(text(harness.queue.empty), /Nothing currently requires your decision or review\./);
   const errorBody = text(harness.queue.error);
   assert.match(errorBody, /We couldn't load project attention/);
   assert.match(errorBody, /Try again/);
   // An error must never be rendered as a reassuring empty state.
-  assert.doesNotMatch(errorBody, /No human decisions currently require attention/);
+  assert.doesNotMatch(errorBody, /You're clear\./);
+  assert.doesNotMatch(errorBody, /Nothing currently requires your decision or review\./);
 });
 
 test("P2-11 L: a load failure is not silently treated as 'still loading'", () => {
   assert.match(layout, /const flowLoading = flowData === undefined && !flowError;/);
-  assert.match(layout, /errorMessage=\{flowError \? "We couldn't load project attention\." : null\}/);
+  // UX-W2 lifted this into a named value the screen passes to every attention surface, so
+  // one failed read cannot be a failure in one section and an empty success in the next.
+  // The W2 review then widened it: attention is fed by TWO reads, and EITHER failing is an
+  // attention failure — a still-pending suggestion read is not a reason to report zero.
+  assert.match(layout, /const attentionErrorMessage = attention\.failed \? "We couldn't load project attention\." : null;/);
+  assert.match(layout, /attentionErrorMessage=\{attentionErrorMessage\}/);
+  assert.match(layout, /const raidLoading = Boolean\(selectedProject\?\.id\) && raidActions === undefined && !raidError;/);
+  assert.match(layout, /const needsYouCount = attention\.complete \? needsYouItems\.length : null;/);
 });
 
 // ── M. Accessibility ─────────────────────────────────────────────────────────
@@ -422,11 +433,15 @@ test("P2-11 M: no interactive element is nested inside another", () => {
   }
 });
 
-test("P2-11 M: the mobile overlay keeps the attention queue reachable", () => {
-  // The same NeedsYouQueue and DetailDrawer render inside the mobile overlay, so keyboard reach
-  // is not desktop-only.
-  const overlay = layout.slice(layout.indexOf("<MobileOverlay open={rightOpen}"));
-  assert.match(overlay, /<NeedsYouQueue/);
+test("P2-11 M: the attention queue is reachable on a small screen without opening anything", () => {
+  // Until UX-W2 the queue was a desktop rail plus a copy inside the right-hand mobile
+  // overlay, and reaching it on a phone meant opening a drawer first. It is now a section of
+  // the main document at every width, so the reachability this test protects is stronger,
+  // not weaker: nothing has to be opened, and the queue is mounted exactly once.
+  const canvas = layout.slice(layout.indexOf("<CommandCenterCanvas"));
+  assert.match(canvas, /needsYouItems=\{needsYouItems\}/);
+  assert.equal((layout.match(/MobileOverlay open=\{rightOpen\}/g) ?? []).length, 0);
+  // Project navigation may still be an overlay, and it is still dismissible by keyboard.
   assert.match(layout, /aria-label="Close panel"/);
 });
 

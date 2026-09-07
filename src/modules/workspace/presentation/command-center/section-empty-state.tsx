@@ -5,16 +5,21 @@ export function SectionEmptyState({
   description,
   ctaLabel,
   onCta,
+  note,
 }: {
   title: string;
   description: string;
   ctaLabel?: string;
   onCta?: () => void;
+  /** Real supporting context for the emptiness, e.g. what is still being monitored.
+   *  Omitted entirely when the caller has no true statement to make. */
+  note?: string | null;
 }) {
   return (
     <div className="mt-2 rounded-xl border border-dashed border-white/10 bg-white/[0.02] px-3 py-3">
       <p className="text-sm font-medium text-zinc-300">{title}</p>
       <p className="mt-1 text-xs leading-relaxed text-zinc-500">{description}</p>
+      {note && <p className="mt-2 text-xs leading-relaxed text-zinc-500">{note}</p>}
       {ctaLabel && onCta && (
         <button
           type="button"

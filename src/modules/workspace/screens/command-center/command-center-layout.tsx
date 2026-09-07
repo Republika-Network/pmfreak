@@ -6,6 +6,7 @@ import type { Agent, ChatMessage, DrawerContent, MemoryItem, NeedsYouItem, Proje
 import {
   deriveAgents,
   deriveAllGovernedAttention,
+  deriveMonitoring,
   deriveNeedsYou,
   deriveRaidNeedsYou,
   deriveEvidenceOptions,
@@ -22,12 +23,13 @@ import {
 import type { DecisionStatus } from "../../presentation/command-center/operational-data";
 import { isBranchLive } from "../../presentation/command-center/execution-read-model";
 import type { ExecutionOperation, GovernedExecutionChain } from "../../presentation/command-center/execution-read-model";
-import { ExecutionQueue } from "../../presentation/command-center/execution-queue";
+import { deriveWhatChanged } from "../../presentation/command-center/change-read-model";
+import { deriveLastUpdatedLabel } from "../../presentation/command-center/activity-read-model";
+import { assessAttentionCompleteness } from "../../presentation/command-center/attention-completeness";
 import { chatMessagesToConversationTurns, conversationResultToAssistantMessage, postConversationMessage } from "../../presentation/command-center/conversation-data";
 import { ProjectSidebar } from "../../presentation/command-center/project-sidebar";
-import { ProjectTopBar } from "../../presentation/command-center/project-top-bar";
+import { CommandCenterCanvas } from "../../presentation/command-center/command-center-canvas";
 import { CommandFeed } from "../../presentation/command-center/command-feed";
-import { NeedsYouQueue } from "../../presentation/command-center/needs-you-queue";
 import { AgentDock } from "../../presentation/command-center/agent-dock";
 import { DetailDrawer } from "../../presentation/command-center/detail-drawer";
 import { VaultIntakePanel } from "../../presentation/command-center/vault-intake-panel";
@@ -54,28 +56,6 @@ function deriveMemory(data: OperationalSummary | undefined): MemoryItem[] {
     risks > 0 ? { id: "risks", label: `Risks · ${risks}` } : null,
     commitments > 0 ? { id: "commitments", label: `Commitments · ${commitments}` } : null,
   ].filter(Boolean) as MemoryItem[];
-}
-
-/** Newest timestamp across real operational records, as a human-readable relative label.
- *  Returns undefined when there is no data — the UI then shows no timestamp at all. */
-function deriveLastUpdatedLabel(data: OperationalSummary | undefined): string | undefined {
-  if (!data) return undefined;
-  let latest = 0;
-  for (const record of [...data.evidence, ...data.signals, ...data.decisions]) {
-    for (const key of ["updated_at", "created_at"]) {
-      const raw = record[key];
-      if (typeof raw !== "string") continue;
-      const time = Date.parse(raw);
-      if (!Number.isNaN(time) && time > latest) latest = time;
-    }
-  }
-  if (latest === 0) return undefined;
-  const minutes = Math.floor((Date.now() - latest) / 60000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
-  return new Date(latest).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 function buildRealMessages(project: ProjectListItem, needsYou: NeedsYouItem[]): ChatMessage[] {
@@ -158,9 +138,12 @@ export function CommandCenterLayout({
   );
 
   const { data: flowData, error: flowError, mutate: mutateFlow, successGeneration } = useOperationalFlow(workspaceId, selectedProject?.id ?? "");
-  const { data: raidActions, mutate: mutateRaidActions } = useRaidRecommendedActions(selectedProject?.id ?? "");
+  const { data: raidActions, error: raidError, mutate: mutateRaidActions } = useRaidRecommendedActions(selectedProject?.id ?? "");
   const hasRealData = Boolean(flowData && flowData.evidence.length > 0);
   const flowLoading = flowData === undefined && !flowError;
+  // SWR is given a null key when there is no project, and then never resolves. That is not
+  // a pending read, so it must not read as one.
+  const raidLoading = Boolean(selectedProject?.id) && raidActions === undefined && !raidError;
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [userInteracted, setUserInteracted] = useState(false);
@@ -209,8 +192,11 @@ export function CommandCenterLayout({
    *  operation is allowed, which stays server-validated (see the P2-06 window). */
   const [projectionFloor, setProjectionFloor] = useState<number>(() => Date.now());
   const [leftOpen, setLeftOpen] = useState(false);
-  const [rightOpen, setRightOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
+  /** Chat is the copilot layer: present on every screen, expanded only on demand. The
+   *  transcript lives in `messages` above and survives collapsing — this flag governs
+   *  visibility, never conversation state. */
+  const [chatOpen, setChatOpen] = useState(false);
 
   /** Records a canonical Decision. Rejects on failure so the drawer keeps the rationale, stays
    *  open and shows the error — never an optimistic success. The status posted is a canonical
@@ -277,7 +263,17 @@ export function CommandCenterLayout({
 
   const repositoryReal = useMemo(() => deriveRepository(flowData), [flowData]);
   const agentsReal = useMemo(() => deriveAgents(flowData, hasBrief), [flowData, hasBrief]);
+  // "What changed" and "PMFreak is monitoring" are re-projections of the SAME payload the
+  // queues above already read — `data.signals`, and the signal families `deriveAgents`
+  // already groups. No additional request, no new intelligence, no new backend derivation.
+  const changes = useMemo(() => deriveWhatChanged(flowData, projectionNow), [flowData, projectionNow]);
+  const monitoring = useMemo(() => deriveMonitoring(flowData), [flowData]);
   const memoryReal = useMemo(() => deriveMemory(flowData), [flowData]);
+  // Reads every collection of persisted records the summary carries, including everything
+  // downstream of a Decision. Deliberately NOT given `projectionNow`: that value is floored
+  // on the browser's clock, and a client running fast would then accept persisted timestamps
+  // the server considers to be in the future. Both the ceiling and the "ago" baseline come
+  // from the server's own reading inside the payload.
   const lastUpdatedLabel = useMemo(() => deriveLastUpdatedLabel(flowData), [flowData]);
 
   // Real data or nothing: sections render honest empty states instead of fixtures.
@@ -287,8 +283,36 @@ export function CommandCenterLayout({
   const repositoryItems = repositoryReal;
   const agentItems = hasRealData ? agentsReal : [];
 
+  /**
+   * Needs You is fed by two independent reads, so its completeness is a property of BOTH.
+   * The governed path and the RAID suggestion path stay separate business objects with
+   * separate write paths — only the question "have we heard from everything?" is combined.
+   */
+  const attention = assessAttentionCompleteness([
+    { label: "governed recommendations", loading: flowLoading, failed: Boolean(flowError) },
+    { label: "suggested actions", loading: raidLoading, failed: Boolean(raidError) },
+  ]);
+  // Either attention read failing is an attention failure. It is reported as one rather
+  // than allowed to become a reassuring empty state.
+  const attentionErrorMessage = attention.failed ? "We couldn't load project attention." : null;
+  // Project ACTIVITY — what changed, what is in progress, what is being monitored — comes
+  // only from the operational flow, so a failed suggestion read must not make those three
+  // sections claim they failed.
+  const activityErrorMessage = flowError ? "We couldn't load project attention." : null;
+  // A header must not answer "how much needs me?" with a number it does not have. Only a
+  // COMPLETE read produces a count; a successful read of zero is a real answer and is
+  // stated as one.
+  const needsYouCount = attention.complete ? needsYouItems.length : null;
+  // Shown beneath an empty attention queue. Built from the real monitored families, and
+  // only once this project actually has evidence for PMFreak to read — otherwise "clear"
+  // would be paired with a claim that something is watching, which nothing is yet.
+  const monitoringNote = hasRealData
+    ? `PMFreak is still monitoring ${monitoring.areas.map((area) => area.label.toLowerCase()).join(", ")}.`
+    : null;
+
   const handleSendMessage = (text: string) => {
     setUserInteracted(true);
+    setChatOpen(true);
     const userMessage: ChatMessage = { id: nextId("user"), role: "user", content: text };
     let historyForGateway: ChatMessage[] = [];
     setMessages((current) => {
@@ -474,16 +498,6 @@ export function CommandCenterLayout({
       data-shell="pmfreak-light-command-center"
       className="overflow-hidden rounded-[28px] border border-white/10 bg-[#0a0a0d] shadow-[0_40px_90px_-60px_rgba(0,0,0,0.7)]"
     >
-      <ProjectTopBar
-        project={selectedProject}
-        sources={repositoryItems}
-        onOpenProjects={() => setLeftOpen(true)}
-        onOpenAgents={() => setRightOpen(true)}
-        onSourceClick={handleTopBarSourceClick}
-        onAttach={() => setNotesOpen(true)}
-        lastUpdatedLabel={lastUpdatedLabel}
-      />
-
       <div className="flex min-h-[600px] xl:h-[calc(100vh-190px)]">
         <aside className="hidden w-[280px] shrink-0 border-r border-white/10 bg-white/[0.015] xl:block">
           <ProjectSidebar
@@ -497,43 +511,77 @@ export function CommandCenterLayout({
           />
         </aside>
 
+        {/*
+         * The attention-first canvas IS the main region. Everything a PM opens this screen
+         * to know — what needs them, what changed, what is under way, what is being watched
+         * — is in the document itself, in that order, on every viewport. The conversation
+         * is the last section, collapsed until asked for.
+         */}
         <main className="flex min-w-0 flex-1 flex-col">
-          {notesOpen && (
-            <div className="border-b border-white/10 p-4">
-              <VaultIntakePanel
-                workspaceId={workspaceId}
-                projectId={selectedProject.id}
-                onClose={() => setNotesOpen(false)}
-                onIntakeComplete={handleIntakeComplete}
-              />
-            </div>
-          )}
-          <div className="min-h-0 flex-1">
-            <CommandFeed
-              messages={messages}
-              onSendMessage={handleSendMessage}
-              onSourceClick={handleSourceClick}
-              onActionClick={handleActionClick}
-              onOpenNotes={() => setNotesOpen((v) => !v)}
-            />
-          </div>
-        </main>
-
-        <aside className="hidden w-[320px] shrink-0 space-y-6 overflow-y-auto border-l border-white/10 bg-white/[0.015] p-4 xl:block">
-          <WorkspaceOnboardingPanel surface="dashboard" />
-          <NeedsYouQueue
-            items={needsYouItems}
-            onSelect={handleNeedsYouSelect}
-            loading={flowLoading}
-            errorMessage={flowError ? "We couldn't load project attention." : null}
-            onRetry={() => void mutateFlow()}
+          <CommandCenterCanvas
+            project={selectedProject}
+            sources={repositoryItems}
+            lastUpdatedLabel={lastUpdatedLabel}
+            onOpenProjects={() => setLeftOpen(true)}
+            onSourceClick={handleTopBarSourceClick}
+            onAttach={() => setNotesOpen(true)}
+            needsYouItems={needsYouItems}
+            needsYouCount={needsYouCount}
+            onSelectNeedsYou={handleNeedsYouSelect}
+            attentionLoading={attention.loading}
+            attentionErrorMessage={attentionErrorMessage}
+            attentionIncompleteNote={
+              attention.loading && !attention.failed && needsYouItems.length > 0
+                ? `Still checking ${attention.unresolved.join(" and ")}.`
+                : null
+            }
+            onRetryAttention={() => {
+              void mutateFlow();
+              void mutateRaidActions();
+            }}
             onAddNotes={() => setNotesOpen(true)}
+            monitoringNote={monitoringNote}
+            changes={changes}
+            chains={executionChains}
+            onSelectChain={handleChainSelect}
+            monitoring={monitoring}
+            monitoringActive={hasRealData}
+            agentDetail={
+              <AgentDock agents={agentItems} onSelect={handleAgentSelect} loading={flowLoading} onAddContext={() => setNotesOpen(true)} />
+            }
+            chatOpen={chatOpen}
+            onToggleChat={setChatOpen}
+            chatMessageCount={messages.length}
+            chat={
+              <CommandFeed
+                messages={messages}
+                onSendMessage={handleSendMessage}
+                onSourceClick={handleSourceClick}
+                onActionClick={handleActionClick}
+                onOpenNotes={() => setNotesOpen((v) => !v)}
+              />
+            }
+            activityLoading={flowLoading}
+            activityErrorMessage={activityErrorMessage}
+            intakeSlot={
+              notesOpen ? (
+                <div className="border-b border-white/10 p-4">
+                  <VaultIntakePanel
+                    workspaceId={workspaceId}
+                    projectId={selectedProject.id}
+                    onClose={() => setNotesOpen(false)}
+                    onIntakeComplete={handleIntakeComplete}
+                  />
+                </div>
+              ) : null
+            }
+            footerSlot={<WorkspaceOnboardingPanel surface="dashboard" />}
           />
-          <ExecutionQueue chains={executionChains} onSelect={handleChainSelect} loading={flowLoading} />
-          <AgentDock agents={agentItems} onSelect={handleAgentSelect} loading={flowLoading} onAddContext={() => setNotesOpen(true)} />
-        </aside>
+        </main>
       </div>
 
+      {/* Project navigation may live behind an overlay on a small screen; attention content
+          never does — it is in the main document flow above, at every width. */}
       <MobileOverlay open={leftOpen} onClose={() => setLeftOpen(false)} side="left">
         <ProjectSidebar
           workspaceName={workspaceName}
@@ -550,40 +598,6 @@ export function CommandCenterLayout({
             setLeftOpen(false);
           }}
         />
-      </MobileOverlay>
-
-      <MobileOverlay open={rightOpen} onClose={() => setRightOpen(false)} side="right">
-        <div className="space-y-6 overflow-y-auto p-4">
-          <WorkspaceOnboardingPanel surface="dashboard" />
-          <NeedsYouQueue
-            items={needsYouItems}
-            onSelect={handleNeedsYouSelect}
-            loading={flowLoading}
-            errorMessage={flowError ? "We couldn't load project attention." : null}
-            onRetry={() => void mutateFlow()}
-            onAddNotes={() => {
-              setNotesOpen(true);
-              setRightOpen(false);
-            }}
-          />
-          <ExecutionQueue
-            chains={executionChains}
-            onSelect={(chain) => {
-              handleChainSelect(chain);
-              setRightOpen(false);
-            }}
-            loading={flowLoading}
-          />
-          <AgentDock
-            agents={agentItems}
-            onSelect={handleAgentSelect}
-            loading={flowLoading}
-            onAddContext={() => {
-              setNotesOpen(true);
-              setRightOpen(false);
-            }}
-          />
-        </div>
       </MobileOverlay>
 
       <DetailDrawer content={activeDrawer} onClose={closeDrawer} />
