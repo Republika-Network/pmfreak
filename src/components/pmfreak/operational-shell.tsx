@@ -9,7 +9,6 @@ import { AdvancedDrawer } from "@/components/pmfreak/navigation/advanced-drawer"
 import { SidebarPmoTree } from "@/components/pmfreak/navigation/sidebar-pmo-tree";
 import { computeCapabilityRevealState, computeNavigationRail } from "@/features/runtime/capability-reveal/capability-reveal-selectors";
 import { AWAKENING_EVENT, isLensUnlocked, loadAwakeningState, deriveAwakeningState, type AwakeningState } from "@/lib/workspace/awakening-state";
-import { loadImprintState } from "@/lib/workspace/operational-imprint-profile";
 import type { CapabilityProfile } from "@/lib/workspace/pilot-capability-set";
 
 type UserProject = { id: string; name: string };
@@ -256,6 +255,10 @@ export function OperationalShell({ children, user, capabilityProfile = "pilot" }
     return () => window.removeEventListener(AWAKENING_EVENT, handler);
   }, []);
 
+  // Mobile "More". The mobile strip used to render the primary rail and nothing else, so
+  // every supporting surface — and every unlocked advanced one — was desktop-only. It now
+  // reads the same `utilityNav`/`advancedNav` arrays the desktop rail does.
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
   const [projectId, setProjectId] = useState<string>(() => {
     if (typeof window === "undefined") return "";
     const fromQuery = new URLSearchParams(window.location.search).get("projectId") ?? "";
@@ -801,27 +804,16 @@ export function OperationalShell({ children, user, capabilityProfile = "pilot" }
     locked: !isLensUnlocked(item.href, awakening.stage),
   }));
   const tierByHref = new Map(NAVIGATION_HIERARCHY.map((node) => [node.href, node.tier]));
+  // Desktop and mobile both read these same three arrays, so the conceptual hierarchy
+  // cannot drift between them: there is one derivation, rendered twice.
   const primaryNav = navItems.filter((item) => tierByHref.get(item.href) === "primary");
-  const lensNav = navItems.filter((item) => tierByHref.get(item.href) === "lens");
   const utilityNav = navItems.filter((item) => tierByHref.get(item.href) === "utility");
   const advancedNav = navItems.filter((item) => tierByHref.get(item.href) === "advanced");
 
-  const imprintFocus = (() => {
-    try { return loadImprintState("", "", "").profile; } catch { return null; }
-  })();
-  const lensOrder = (() => {
-    if (!imprintFocus) return ["/dashboard", "/command-center", "/executive", "/portfolio"];
-    const stakeholders = (imprintFocus as { stakeholders?: number }).stakeholders ?? 0;
-    const delivery = (imprintFocus as { delivery?: number }).delivery ?? 0;
-    if (stakeholders > delivery) return ["/executive", "/command-center", "/dashboard", "/portfolio"];
-    if (delivery >= stakeholders) return ["/command-center", "/executive", "/dashboard", "/portfolio"];
-    return ["/dashboard", "/command-center", "/executive", "/portfolio"];
-  })();
-  const sortedLensNav = [...lensNav].sort((a, b) => {
-    const ai = lensOrder.indexOf(a.href);
-    const bi = lensOrder.indexOf(b.href);
-    return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
-  });
+  // The lens rail used to be reordered here from the imprint profile. It went with the
+  // lens tier: primary order is now the fixed product hierarchy declared in
+  // NAVIGATION_HIERARCHY, not something the profile reshuffles under the user. (The sort
+  // was already dead code — the render read `lensNav`, never its sorted copy.)
 
   const activeLens = DERIVED_LENS_METADATA.find((lens) => pathname.startsWith(lens.route) && ["overview", "delivery", "leadership", "controls"].includes(lens.lensType));
   const discoveryCounts = {
@@ -911,15 +903,7 @@ export function OperationalShell({ children, user, capabilityProfile = "pilot" }
                 </div>
                 <SidebarPmoTree activeProjectId={projectId || undefined} onSelectProject={(id) => setProjectId(id)} />
                 <div>
-                  <p className="mb-1 text-[9px] uppercase tracking-[0.28em] text-zinc-400">Lenses</p>
-                  <div className="space-y-1">
-                    {lensNav.map((item) => (
-                      <Link key={item.href} href={item.href} className={`block rounded-lg border px-2.5 py-1.5 text-xs transition-colors ${pathname.startsWith(item.href) ? item.active : `border-slate-200 ${item.idle} hover:border-slate-200`}`}>{item.label}</Link>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <p className="mb-1 text-[9px] uppercase tracking-[0.28em] text-zinc-400">Utilities</p>
+                  <p className="mb-1 text-[9px] uppercase tracking-[0.28em] text-zinc-400">More</p>
                   <div className="space-y-1">
                     {utilityNav.map((item) => (
                       <Link key={item.href} href={item.href} className={`block rounded-lg border px-2.5 py-1.5 text-xs transition-colors ${pathname.startsWith(item.href) ? item.active : `border-slate-200 ${item.idle} hover:border-slate-200`}`}>{item.label}</Link>
@@ -2239,7 +2223,34 @@ export function OperationalShell({ children, user, capabilityProfile = "pilot" }
                   {item.label}
                 </Link>
               ))}
+              {(utilityNav.length > 0 || advancedNav.length > 0) && (
+                <button
+                  type="button"
+                  onClick={() => setMobileMoreOpen((value) => !value)}
+                  aria-expanded={mobileMoreOpen}
+                  aria-controls="mobile-more-navigation"
+                  className="shrink-0 snap-start rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 transition-colors hover:text-slate-800"
+                >
+                  More {mobileMoreOpen ? "▾" : "▸"}
+                </button>
+              )}
             </div>
+            {mobileMoreOpen && (
+              <div id="mobile-more-navigation" className="mt-2 flex flex-wrap gap-1.5 border-t border-slate-200 pt-2">
+                {[...utilityNav, ...advancedNav].map((item) => (
+                  <Link
+                    key={item.href}
+                    href={navHref(item.href)}
+                    onClick={() => setMobileMoreOpen(false)}
+                    className={`rounded-lg border px-2.5 py-1.5 text-xs transition-colors ${
+                      pathname.startsWith(item.href) ? item.active : `border-slate-200 bg-white ${item.idle}`
+                    }`}
+                  >
+                    {item.label}
+                  </Link>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Page content */}

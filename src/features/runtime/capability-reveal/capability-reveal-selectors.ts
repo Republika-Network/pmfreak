@@ -18,9 +18,12 @@ export const LENS_LABELS = {
   executive: "Executive Lens",
 } as const;
 
+// One style per tier. The "lens" tier went with the module inventory it belonged to:
+// its four members were either promoted to primary (Command Center, Portfolio),
+// reclassified into "More" (Executive), or navigation-hidden as a duplicate home
+// (Summary → /dashboard).
 const NAV_STYLE = {
   primary: { accent: "from-indigo-300/25 to-cyan-300/15", active: "border-indigo-300/70 bg-indigo-50 text-indigo-900 shadow-[0_0_24px_rgba(129,140,248,0.18)]", idle: "text-indigo-700" },
-  lens: { accent: "from-cyan-300/20 to-fuchsia-300/10", active: "border-cyan-300/50 bg-cyan-50 text-cyan-800", idle: "text-slate-700" },
   utility: { accent: "from-emerald-300/20 to-teal-300/10", active: "border-emerald-300/50 bg-emerald-50 text-emerald-800", idle: "text-slate-700" },
   advanced: { accent: "from-slate-300/15 to-zinc-300/10", active: "border-slate-300/60 bg-slate-100 text-slate-800", idle: "text-slate-700" },
 } as const;
@@ -92,6 +95,6 @@ export const computeNavigationRail = (state: CapabilityRevealState, profile: Cap
   }).map((node) => ({
     label: node.label,
     href: node.href,
-    ...(node.tier === "primary" ? NAV_STYLE.primary : node.tier === "lens" ? NAV_STYLE.lens : node.tier === "utility" ? NAV_STYLE.utility : NAV_STYLE.advanced),
+    ...(node.tier === "primary" ? NAV_STYLE.primary : node.tier === "utility" ? NAV_STYLE.utility : NAV_STYLE.advanced),
   }));
 };
