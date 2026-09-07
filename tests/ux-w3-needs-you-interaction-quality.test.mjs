@@ -37,6 +37,16 @@ const operationalData = read("src/modules/workspace/presentation/command-center/
 const layout = read("src/modules/workspace/screens/command-center/command-center-layout.tsx");
 const cardSrc = read("src/modules/workspace/presentation/command-center/attention-card.tsx");
 
+/** The REAL `getOperationalSummary` against a faithful Data API stub, so the presentation
+ *  windows truncate exactly as PostgREST would. */
+const lineage = JSON.parse(
+  execFileSync(process.execPath, ["node_modules/tsx/dist/cli.mjs", "tests/ux-w3-attention-lineage-harness.tsx"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "inherit"],
+    maxBuffer: 64 * 1024 * 1024,
+  }),
+);
+
 const harness = JSON.parse(
   execFileSync(process.execPath, ["node_modules/tsx/dist/cli.mjs", "tests/ux-w3-needs-you-harness.tsx"], {
     encoding: "utf8",
@@ -576,4 +586,155 @@ test("W3-P2-05: the compliance artifacts are untouched, because the dependency g
   const inventory = JSON.parse(read("artifacts/compliance/third-party-license-inventory.json"));
   assert.equal(inventory.counts.blocked, 0);
   assert.ok(inventory.lockfile?.sha256 || inventory.counts.total > 0, "the inventory is intact");
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// W3 FINAL REMEDIATION — governed-lineage truth
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// `getOperationalSummary` windows each collection independently — evidence to the newest 20,
+// signals / risks / governance / recommendations to the newest 30. W3 read "is there
+// Evidence?" and "which authority does this need?" out of those windows, so a Recommendation
+// whose linked rows were merely older than the window read as canonically broken. The
+// canonical write resolves the same lineage by exact id and would have accepted it.
+//
+// These run the REAL service against the same faithful Data API stub P2-12 uses.
+
+test("W3-P1-04A: the window collision is real — every linked row is outside its window", () => {
+  // Without this the rest of the section could pass against rows that were never truncated.
+  const w = lineage.windows;
+  assert.equal(w.evidenceCount, 20, "the evidence window really is the newest 20");
+  assert.equal(w.recommendationsContainsRoot, true, "the Recommendation IS in the root window");
+  assert.equal(w.evidenceContainsLinked, false, "its Evidence is NOT");
+  assert.equal(w.signalsContainsLinked, false, "nor its Signal");
+  assert.equal(w.risksContainsLinked, false, "nor its Risk");
+  assert.equal(w.governanceContainsLinked, false, "nor its Governance Event");
+});
+
+test("W3-P1-04A: an out-of-window lineage is resolved by exact reference, not declared missing", () => {
+  const context = lineage.contexts.find((c) => c.recommendationId === "rec-old");
+  assert.ok(context, "the projection covers every root Recommendation");
+  assert.deepEqual(
+    { governance: context.hasGovernance, risk: context.hasRisk, signal: context.hasSignal, evidence: context.hasEvidence },
+    { governance: true, risk: true, signal: true, evidence: true },
+  );
+  assert.equal(context.lineageComplete, true);
+
+  const item = lineage.outOfWindowButComplete;
+  assert.equal(item.lineageComplete, true);
+  assert.equal(item.evidenceMissing, false, "window absence must never read as canonical absence");
+  assert.equal(item.blockedReason, null);
+  // The PM is not told the write would fail.
+  assert.ok(!/would be refused/.test(item.drawerPrimary));
+  assert.ok(!/can&#x27;t record a decision/.test(item.drawerPrimary));
+});
+
+test("W3-P1-04A: authority comes from the exact linked Governance Event", () => {
+  // Read from the windowed governance map this would have degraded to "baseline review",
+  // which grants far more than "sponsor or PMO" and would silently change the taxonomy.
+  const context = lineage.contexts.find((c) => c.recommendationId === "rec-old");
+  assert.equal(context.authorityRequired, lineage.requiredAuthority);
+  assert.notEqual(context.authorityRequired, "baseline review");
+  // The server projected it onto `actor_authority`...
+  const projected = lineage.actorAuthority.find((row) => row.id === "rec-old");
+  assert.equal(projected.accepted.authorityRequired, lineage.requiredAuthority);
+  // ...and the read model reports it, rather than its own "an authorized reviewer" default.
+  assert.equal(lineage.outOfWindowButComplete.authorityRequired, lineage.requiredAuthority);
+});
+
+test("W3-P1-04A: the card's own fields come from the exact-linked rows too", () => {
+  // Severity, the headline and the evidence line all originate outside every window, so a
+  // windowed read would have produced a card with no severity and a fallback headline.
+  const item = lineage.outOfWindowButComplete;
+  assert.equal(item.severity, "critical");
+  assert.equal(item.signalSummary, "Work outside the agreed scope was requested.");
+  assert.equal(item.evidenceTitle, "Client scope request");
+  assert.match(item.why, /The client requested additional scope without a formal change request\./);
+});
+
+test("W3-P1-04A: a genuinely absent lineage node is still reported as incomplete", () => {
+  // The companion case, so the fix cannot be "never block anything". This Recommendation's
+  // Risk does not exist at all — not out of window, absent.
+  const context = lineage.contexts.find((c) => c.recommendationId === "rec-broken");
+  assert.equal(context.hasGovernance, true);
+  assert.equal(context.hasRisk, false, "the Risk genuinely does not exist");
+  assert.equal(context.lineageComplete, false);
+
+  const item = lineage.genuinelyIncomplete;
+  assert.equal(item.lineageComplete, false);
+  assert.equal(item.evidenceMissing, true);
+  assert.ok(item.blockedReason, "the PM is told, honestly");
+  assert.match(item.blockedReason, /the decision would be refused/);
+});
+
+test("W3-P1-04A: the two cases land in different groups, from the same actor and authority", () => {
+  // Same owner, same required authority, same terminal permissions. Only the canonical
+  // lineage differs, and that is what decides the human job.
+  assert.equal(lineage.outOfWindowButComplete.terminalAllowed, true);
+  assert.equal(lineage.genuinelyIncomplete.terminalAllowed, true);
+  assert.equal(lineage.outOfWindowButComplete.humanJob, "decision");
+  assert.equal(lineage.genuinelyIncomplete.humanJob, "review");
+  assert.deepEqual(lineage.grouping, [
+    { job: "decision", ids: ["governed-rec-rec-old"] },
+    { job: "review", ids: ["governed-rec-rec-broken"] },
+  ]);
+});
+
+// ───────── W3-P1-04B: a blocked item offers nothing to submit ────────────────
+
+test("W3-P1-04B: a lineage-blocked item renders no decision submission controls", () => {
+  const blocked = lineage.genuinelyIncomplete.drawerMarkup;
+  const primary = blocked.slice(0, blocked.indexOf("Evidence &amp; governance"));
+  // The actor holds full terminal authority, so this is eligibility, not authority.
+  assert.equal(lineage.genuinelyIncomplete.terminalAllowed, true);
+  for (const verb of ["Accept", "Reject", "Record modification", "Record escalation"]) {
+    assert.ok(!new RegExp(`<button[^>]*>\\s*${verb}\\s*<`).test(primary), `${verb} must not be offered`);
+  }
+  assert.ok(!primary.includes("<textarea"), "no rationale composer for a write that cannot proceed");
+  assert.match(primary, /data-testid="cc-decision-blocked"/);
+  // Still inspectable: why, evidence and the recommendation are all there.
+  assert.match(primary, /Why this matters/);
+  assert.match(primary, /Evidence/);
+  assert.match(primary, /PMFreak recommends/);
+});
+
+test("W3-P1-04B: the same actor keeps normal controls when the lineage is complete", () => {
+  // The required companion: the fix cannot simply suppress every decision control.
+  const complete = lineage.outOfWindowButComplete.drawerMarkup;
+  const primary = complete.slice(0, complete.indexOf("Evidence &amp; governance"));
+  for (const verb of ["Accept", "Reject", "Record modification"]) {
+    assert.ok(new RegExp(`<button[^>]*>\\s*${verb}\\s*<`).test(primary), `${verb} must be offered`);
+  }
+  assert.ok(primary.includes("<textarea"), "the rationale composer returns");
+  assert.ok(!primary.includes('data-testid="cc-decision-blocked"'));
+});
+
+test("W3-P1-04B: eligibility never mutates the server's authority verdict", () => {
+  const drawerSrc = read("src/modules/workspace/presentation/command-center/detail-drawer.tsx");
+  // Controls are filtered for display; `control.allowed` is never assigned.
+  assert.match(drawerSrc, /const submissionBlocked = Boolean\(panel\.blockedReason\);/);
+  assert.doesNotMatch(drawerSrc, /control\.allowed\s*=[^=]/, "authority must never be rewritten client-side");
+  // And the server's own map is still what the read model reads.
+  const attentionModel = read("src/modules/workspace/presentation/command-center/attention-read-model.ts");
+  assert.match(attentionModel, /actor_authority/);
+});
+
+// ───────── the recent-signal windows keep their meaning (W2) ─────────────────
+
+test("W3: the authoritative context is separate — no window semantics changed", () => {
+  const service = read("src/lib/operational-flow/operational-flow-service.ts");
+  // The windowed collections are still assigned straight from their own queries; the
+  // attention context is its own field and is never unioned into them.
+  assert.match(service, /signals: signals\.data \?\? \[\],/);
+  assert.match(service, /evidence: evidence\.data \?\? \[\],/);
+  assert.match(service, /risksIssues: risks\.data \?\? \[\],/);
+  assert.match(service, /governanceEvents: governance\.data \?\? \[\],/);
+  assert.match(service, /governedAttentionContexts,/);
+  // The signal loader still reads the newest 30 — What Changed and Monitoring depend on it.
+  assert.match(service, /from\("operational_signals"\)[\s\S]{0,200}limit\(30\)/);
+  // And the collision fixture proves it behaviourally: the exact-linked signal is resolved
+  // for attention while staying out of the recent-signal window.
+  assert.equal(lineage.windows.signalsContainsLinked, false);
+  assert.equal(lineage.contexts.find((c) => c.recommendationId === "rec-old").lineageComplete, true);
 });

@@ -251,6 +251,21 @@ const missingEvidenceSummary = summary({
   recommendations: [
     recommendation("rec-1", "gov-1", "risk-1", "Raise a formal Change Request", GOVERNANCE.authority_required, "admin"),
   ],
+  // The server resolves each Recommendation's lineage by exact reference and reports the
+  // result. A fixture asserting canonical absence must therefore say so HERE — inferring it
+  // from an empty presentation collection is the false-absence defect the read model no
+  // longer permits, and `tests/ux-w3-attention-lineage-harness.tsx` proves that end to end.
+  governedAttentionContexts: [
+    {
+      recommendationId: "rec-1",
+      governanceEvent: GOVERNANCE,
+      riskIssue: { id: "risk-1", signal_id: null },
+      signal: null,
+      evidence: null,
+      lineageComplete: false,
+      authorityRequired: GOVERNANCE.authority_required,
+    },
+  ],
 });
 
 /**

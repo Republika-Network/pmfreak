@@ -13,6 +13,7 @@ import type {
   LineageStepKind,
   LineageStepNode,
   LineageTransition,
+  GovernedAttentionContext,
   OperationalSummary,
   RecordOutcomeObservationInput,
 } from "./types";
@@ -1825,10 +1826,83 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
     observations.data as unknown as SummaryRow[] | null,
     await linkedRows("canonical_outcome_observations", "outcome_id", idsOf(allOutcomes))
   );
-  const governanceById = new Map((governance.data ?? []).map((row) => [row.id, row]));
-  const safeRecommendations = (recommendations.data ?? []).map((row) => {
-    const event = governanceById.get(row.governance_event_id) as Record<string, unknown> | undefined;
-    const evaluations = (["accepted", "rejected", "modified", "escalated", "needs_more_evidence"] as DecisionStatus[]).map((status) => [status, evaluateOperationalDecisionAuthority({ actorRole, authorityRequired: String(event?.authority_required ?? "baseline review"), decisionStatus: status })]);
+  /*
+   * Authoritative upstream lineage for the governed attention surface.
+   *
+   * The collections above are independently truncated windows, and Needs You was reading
+   * two things out of them that they cannot answer:
+   *
+   *   - whether a Recommendation's Evidence EXISTS. A Recommendation inside the newest-30
+   *     window may link Evidence older than the newest-20 evidence window, and the surface
+   *     then told the PM "the decision would be refused" — while
+   *     `record_operational_decision`, which resolves by exact id, would have accepted it.
+   *   - which authority the decision requires. `authority_required` was read from the
+   *     windowed governance map and fell back to "baseline review" when the linked event was
+   *     merely out of window, quietly changing which decisions the surface offered.
+   *
+   * Both are fixed the way F7 fixed the downstream chain: a bounded root set (the
+   * recommendation window, unchanged) completed by EXACT persisted reference through the
+   * same chunked, paged, workspace-scoped `linkedRows` helper. No timestamp or title
+   * matching, no unbounded read, no new endpoint.
+   *
+   * The result is a SEPARATE projection. Nothing here is unioned into `evidence`,
+   * `signals`, `risksIssues` or `governanceEvents` — those keep their recent-window
+   * meaning, which "What changed" and "PMFreak is monitoring" are built on.
+   */
+  const rootRecommendations = (recommendations.data ?? []) as unknown as SummaryRow[];
+  const linkedGovernanceById = new Map(
+    (await linkedRows("governance_events", "id", [
+      ...new Set(rootRecommendations.map((row) => String(row.governance_event_id ?? "")).filter(Boolean)),
+    ])).map((row) => [String(row.id), row]),
+  );
+  const linkedRiskById = new Map(
+    (await linkedRows("risk_issue_records", "id", [
+      ...new Set(rootRecommendations.map((row) => String(row.risk_issue_id ?? "")).filter(Boolean)),
+    ])).map((row) => [String(row.id), row]),
+  );
+  const linkedSignalById = new Map(
+    (await linkedRows("operational_signals", "id", [
+      ...new Set([...linkedRiskById.values()].map((row) => String(row.signal_id ?? "")).filter(Boolean)),
+    ])).map((row) => [String(row.id), row]),
+  );
+  const linkedAttentionEvidenceById = new Map(
+    (await linkedRows("evidence_items", "id", [
+      ...new Set([...linkedSignalById.values()].map((row) => String(row.evidence_item_id ?? "")).filter(Boolean)),
+    ])).map((row) => [String(row.id), row]),
+  );
+
+  const governedAttentionContexts: GovernedAttentionContext[] = rootRecommendations.map((row) => {
+    const riskId = String(row.risk_issue_id ?? "");
+    const candidate = linkedGovernanceById.get(String(row.governance_event_id ?? "")) ?? null;
+    // The RPC selects the Governance Event by id AND `related_entity_id = risk_issue_id`.
+    // An event that does not satisfy both is not the one the write would resolve, so it is
+    // not treated as present here either.
+    const governanceEvent =
+      candidate && String(candidate.related_entity_id ?? "") === riskId ? candidate : null;
+    const riskIssue = linkedRiskById.get(riskId) ?? null;
+    const signal = riskIssue ? linkedSignalById.get(String(riskIssue.signal_id ?? "")) ?? null : null;
+    const evidence = signal ? linkedAttentionEvidenceById.get(String(signal.evidence_item_id ?? "")) ?? null : null;
+    return {
+      recommendationId: String(row.id),
+      governanceEvent,
+      riskIssue,
+      signal,
+      evidence,
+      lineageComplete: Boolean(governanceEvent && riskIssue && signal && evidence),
+      authorityRequired: governanceEvent ? String(governanceEvent.authority_required ?? "") || null : null,
+    };
+  });
+  const attentionContextByRecommendationId = new Map(
+    governedAttentionContexts.map((context) => [context.recommendationId, context]),
+  );
+
+  const safeRecommendations = rootRecommendations.map((row) => {
+    // The exact linked Governance Event, resolved by id — never the windowed map. The
+    // "baseline review" fallback now represents a Governance Event that genuinely does not
+    // exist, which is the only thing it was ever meant to represent.
+    const authorityRequired =
+      attentionContextByRecommendationId.get(String(row.id))?.authorityRequired ?? "baseline review";
+    const evaluations = (["accepted", "rejected", "modified", "escalated", "needs_more_evidence"] as DecisionStatus[]).map((status) => [status, evaluateOperationalDecisionAuthority({ actorRole, authorityRequired, decisionStatus: status })]);
     return { ...row, actor_authority: Object.fromEntries(evaluations) };
   });
 
@@ -1854,6 +1928,7 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
     observations: allObservations,
     tasks: allTasks,
     executions: allExecutions,
+    governedAttentionContexts,
     lineages,
     assurance: assuranceResult.data as OperationalSummary["assurance"],
     // `userId` is the requesting actor's own id. P2-06 refuses a Material Action whose

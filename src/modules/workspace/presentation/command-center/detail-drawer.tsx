@@ -100,7 +100,22 @@ function DecisionSection({ panel, headingId }: { panel: DecisionPanel; headingId
   const [error, setError] = useState<string | null>(null);
   const rationaleId = useId();
 
-  const allowed = panel.controls.filter((control) => control.allowed);
+  /**
+   * A lineage-blocked item offers no decision to submit.
+   *
+   * `blockedReason` means the canonical write would be REFUSED — `record_operational_decision`
+   * validates the governed lineage before it looks at authority at all. Rendering Accept,
+   * Reject and a rationale box beneath a sentence saying the decision would be refused told
+   * the PM two contradictory things and invited them to send a request the server must
+   * reject.
+   *
+   * This is presentation ELIGIBILITY, not authority. `control.allowed` is untouched — the
+   * server's verdict is still exactly what it was, and the moment a refreshed summary reports
+   * the lineage complete the normal authority-derived controls return with no client
+   * override. The item stays fully inspectable meanwhile.
+   */
+  const submissionBlocked = Boolean(panel.blockedReason);
+  const allowed = submissionBlocked ? [] : panel.controls.filter((control) => control.allowed);
   const denied = panel.controls.filter((control) => !control.allowed);
   const terminalDecision = panel.decisions.find((decision) => decision.terminal) ?? null;
   const rationaleMissing = panel.requiresRationale && rationale.trim().length === 0;
@@ -144,6 +159,13 @@ function DecisionSection({ panel, headingId }: { panel: DecisionPanel; headingId
       {terminalDecision ? (
         <p className="mt-3 text-xs text-zinc-400">
           This recommendation has been decided. No further decision can be recorded against it.
+        </p>
+      ) : submissionBlocked ? (
+        // Inspection continues; only submission is withheld. What the actor's role would
+        // otherwise permit is a governance detail and lives under the disclosure below.
+        <p className="mt-3 text-xs text-zinc-400" data-testid="cc-decision-blocked">
+          There is nothing to decide here yet. This item stays in your queue and becomes
+          decidable once the missing project context exists.
         </p>
       ) : (
         <>

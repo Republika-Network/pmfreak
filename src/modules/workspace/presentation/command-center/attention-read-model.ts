@@ -134,7 +134,8 @@ export type AttentionEvidenceQuality = {
   /** `LIVE` or `DEMO_FIXTURE` straight from the persisted row — never inferred. */
   fixtureState: string | null;
   isFixture: boolean;
-  /** True when nothing supports the recommendation, so it cannot be safely evaluated. */
+  /** True when the canonical lineage the write requires is incomplete — mirrors
+   *  `governedLineageComplete` on the item, and is never a windowed read. */
   evidenceMissing: boolean;
 };
 
@@ -193,6 +194,16 @@ export type CanonicalAttentionItem = {
   /** Decisions already recorded against this Recommendation, newest first. */
   decisions: AttentionDecisionRecord[];
   terminalDecision: AttentionDecisionRecord | null;
+  /**
+   * Whether every canonical node `record_operational_decision` requires actually exists
+   * for this Recommendation — Governance Event, Risk/Issue, Signal and Evidence.
+   *
+   * Resolved server-side by exact persisted reference (`governedAttentionContexts`), so it
+   * is a statement about the database rather than about which rows a presentation window
+   * happened to include. When the write would be refused for lineage reasons, this is
+   * false and no decision may be offered however much authority the actor holds.
+   */
+  governedLineageComplete: boolean;
   /** `awaiting_decision` while the Recommendation is open; `decided` once terminally decided. */
   state: "awaiting_decision" | "decided";
 };
@@ -294,21 +305,55 @@ export function buildCanonicalAttention(summary: OperationalSummary | undefined)
     if (signalId) riskBySignalId.set(signalId, risk);
   }
 
+  /**
+   * The server's exact-reference resolution of each Recommendation's upstream lineage.
+   *
+   * This is the authority for "does this node exist". The windowed collections below are a
+   * FALLBACK only, for payloads that predate the projection (older clients, fixtures): a
+   * row's absence from a truncated window has never been evidence that it is absent from
+   * the project, and must never again be read as such.
+   */
+  const attentionContextById = new Map(
+    (summary.governedAttentionContexts ?? []).map((context) => [context.recommendationId, context]),
+  );
   const items: CanonicalAttentionItem[] = [];
 
   for (const recommendation of summary.recommendations ?? []) {
     const recommendationId = String(recommendation.id);
-    const governance = str(recommendation.governance_event_id)
-      ? governanceById.get(String(recommendation.governance_event_id))
-      : undefined;
+    const context = attentionContextById.get(recommendationId);
+
+    // Exact linked rows where the server resolved them; the windows only fill in for a
+    // payload that carries no projection at all.
+    const governance =
+      (context?.governanceEvent as AnyRecord | null | undefined) ??
+      (context
+        ? undefined
+        : str(recommendation.governance_event_id)
+          ? governanceById.get(String(recommendation.governance_event_id))
+          : undefined);
 
     // Prefer the recommendation's own risk link; fall back to the governance event's related entity.
     const riskId = str(recommendation.risk_issue_id) ?? str(governance?.related_entity_id);
-    const risk = riskId ? riskById.get(riskId) : undefined;
+    const risk =
+      (context?.riskIssue as AnyRecord | null | undefined) ??
+      (context ? undefined : riskId ? riskById.get(riskId) : undefined);
     const signalId = str(risk?.signal_id);
-    const signal = signalId ? signalById.get(signalId) : undefined;
+    const signal =
+      (context?.signal as AnyRecord | null | undefined) ??
+      (context ? undefined : signalId ? signalById.get(signalId) : undefined);
     const evidenceId = str(signal?.evidence_item_id);
-    const evidence = evidenceId ? evidenceById.get(evidenceId) : undefined;
+    const evidence =
+      (context?.evidence as AnyRecord | null | undefined) ??
+      (context ? undefined : evidenceId ? evidenceById.get(evidenceId) : undefined);
+
+    /**
+     * Does the canonical lineage `record_operational_decision` requires actually exist?
+     *
+     * From the server's exact-id resolution when it is available. Without it, the honest
+     * answer is that this payload cannot tell — and the surface must not claim the write
+     * would be refused on the strength of a windowed read, so it assumes complete.
+     */
+    const lineageComplete = context ? context.lineageComplete : true;
 
     const decisions = (summary.decisions ?? [])
       .filter((row) => str(row.recommendation_id) === recommendationId)
@@ -316,7 +361,8 @@ export function buildCanonicalAttention(summary: OperationalSummary | undefined)
       .sort((a, b) => String(b.recordedAt ?? "").localeCompare(String(a.recordedAt ?? "")));
     const terminalDecision = decisions.find((row) => row.terminal) ?? null;
 
-    const authorityRequired = str(governance?.authority_required) ?? "an authorized reviewer";
+    const authorityRequired =
+      (context?.authorityRequired ?? null) ?? str(governance?.authority_required) ?? "an authorized reviewer";
     const decisionOptions = buildDecisionOptions(recommendation, authorityRequired);
     const confidence = num(evidence?.confidence_score);
 
@@ -328,6 +374,7 @@ export function buildCanonicalAttention(summary: OperationalSummary | undefined)
       signalId: signalId ?? null,
       riskIssueId: riskId ?? null,
       evidenceIds: evidenceId ? [evidenceId] : [],
+      governedLineageComplete: lineageComplete,
       title: str(recommendation.recommendation) ?? "Review recommendation",
       recommendationStatus: String(recommendation.status ?? "proposed"),
       why: str(risk?.rationale) ?? str(signal?.rationale) ?? str(governance?.explanation) ?? "This needs a human decision before it proceeds.",
@@ -361,7 +408,9 @@ export function buildCanonicalAttention(summary: OperationalSummary | undefined)
         staleAt: str(evidence?.stale_at),
         fixtureState: str(evidence?.fixture_state),
         isFixture: str(evidence?.fixture_state) === "DEMO_FIXTURE",
-        evidenceMissing: !evidence,
+        // Canonical absence, from the server's exact-reference resolution — never
+        // "this row was not in the newest-20 evidence window".
+        evidenceMissing: !lineageComplete,
       },
       governance: {
         governanceEventId: str(recommendation.governance_event_id),

@@ -242,7 +242,28 @@ const decidedSummary = summary({
 const escalatedSummary = summary({ decisions: [ESCALATED_DECISION] });
 
 /** Governed recommendation whose supporting evidence is absent. */
-const missingEvidenceSummary = summary({ evidence: [], signals: [], risksIssues: [], governanceEvents: [GOVERNANCE] });
+/** Evidence genuinely absent from the PROJECT, not merely from a presentation window.
+ *  `getOperationalSummary` resolves each Recommendation's upstream lineage by exact
+ *  reference and reports the result, so a fixture claiming canonical absence must say so
+ *  through that projection — reading it back off a truncated collection is exactly the
+ *  false-absence defect the attention read model no longer permits. */
+const missingEvidenceSummary = summary({
+  evidence: [],
+  signals: [],
+  risksIssues: [],
+  governanceEvents: [GOVERNANCE],
+  governedAttentionContexts: [
+    {
+      recommendationId: "rec-1",
+      governanceEvent: GOVERNANCE,
+      riskIssue: null,
+      signal: null,
+      evidence: null,
+      lineageComplete: false,
+      authorityRequired: GOVERNANCE.authority_required,
+    },
+  ],
+});
 
 const raidItems = deriveRaidNeedsYou([RAID_ACTION], noopDecide);
 

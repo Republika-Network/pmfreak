@@ -839,9 +839,24 @@ test("P2-12 M7b: linked rows are fetched by exact persisted reference, not a wid
     "internal_task_executions:in:task_id",
     "canonical_task_outcomes:in:task_id",
     "canonical_outcome_observations:in:outcome_id",
+    // UX-W3 extends the same discipline UPSTREAM. The attention surface was reading
+    // "does this Recommendation's Evidence exist?" and "which authority does it need?" out
+    // of independently truncated windows, so an out-of-window row read as canonical
+    // absence — the exact defect this test exists to prevent, on the other side of the
+    // Decision. It is completed the same way: a bounded root set (the recommendation
+    // window) and exact-id reads through the same helper.
+    //
+    // Only `governance_events` appears here because this fixture's Recommendation carries
+    // no `risk_issue_id`, so the risk / signal / evidence id sets are empty and
+    // `linkedRows` returns without querying at all. That is the bound working.
+    "governance_events:in:id",
     // The probe run that proves the windows alone would have dropped the chain.
     "decision_evidence_links:in:decision_record_id",
   ]);
+  // Every upstream completion is an exact-id read, never a widened window or a fuzzy join.
+  for (const table of ["governance_events", "risk_issue_records", "operational_signals", "evidence_items"]) {
+    assert.match(service, new RegExp(`linkedRows\\("${table}", "id", \\[`), `${table} is completed by exact id`);
+  }
   // The by-id reads union with the windowed ones rather than replacing them, so no
   // existing surface loses a row it used to see.
   assert.match(service, /const unionById = \(orderColumn: string, \.\.\.groups/);

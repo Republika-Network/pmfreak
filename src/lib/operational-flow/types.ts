@@ -196,6 +196,28 @@ export type AuditReconstructionItem = {
   relationship: "causation" | "correlation_only" | "unlinked";
 };
 
+/**
+ * One governed Recommendation's upstream canonical lineage, resolved by exact reference
+ * rather than read out of a presentation window.
+ *
+ * `lineageComplete` mirrors exactly what `record_operational_decision` requires before it
+ * evaluates authority: the Governance Event (matching this Recommendation's risk), the
+ * Risk/Issue, the Signal and the Evidence must all exist. It is a statement about the
+ * database, not about what a page happened to load.
+ */
+export type GovernedAttentionContext = {
+  recommendationId: string;
+  governanceEvent: Record<string, unknown> | null;
+  riskIssue: Record<string, unknown> | null;
+  signal: Record<string, unknown> | null;
+  evidence: Record<string, unknown> | null;
+  /** True when every node the canonical write requires exists. */
+  lineageComplete: boolean;
+  /** The exact linked Governance Event's `authority_required`. Null ONLY when that event
+   *  genuinely does not exist — never because it fell outside a window. */
+  authorityRequired: string | null;
+};
+
 export type OperationalSummary = {
   /**
    * The server's own clock reading when this summary was produced, ISO-8601.
@@ -238,6 +260,23 @@ export type OperationalSummary = {
   /** `internal_task_executions` rows (P2-08). A Task's execution history is a
    *  separate record from the Task itself and is never collapsed into it. */
   executions?: Array<Record<string, unknown>>;
+  /**
+   * Authoritative upstream lineage for each governed Recommendation in the bounded
+   * recommendation window — the ONE thing the windowed collections cannot answer.
+   *
+   * Every other collection above is an independently truncated presentation window, and
+   * absence from one is not absence from the project. `record_operational_decision`
+   * resolves Governance -> Risk -> Signal -> Evidence by exact persisted reference and
+   * refuses only when a node genuinely does not exist, so a surface that decides
+   * "the evidence is missing" from the newest-20 evidence window will tell a PM their
+   * decision would be refused when the server would happily accept it.
+   *
+   * This carries that resolution, completed by exact id. It is deliberately SEPARATE from
+   * `evidence`, `signals`, `risksIssues` and `governanceEvents`: those keep their
+   * recent-window meaning, which "What changed" and "PMFreak is monitoring" depend on, and
+   * nothing here is unioned into them.
+   */
+  governedAttentionContexts?: GovernedAttentionContext[];
   lineages?: CompleteLineageProjection[];
   assurance: OperationalAssuranceSummary;
   actor: { role: string | null; userId?: string | null; canCreateEvidence: boolean };
