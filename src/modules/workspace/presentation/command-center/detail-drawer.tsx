@@ -90,7 +90,6 @@ function DecisionSection({ panel, headingId }: { panel: DecisionPanel; headingId
       <h3 id={headingId} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
         Your decision
       </h3>
-      <p className="mt-1.5 text-[11px] leading-relaxed text-zinc-500">{panel.writePathLabel}</p>
 
       {panel.decisions.length > 0 && (
         <div className="mt-3">
@@ -246,23 +245,12 @@ export function DetailDrawer({ content, onClose }: { content: DrawerContent | nu
               </div>
             )}
 
-            {content.kindSummary && <p className="mt-2 text-[11px] leading-relaxed text-zinc-500">{content.kindSummary}</p>}
-
             <section aria-labelledby={`${headingId}-why`} className="mt-5">
               <h3 id={`${headingId}-why`} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
                 Why this matters
               </h3>
               <p className="mt-1.5 text-sm leading-relaxed text-zinc-300">{content.why}</p>
             </section>
-
-            {content.chain && content.chain.length > 0 && (
-              <section aria-labelledby={`${headingId}-chain`} className="mt-5">
-                <h3 id={`${headingId}-chain`} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
-                  How PMFreak got here
-                </h3>
-                <RowList rows={content.chain} />
-              </section>
-            )}
 
             <section aria-labelledby={`${headingId}-evidence`} className="mt-5">
               <h3 id={`${headingId}-evidence`} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
@@ -277,26 +265,61 @@ export function DetailDrawer({ content, onClose }: { content: DrawerContent | nu
               </ul>
             </section>
 
-            {content.sections && content.sections.length > 0 && (
-              <section aria-labelledby={`${headingId}-detail`} className="mt-5">
-                <h3 id={`${headingId}-detail`} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
-                  Details
-                </h3>
-                {content.sections.map((section) => (
-                  <DisclosureSection key={section.id} section={section} />
-                ))}
-              </section>
-            )}
-
             <div className="mt-5 rounded-xl border border-sky-500/20 bg-sky-500/[0.06] p-3">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-sky-300">Suggested next step</p>
-              <p className="mt-1.5 text-sm leading-relaxed text-zinc-200">{content.nextStep}</p>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-sky-300">PMFreak recommends</p>
+              <p className="mt-1.5 text-sm leading-relaxed text-zinc-200">{content.recommendation ?? content.nextStep}</p>
+              {/* The caveat qualifies the recommendation; it is never presented AS the
+                  recommendation, which is what "Suggested next step" used to do here. */}
+              {content.recommendation && content.nextStep && content.nextStep !== content.recommendation && (
+                <p className="mt-2 text-[11px] leading-relaxed text-zinc-400">{content.nextStep}</p>
+              )}
             </div>
 
             {/* Keyed by subject so switching items remounts the form — a draft rationale can
                 never leak from one recommendation onto another. */}
             {content.decisionPanel && (
               <DecisionSection key={content.decisionPanel.subjectId} panel={content.decisionPanel} headingId={decisionHeadingId} />
+            )}
+
+            {/*
+              UX-W3 — progressive disclosure.
+
+              Everything below this point is the canonical record: how PMFreak got here, the
+              provenance of the evidence, its quality, the governance rule and authority, and
+              the canonical references. None of it is deleted, none of it is changed, and all
+              of it stays one click away. It simply no longer stands between a PM and their
+              judgment: it sits AFTER the decision controls, collapsed, for the reader who
+              wants to audit rather than decide.
+            */}
+            {((content.chain && content.chain.length > 0) || (content.sections && content.sections.length > 0)) && (
+              <section aria-labelledby={`${headingId}-detail`} className="mt-6 border-t border-white/10 pt-4">
+                <h3 id={`${headingId}-detail`} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                  Evidence &amp; governance
+                </h3>
+                {content.chain && content.chain.length > 0 && (
+                  <details className="mt-2 rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2">
+                    <summary className="cursor-pointer text-xs font-medium text-zinc-300">How PMFreak got here</summary>
+                    <RowList rows={content.chain} />
+                  </details>
+                )}
+                {(content.sections ?? []).map((section) => (
+                  <DisclosureSection key={section.id} section={section} />
+                ))}
+                {/* What kind of object this is, and exactly what a decision on it writes.
+                    Both are preserved verbatim — the two attention sources deliberately use
+                    different language here and that difference is a contract, not styling.
+                    They simply no longer sit above the judgment, where a table name in front
+                    of a PM is noise rather than provenance. */}
+                {(content.kindSummary || content.decisionPanel?.writePathLabel) && (
+                  <details className="mt-2 rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2">
+                    <summary className="cursor-pointer text-xs font-medium text-zinc-300">What this is, and what a decision records</summary>
+                    {content.kindSummary && <p className="mt-2 text-[11px] leading-relaxed text-zinc-400">{content.kindSummary}</p>}
+                    {content.decisionPanel?.writePathLabel && (
+                      <p className="mt-2 text-[11px] leading-relaxed text-zinc-400">{content.decisionPanel.writePathLabel}</p>
+                    )}
+                  </details>
+                )}
+              </section>
             )}
 
             {/* P2-12: keyed by the canonical Decision so switching chains remounts the

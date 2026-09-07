@@ -177,6 +177,10 @@ export type CanonicalAttentionItem = {
   severity: string | null;
   tone: StatusTone;
   signalType: string | null;
+  /** The detected signal's own persisted `summary` — a plain sentence written by the
+   *  deterministic detector, which reads to a PM far better than the recommendation text
+   *  alone. Null when the Recommendation has no linked signal. */
+  signalSummary: string | null;
   riskIssueType: string | null;
   riskIssueStatus: string | null;
   provenance: AttentionProvenance;
@@ -330,6 +334,7 @@ export function buildCanonicalAttention(summary: OperationalSummary | undefined)
       severity: str(signal?.severity),
       tone: severityTone(signal?.severity),
       signalType: str(signal?.signal_type),
+      signalSummary: str(signal?.summary),
       riskIssueType: str(risk?.type),
       riskIssueStatus: str(risk?.status),
       provenance: {

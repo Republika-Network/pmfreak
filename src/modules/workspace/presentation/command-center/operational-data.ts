@@ -678,19 +678,39 @@ function toNeedsYouItem(
     ? null
     : `You can review this item, but your role cannot record a Decision on it. This governance rule requires: ${item.governance.authorityRequired}.`;
 
+  // Card presentation (UX-W3). The headline is the detected finding in the detector's own
+  // words when there is one, so the card leads with WHAT HAPPENED and states the canonical
+  // Recommendation separately as what PMFreak proposes. With no linked signal there is no
+  // separate subject, the Recommendation text stays the headline, and the recommendation
+  // line is dropped rather than printing the same sentence twice.
+  const subject = item.signalSummary ?? item.title;
+  const evidenceSummary = item.provenance.evidenceTitle ?? item.provenance.sourceReference ?? null;
+
   return {
     id: item.id,
     kind: "governed_recommendation",
     title: item.title,
     badge,
     recommendationId: item.recommendationId,
+    subject,
+    severity: item.severity,
+    whyItMatters: item.why,
+    evidenceSummary,
+    recommendation: subject === item.title ? null : item.title,
     drawer: {
-      title: item.title,
+      // The drawer opens on the same headline as the card the PM clicked — what happened —
+      // so the canonical Recommendation reads once, under "PMFreak recommends", instead of
+      // twice. `item.title` is unchanged and remains the Recommendation text for every
+      // other consumer.
+      title: subject,
       badge,
       kindSummary:
         "Governed Recommendation — system output produced by the evidence chain. It is a proposal, not a decision, and not an action.",
       why: item.why,
       evidence: evidenceLines.length ? evidenceLines : ["No linked evidence yet"],
+      // The canonical Recommendation text is what PMFreak recommends. `nextStep` below is
+      // the caveat that qualifies it, not the recommendation itself.
+      recommendation: item.title,
       nextStep: decided
         ? "A Decision is already recorded. Any governed Action is a separate, later step."
         : `Requires ${item.governance.authorityRequired}. Recording a Decision does not create an Action, Task or Outcome.`,
@@ -781,11 +801,23 @@ export function deriveRaidNeedsYou(
     // chain above: this is extracted intelligence in a bounded workflow, not a governed
     // Recommendation, and deciding it does NOT write an operational_decision_records row.
     const badge: ToneBadge = { tone, label: "Suggestion · extracted intelligence" };
+    // Card presentation (UX-W3). The suggestion's title is what was found; the suggested
+    // owner and timing are what PMFreak proposes, so the two are genuinely different
+    // sentences here and both are shown.
+    const recommendation = nextStepParts.length > 0 ? nextStepParts.join(" ") : null;
+
     return {
       id: `raid-action-${action.id}`,
       kind: "raid_suggestion",
       title: action.title,
       badge,
+      subject: action.title,
+      // `impact_level` is this path's own persisted severity. It is NOT remapped onto the
+      // governed severity vocabulary — only rendered with the same visual weight.
+      severity: impact,
+      whyItMatters: action.description,
+      evidenceSummary: raidTitle ? `Detected from your project notes: "${raidTitle}"` : null,
+      recommendation,
       drawer: {
         title: action.title,
         badge,
