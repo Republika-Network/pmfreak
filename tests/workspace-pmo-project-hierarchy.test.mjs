@@ -193,9 +193,24 @@ test("onboarding state resolution has no PMO precondition (PMF-001/PMF-002)", ()
 // ─── Navigation (Changes 2 & 8) ───────────────────────────────────────────────
 
 test("navigation registry exposes the three-level surfaces", () => {
+  // Workspace → PMO → Project each keep a navigation destination. /chat and /projects/new
+  // dropped out of this list with W1 — they are still reachable, just not persistent
+  // navigation; the next test is what now guards them.
   const hrefs = NAVIGATION_HIERARCHY.map((n) => n.href);
-  for (const href of ["/workspaces", "/pmos", "/chat", "/projects", "/projects/new"]) {
+  for (const href of ["/workspaces", "/pmos", "/projects"]) {
     assert.ok(hrefs.includes(href), `navigation missing ${href}`);
+  }
+});
+
+test("navigation-hidden surfaces remain route-reachable (hidden is not deleted)", () => {
+  // The whole basis for removing them from navigation is that nothing was lost. If the page
+  // ever disappears, this fails and the claim stops being true.
+  for (const page of [
+    "src/app/(protected)/chat/page.tsx",
+    "src/app/(protected)/dashboard/page.tsx",
+    "src/app/(protected)/projects/new/page.tsx",
+  ]) {
+    assert.ok(fs.existsSync(page), `${page} must still exist — navigation-hidden, not removed`);
   }
 });
 

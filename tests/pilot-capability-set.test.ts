@@ -45,8 +45,22 @@ test("pilot profile hides every curated href even at maximum unlock", () => {
 test("pilot profile keeps the real product surface visible", () => {
   const state = computeCapabilityRevealState(MAX_REVEAL_INPUT);
   const hrefs = computeNavigationRail(state, "pilot").map((item) => item.href);
-  for (const required of ["/workspaces", "/pmos", "/chat", "/dashboard", "/command-center", "/projects", "/upload", "/operational-memory", "/follow-up-dashboard"]) {
+  // /chat and /dashboard left this list with W1: they are navigation-hidden for EVERY
+  // profile as duplicate product surfaces (chat is the copilot layer, /dashboard a second
+  // home competing with Command Center), not hidden by the pilot capability set. Asserting
+  // them here would make this test pass for a reason it does not own.
+  for (const required of ["/workspaces", "/pmos", "/command-center", "/projects", "/execution", "/portfolio", "/upload", "/operational-memory", "/follow-up-dashboard"]) {
     assert.ok(hrefs.includes(required), `pilot navigation lost a real surface: ${required}`);
+  }
+});
+
+test("the navigation-hidden duplicates are hidden by the hierarchy, not by the pilot profile", () => {
+  // Proves the mechanism, so a later change cannot quietly re-expose them by flipping a
+  // profile: they are absent from the hierarchy entirely, for founder and pilot alike.
+  const allHrefs = NAVIGATION_HIERARCHY.map((node) => node.href);
+  for (const hidden of ["/chat", "/dashboard", "/projects/new"]) {
+    assert.ok(!allHrefs.includes(hidden), `${hidden} must not be a navigation destination`);
+    assert.equal(isHiddenForProfile(hidden, "pilot"), false, `${hidden} is not a pilot-profile concern`);
   }
 });
 

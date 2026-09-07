@@ -7,19 +7,40 @@ const selectors = readFileSync('src/features/runtime/capability-reveal/capabilit
 const shell = readFileSync('src/components/pmfreak/operational-shell.tsx', 'utf8');
 const drawer = readFileSync('src/components/pmfreak/navigation/advanced-drawer.tsx', 'utf8');
 
-test('workspace chat appears as primary visible node', () => {
-  // Workspace → PMO → Project sprint: the workspace-level chat is the
-  // primary workspace entry; the workspace list lives in utilities.
-  assert.match(hierarchy, /label: "Workspace Chat"[\s\S]*tier: "primary"[\s\S]*visibleByDefault: true/);
+// W1 replaced the module-inventory hierarchy with a four-item product hierarchy. The
+// assertions below used to lock in the inventory — "workspace chat appears as primary",
+// a "lens group", a seven-item "utility group", and a ban on the string "Command Center".
+// Each is rewritten to the invariant that superseded it rather than dropped; the exact
+// membership and ordering contract lives in tests/ux-w1-navigation-ia.test.mjs.
+
+test('workspace chat is NOT primary navigation', () => {
+  // Was: "workspace chat appears as primary visible node". Chat is the copilot layer, not
+  // a destination a PM navigates to, so it is navigation-hidden entirely — /workspaces
+  // stays, in the secondary group.
+  assert.doesNotMatch(hierarchy, /label: "Workspace Chat"/);
+  assert.doesNotMatch(hierarchy, /href: "\/chat"/);
   assert.match(hierarchy, /label: "Workspaces"[\s\S]*tier: "utility"/);
 });
 
-test('lens group contains only required defaults', () => {
-  for (const lens of ['Summary', 'Execution', 'Executive', 'Portfolio']) assert.match(hierarchy, new RegExp(`label: "${lens}"[\\s\\S]*tier: "lens"`));
+test('the lens tier is gone, and its members were reclassified rather than dropped', () => {
+  // Was: "lens group contains only required defaults" over Summary/Execution/Executive/
+  // Portfolio. Command Center and Portfolio were promoted to primary, Executive moved to
+  // the secondary group, and Summary (/dashboard) is navigation-hidden as a duplicate home.
+  assert.doesNotMatch(hierarchy, /tier: "lens"/);
+  assert.doesNotMatch(selectors, /NAV_STYLE\.lens/);
+  assert.match(hierarchy, /label: "Command Center", href: "\/command-center", tier: "primary"/);
+  assert.match(hierarchy, /label: "Portfolio", href: "\/portfolio", tier: "primary"/);
+  assert.match(hierarchy, /label: "Executive"[\s\S]*tier: "utility"/);
+  assert.doesNotMatch(hierarchy, /label: "Summary"/);
 });
 
-test('utility group contains only required defaults', () => {
-  for (const util of ['Workspaces', 'PMOs', 'Projects', 'Programs', 'Upload', 'Members']) assert.match(hierarchy, new RegExp(`label: "${util}"[\\s\\S]*tier: "utility"`));
+test('secondary group carries the supporting workspace surfaces', () => {
+  // Was: "utility group contains only required defaults". Members changed (Members → Team,
+  // Executive and Workspace Setup joined, Projects was promoted to primary); the tier's
+  // role — real surfaces that are not the daily loop — did not.
+  for (const util of ['Workspaces', 'PMOs', 'Programs', 'Team', 'Upload', 'Executive']) {
+    assert.match(hierarchy, new RegExp(`label: "${util}"[\\s\\S]*tier: "utility"`));
+  }
 });
 
 test('advanced surfaces are hidden by default', () => {
@@ -32,13 +53,20 @@ test('capability reveal adds to advanced group only', () => {
 });
 
 test('no legacy top-level labels remain', () => {
-  assert.doesNotMatch(hierarchy, /Command Center|Risk Center|PMO Overview|Copilot/);
+  // Was a ban on the string "Command Center" itself, from an earlier naming era. Command
+  // Center is now the canonical name of /command-center, so the ban moved to the labels
+  // that actually competed with it.
+  assert.doesNotMatch(hierarchy, /Risk Center|PMO Overview|label: "Copilot"/);
+  assert.doesNotMatch(hierarchy, /label: "Daily Execution"|label: "Create Center"|label: "New Project"|label: "Summary"|label: "Members"/);
 });
 
-test('operational shell renders grouped hierarchy', () => {
+test('operational shell renders one secondary group, not a lens/utility split', () => {
+  // Was: asserts a "Lenses" heading AND a "Utilities" heading. Two adjacent secondary
+  // groupings were part of the inventory problem; there is one "More" now.
   assert.match(shell, /Workspace<\/p>/);
-  assert.match(shell, /Lenses<\/p>/);
-  assert.match(shell, /Utilities<\/p>/);
+  assert.match(shell, /More<\/p>/);
+  assert.doesNotMatch(shell, /Lenses<\/p>/);
+  assert.doesNotMatch(shell, /Utilities<\/p>/);
   assert.match(drawer, /Advanced Runtime/);
 });
 

@@ -242,8 +242,14 @@ test("task detail drawer explains why editing is unavailable rather than silentl
 
 // ─── Nav wiring ─────────────────────────────────────────────────────────────
 
-test("navigation hierarchy adds a Daily Execution entry pointing at /execution without touching the legacy Execution/Command Center lens entry", () => {
+test("navigation hierarchy gives /execution the name Execution, and /command-center the name Command Center", () => {
+  // This test used to assert the opposite pairing: "Daily Execution" on /execution while
+  // "Execution" named /command-center. That was the naming collision W1 removed — two
+  // adjacent nav entries whose labels could not be told apart without knowing the system.
+  // The Daily Execution surface itself is unchanged; only what the navigation calls it.
   const hierarchy = read("src/lib/workspace/navigation-hierarchy.ts");
-  assert.match(hierarchy, /label: "Daily Execution", href: "\/execution"/);
-  assert.match(hierarchy, /label: "Execution", href: "\/command-center"/);
+  assert.match(hierarchy, /label: "Execution", href: "\/execution"/);
+  assert.match(hierarchy, /label: "Command Center", href: "\/command-center"/);
+  assert.doesNotMatch(hierarchy, /label: "Daily Execution"/);
+  assert.doesNotMatch(hierarchy, /label: "Execution", href: "\/command-center"/);
 });

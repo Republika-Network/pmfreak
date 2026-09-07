@@ -151,22 +151,30 @@ test("conversation shell uses dynamic ignitionCues", () => {
 
 // ─── 6. Lens prioritization adapts ───────────────────────────────────────────
 
-test("operational shell loads imprint for lens ordering", () => {
-  assert.match(opShell, /loadImprintState/);
-  assert.match(opShell, /imprintFocus/);
+// These four tests asserted that the imprint profile reordered the navigation "lens" rail
+// (stakeholder-heavy → Executive first, delivery-heavy → Command Center first, sorted via
+// `lensOrder.indexOf`). W1 retired the lens rail: navigation order is now the fixed product
+// hierarchy, which is the point of having one — an order that rearranges itself under the
+// user is not a hierarchy they can learn.
+//
+// No behaviour was lost. The sorted rail was ALREADY inert before W1: the shell computed
+// `sortedLensNav` and then rendered `lensNav`, so the imprint ordering never reached a
+// screen. These assertions were passing on dead code.
+//
+// The imprint profile itself is untouched — every other test in this file still exercises
+// it. What is asserted here now is that it no longer reorders navigation.
+
+test("navigation order is the fixed product hierarchy, not an imprint-derived one", () => {
+  const hierarchy = read("src/lib/workspace/navigation-hierarchy.ts");
+  const primary = [...hierarchy.matchAll(/label: "([^"]+)", href: "([^"]+)", tier: "primary"/g)].map((m) => m[1]);
+  assert.deepEqual(primary, ["Command Center", "Projects", "Execution", "Portfolio"]);
 });
 
-test("stakeholder-heavy focus promotes executive lens", () => {
-  assert.match(opShell, /stakeholders.*executive.*command-center/s);
-});
-
-test("delivery-heavy focus keeps execution lens first after summary", () => {
-  assert.match(opShell, /delivery.*command-center.*executive/s);
-});
-
-test("lens sort uses imprint order", () => {
-  assert.match(opShell, /lensOrder\.indexOf\(a\.href\)/);
-  assert.match(opShell, /lensOrder\.indexOf\(b\.href\)/);
+test("the operational shell no longer reorders navigation from the imprint profile", () => {
+  assert.doesNotMatch(opShell, /lensOrder/);
+  assert.doesNotMatch(opShell, /sortedLensNav/);
+  // And the now-unused import went with it rather than lingering as dead code.
+  assert.doesNotMatch(opShell, /loadImprintState/);
 });
 
 // ─── 7. Confidence progresses correctly ──────────────────────────────────────
