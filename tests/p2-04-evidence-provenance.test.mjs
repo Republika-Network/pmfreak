@@ -34,7 +34,11 @@ test("P2-04 keeps classification, uncertainty, freshness and provenance explicit
 });
 
 test("manual provenance UI is honest, accessible, and never auto-runs intelligence", () => {
-  assert.match(modal, /DEMO \/ FIXTURE/);
+  // Was `assert.match(modal, /DEMO \/ FIXTURE/)`. That label was ACCURATE — the modal wrote
+  // the fixture lineage — so UX-P0-01 changed the contract it calls rather than the copy.
+  // The provenance disclosure this test exists to protect is unchanged.
+  assert.match(modal, /captureAndDeriveLiveEvidence/);
+  assert.ok(!/DEMO \/ FIXTURE/.test(modal), "a customer surface must not carry fixture terminology");
   assert.match(modal, /Source to Evidence provenance chain/);
   assert.match(modal, /role="alert"/);
   assert.match(modal, /Intelligence has not run/);

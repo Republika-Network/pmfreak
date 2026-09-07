@@ -147,6 +147,29 @@ export const ROUTE_GUARD_REGISTRY: readonly RouteGuardEntry[] = [
     requiredGuard: "isFounderOrInternalUser",
     dataAccess: ["early_access_invites", "trial_licenses", "workspace_activations", "early_access_events"],
   },
+  {
+    file: "src/app/(protected)/internal/governance-lab/page.tsx",
+    kind: "page",
+    classification: "founder-internal",
+    requiredGuard: "isFounderOrInternalUser",
+    dataAccess: ["operational_decision_records", "material_actions", "material_action_evaluations", "evidence (DEMO / FIXTURE lineage)"],
+    notes:
+      "UX-P0-02. Hosts the P2-06 / AOC-E Material Action certification panel and the " +
+      "DEMO / FIXTURE capture path, both of which used to render inside ordinary " +
+      "customer UX. Ordinary authenticated customers get notFound(), so the surface is " +
+      "indistinguishable from a route that does not exist.",
+  },
+  {
+    file: "src/app/operational-flow/page.tsx",
+    kind: "page",
+    classification: "founder-internal",
+    requiredGuard: "isFounderOrInternalUser",
+    dataAccess: ["operational_decision_records", "material_actions", "outcomes", "outcome_observations"],
+    notes:
+      "UX-P0-02. Previously guarded by requireAuthenticatedUser alone, which is not a " +
+      "boundary for a certification surface — every ordinary customer is authenticated. " +
+      "It renders the same MaterialActionPanel, so it carries the same founder/internal gate.",
+  },
 
   // ── Founder Circle Program (Sprint 01) ─────────────────────────────────
   // Operator surfaces: requireFounderProgramOperator = program-enabled gate

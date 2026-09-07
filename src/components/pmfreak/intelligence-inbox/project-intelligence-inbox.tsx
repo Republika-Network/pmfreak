@@ -7,7 +7,6 @@ import { EVIDENCE_STATUS_LABEL, type EvidenceTimelineItem, type EvidenceProcessi
 import { OperationalMemoryPanel } from "./operational-memory-panel";
 import { KnowledgeGapsPanel } from "./knowledge-gaps-panel";
 import { TextCaptureModal } from "./text-capture-modal";
-import { MaterialActionPanel } from "./material-action-panel";
 import { ProjectBrainIntroduction, type RecentMemorySummary } from "@/components/pmfreak/project-brain/project-brain-introduction";
 import { ProjectEpisodeCard } from "@/components/pmfreak/project-brain/project-episode-card";
 import { buildInitialProjectBrainResponse } from "@/lib/project-brain/validate-response-pipeline";
@@ -418,8 +417,6 @@ export function ProjectIntelligenceInbox({
         onAddEvidence={() => fileInputRef.current?.click()}
         onCaptureContext={() => setCaptureMode("paste")}
       />
-
-      <MaterialActionPanel workspaceId={workspaceId} projectId={projectId} />
 
       <div className="grid gap-5 lg:grid-cols-[1fr_300px]">
         <div className="space-y-5">

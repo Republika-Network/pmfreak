@@ -242,7 +242,10 @@ test("Command Center surfaces RAID from the explicit vault pipeline", () => {
 });
 
 test("manual P2-04 vault intake derives Evidence without automatic RAID extraction", () => {
-  assert.match(vaultIntakePanel, /captureAndDeriveDemoEvidence/);
+  // Was `captureAndDeriveDemoEvidence`; UX-P0-01 moved the customer surface onto the LIVE
+  // contract. The property under test is unchanged: intake derives Evidence and does not
+  // trigger RAID extraction.
+  assert.match(vaultIntakePanel, /captureAndDeriveLiveEvidence/);
   assert.match(vaultIntakePanel, /Intelligence has not run\./);
   assert.doesNotMatch(vaultIntakePanel, /raidSnapshot/);
   assert.doesNotMatch(vaultIntakePanel, /postVaultIntake/);

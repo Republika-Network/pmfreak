@@ -1344,7 +1344,7 @@ export async function getCompleteLineageProjection(
         actorId: null,
       });
       if (govIntegrity === "disputed") {
-        disputes.push(`Governed Action: AOC-E governance evaluation state "${govState}" withholds authorization.`);
+        disputes.push(`Governed Action: governance evaluation state "${govState}" withholds authorization.`);
       }
       // The execution-referenced-but-absent case already emitted a more specific gap.
       if (govState === null && !executionEvaluationMissing) {

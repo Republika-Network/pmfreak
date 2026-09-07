@@ -23,6 +23,7 @@ const clientData = read("src/modules/workspace/presentation/command-center/opera
 const intakePanel = read("src/modules/workspace/presentation/command-center/vault-intake-panel.tsx");
 const p2_09Migration = read("supabase/migrations/20260906000000_p2_09_outcome_observation_contract.sql");
 const sourceKeys = read("src/lib/operational-flow/intake-source-keys.ts");
+const fixturePanel = read("src/components/internal/governance-lab/fixture-intake-panel.tsx");
 
 test("P2-14: the LIVE intake operation is exposed on the EXISTING operational-flow route", () => {
   // No new route: the existing boundary represents the operation.
@@ -122,13 +123,21 @@ test("P2-14: nothing promotes DEMO_FIXTURE evidence to LIVE", () => {
   }
 });
 
-test("P2-14: intake classification is an explicit choice that defaults to DEMO / FIXTURE", () => {
-  assert.match(intakePanel, /useState<IntakeMode>\("fixture"\)/);
-  assert.match(intakePanel, /value: "live"/);
-  assert.match(intakePanel, /LIVE operational record/);
-  // The live branch calls the live helper; the fixture branch keeps its original behaviour.
+test("P2-14 / UX-P0-01: the customer surface records LIVE, and the fixture lineage keeps its own surface", () => {
+  // This assertion used to read `useState<IntakeMode>("fixture")` — it proved the panel
+  // asked the PM to classify their own notes and defaulted them onto the lineage that can
+  // never support an Outcome. UX-P0-01 removed the question from customer UX. What P2-14
+  // actually needs to stay true is that both lineages remain wired to their own contract
+  // and never merge, so that is what is asserted now.
   assert.match(intakePanel, /captureAndDeriveLiveEvidence\(/);
-  assert.match(intakePanel, /captureAndDeriveDemoEvidence\(/);
+  assert.ok(!/captureAndDeriveDemoEvidence/.test(intakePanel), "the customer panel must not reach the fixture contract");
+  assert.ok(!/useState<IntakeMode>/.test(intakePanel), "the customer panel must not offer a lineage choice");
+
+  // The fixture contract is not deleted — it moved to the internal-only surface, and still
+  // calls the same shared primitive rather than restating any canonical write.
+  assert.match(fixturePanel, /captureAndDeriveDemoEvidence\(/);
+  assert.match(clientData, /export async function captureAndDeriveDemoEvidence\(/);
+
   // Scoped ids, because the Command Center mounts responsive surfaces simultaneously.
   assert.match(intakePanel, /const uid = useId\(\);/);
 });

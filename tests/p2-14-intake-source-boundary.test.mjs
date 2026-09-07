@@ -111,7 +111,10 @@ test("P2-14 repair: the browser no longer states a Source identity", () => {
     !/sourceKey/.test(textCaptureModal),
     "the Intelligence Inbox capture modal must not send a sourceKey"
   );
-  assert.match(textCaptureModal, /operation: "capture_input", idempotencyKey:/);
+  // It reaches the operation through the shared LIVE helper rather than naming one inline
+  // (UX-P0-01). The helper's own operation naming is asserted on `clientData` above, so the
+  // property still holds end to end: the browser names an OPERATION, never a Source.
+  assert.match(textCaptureModal, /captureAndDeriveLiveEvidence\(workspaceId, projectId,/);
 });
 
 // ───────────────────────────── database contract ─────────────────────────────
@@ -226,13 +229,14 @@ test("P2-14 repair: an empty confidence field is refused, and an explicit 0 is n
   assert.match(intakePanel, /confidenceEntered !== "" && Number\.isFinite\(confidence\)/);
   // The range check itself is unchanged, so a deliberate 0 remains a valid answer.
   assert.match(intakePanel, /confidence >= 0 && confidence <= 1/);
-  // And it is still enforced before anything is submitted.
-  assert.match(intakePanel, /if \(isLive && !confidenceValid\) \{ setError\(/);
+  // And it is still enforced before anything is submitted. The `isLive &&` qualifier is
+  // gone because the customer panel no longer has a non-live branch to qualify (UX-P0-01),
+  // which makes the guard unconditional rather than weaker.
+  assert.match(intakePanel, /if \(!confidenceValid\) \{ setError\(/);
 
-  // The SAME guard on the other intake surface. This modal derives DEMO / FIXTURE Evidence,
-  // which P2-09 refuses to cite in an Observation, so a fabricated zero cannot reach an
-  // achieved Outcome — but it still lands on an immutable Evidence row and is read back to
-  // the user as a judgement they never gave.
+  // The SAME guard on the other intake surface. That surface now derives LIVE Evidence too,
+  // so a fabricated zero can reach an Observation and the guard matters MORE than it did
+  // when this modal wrote the fixture lineage.
   assert.match(textCaptureModal, /const confidenceEntered = confidenceScore\.trim\(\);/);
   assert.match(textCaptureModal, /if \(confidenceEntered === "" \|\| !Number\.isFinite\(confidence\)/);
   assert.match(textCaptureModal, /confidence < 0 \|\| confidence > 1/);

@@ -278,7 +278,7 @@ function describeEvidenceQuality(quality: CanonicalAttentionItem["evidenceQualit
   if (quality.lifecycle) rows.push({ label: "Evidence lifecycle", value: String(labelize(quality.lifecycle)) });
   if (quality.staleAt) rows.push({ label: "Stale after", value: quality.staleAt });
   if (quality.degradedReason) rows.push({ label: "Degraded reason", value: quality.degradedReason });
-  if (quality.fixtureState) rows.push({ label: "Data state", value: quality.isFixture ? "DEMO / FIXTURE" : "Live" });
+  if (quality.fixtureState) rows.push({ label: "Data state", value: quality.isFixture ? "Demo data" : "Live" });
   if (rows.length === 0) rows.push({ label: "Evidence quality", value: "Not recorded for this evidence item." });
   return rows;
 }
@@ -671,7 +671,7 @@ function toNeedsYouItem(
   const evidenceLines = [
     item.provenance.sourceReference ?? item.provenance.evidenceTitle,
     item.evidenceQuality.evidenceMissing ? "No supporting evidence is linked to this recommendation." : null,
-    item.evidenceQuality.isFixture ? "DEMO / FIXTURE evidence — not live project data." : null,
+    item.evidenceQuality.isFixture ? "Demo data — not a live project record." : null,
   ].filter(Boolean) as string[];
 
   const readOnlyNote = item.anyDecisionAllowed

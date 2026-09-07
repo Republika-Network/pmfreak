@@ -159,7 +159,10 @@ test("explicit document-ingestion pipeline invokes executive synthesis and remai
 
 test("manual P2-04 intake derives Evidence without invoking executive synthesis", () => {
   assert.match(vaultIntakePanel, /Capture and derive Evidence/);
-  assert.match(vaultIntakePanel, /captureAndDeriveDemoEvidence/);
+  // Was `captureAndDeriveDemoEvidence`. The lineage changed with UX-P0-01; the property this
+  // test guards did not — manual intake still derives Evidence through the canonical
+  // two-transition path and still runs no synthesis.
+  assert.match(vaultIntakePanel, /captureAndDeriveLiveEvidence/);
   assert.match(vaultIntakePanel, /Intelligence has not run\./);
   assert.doesNotMatch(vaultIntakePanel, /Analyze notes/i);
   assert.doesNotMatch(vaultIntakePanel, /postVaultIntake/);
