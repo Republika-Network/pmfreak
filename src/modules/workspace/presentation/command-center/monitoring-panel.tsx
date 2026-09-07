@@ -12,8 +12,15 @@ import { toneStyles } from "./status-badge";
  * is preserved verbatim behind the disclosure below (`detail`), which is collapsed by
  * default — it is supporting information, not the primary experience.
  *
- * The total is stated as signals DETECTED, never as signals that are "new": nothing in the
- * read model records what this PM has already looked at, so novelty would be invented.
+ * Two things the copy here must never claim, both for the same reason — the surface may
+ * only say what it read:
+ *
+ *   - Novelty. Nothing records what this PM has already looked at, so no count is "new".
+ *   - Project-wide absence. `data.signals` is the newest-first window the summary loads,
+ *     not the whole history, so a family with no rows in it is "No recent signals" and
+ *     never "Clear". A project can hold older signals this view has not been given, and
+ *     "Clear" would quietly promise it does not. The scope is disclosed beneath the list
+ *     rather than left for the reader to infer.
  */
 export function MonitoringPanel({
   summary,
@@ -45,9 +52,9 @@ export function MonitoringPanel({
         </h2>
         {showCoverage && (
           <span className="text-[11px] text-zinc-500">
-            {summary.totalSignals === 0
-              ? "No signals detected"
-              : `${summary.totalSignals} signal${summary.totalSignals === 1 ? "" : "s"} detected`}
+            {summary.recentSignalCount === 0
+              ? "No recent signals in this view"
+              : `${summary.recentSignalCount} recent signal${summary.recentSignalCount === 1 ? "" : "s"}`}
           </span>
         )}
       </div>
@@ -87,12 +94,21 @@ export function MonitoringPanel({
                 <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${toneStyles(area.tone).dot}`} />
                 <span className="truncate text-sm text-zinc-300">{area.label}</span>
               </span>
-              <span className={`shrink-0 text-[11px] ${area.signalCount > 0 ? toneStyles(area.tone).text : "text-zinc-500"}`}>
+              <span className={`shrink-0 text-[11px] ${area.recentSignalCount > 0 ? toneStyles(area.tone).text : "text-zinc-500"}`}>
                 {area.statusLabel}
               </span>
             </li>
           ))}
         </ul>
+      )}
+
+      {/* The scope of every number above, stated rather than implied. The loader's row
+          limit is not a shared constant, so this does not put a figure on the window it
+          would have to invent. */}
+      {showCoverage && (
+        <p className="mt-1.5 px-1 text-[11px] text-zinc-500" data-testid="cc-monitoring-scope">
+          Based on the most recent signal activity available in this view, not the project&apos;s full history.
+        </p>
       )}
 
       {/* A failed read has no monitoring state to disclose. Rendering the roster here would

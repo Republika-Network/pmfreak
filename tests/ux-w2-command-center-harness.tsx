@@ -26,8 +26,9 @@ import {
   type RaidRecommendedAction,
 } from "../src/modules/workspace/presentation/command-center/operational-data";
 import { projectChainProgress, classifyChainProgress } from "../src/modules/workspace/presentation/command-center/in-progress-read-model";
+import { isBranchLive, UNOBSERVABLE_OUTCOME_STATES } from "../src/modules/workspace/presentation/command-center/execution-read-model";
 import { assessAttentionCompleteness } from "../src/modules/workspace/presentation/command-center/attention-completeness";
-import { deriveLastUpdatedLabel, latestOperationalActivityAt } from "../src/modules/workspace/presentation/command-center/activity-read-model";
+import { deriveLastUpdatedLabel, latestOperationalActivityAt, serverActivityCeiling } from "../src/modules/workspace/presentation/command-center/activity-read-model";
 import { ExecutionQueue } from "../src/modules/workspace/presentation/command-center/execution-queue";
 import { deriveWhatChanged } from "../src/modules/workspace/presentation/command-center/change-read-model";
 import { CommandCenterCanvas } from "../src/modules/workspace/presentation/command-center/command-center-canvas";
@@ -359,6 +360,8 @@ const progressRecommendations = [
   { id: "prec-rejected", recommendation: "REJECTED decision" },
   { id: "prec-achieved", recommendation: "ACHIEVED outcome" },
   { id: "prec-superseded", recommendation: "SUPERSEDED outcome" },
+  { id: "prec-mixed", recommendation: "MIXED achieved and running" },
+  { id: "prec-allterminal", recommendation: "ALL BRANCHES terminal" },
 ];
 
 const progressDecision = (id: string, recommendationId: string, status = "accepted") => ({
@@ -448,6 +451,10 @@ const progressSummary: OperationalSummary = {
     progressDecision("dec-rejected", "prec-rejected", "rejected"),
     progressDecision("dec-achieved", "prec-achieved"),
     progressDecision("dec-superseded", "prec-superseded"),
+    // One Decision, two legitimate Actions: one finished, one still running.
+    progressDecision("dec-mixed", "prec-mixed"),
+    // One Decision, two Actions, both terminal.
+    progressDecision("dec-allterminal", "prec-allterminal"),
   ],
   evidenceLinks: [],
   materialActions: [
@@ -456,26 +463,46 @@ const progressSummary: OperationalSummary = {
     progressAction("act-expired", "dec-expired", { expires_at: "2026-08-17T11:00:00Z" }),
     progressAction("act-achieved", "dec-achieved"),
     progressAction("act-superseded", "dec-superseded"),
+    progressAction("act-mixed-a", "dec-mixed"),
+    progressAction("act-mixed-b", "dec-mixed"),
+    progressAction("act-term-a", "dec-allterminal"),
+    progressAction("act-term-b", "dec-allterminal"),
   ],
   materialActionEvaluations: [
     progressEvaluation("act-live"),
     progressEvaluation("act-expired"),
     progressEvaluation("act-achieved"),
     progressEvaluation("act-superseded"),
+    progressEvaluation("act-mixed-a"),
+    progressEvaluation("act-mixed-b"),
+    progressEvaluation("act-term-a"),
+    progressEvaluation("act-term-b"),
   ],
   tasks: [
     progressTask("task-live", "act-live"),
     progressTask("task-achieved", "act-achieved", { status: "completed", completed_at: "2026-08-17T10:20:00Z" }),
     progressTask("task-superseded", "act-superseded", { status: "completed", completed_at: "2026-08-17T10:20:00Z" }),
+    progressTask("task-mixed-a", "act-mixed-a", { status: "completed", completed_at: "2026-08-17T10:20:00Z" }),
+    progressTask("task-mixed-b", "act-mixed-b"),
+    progressTask("task-term-a", "act-term-a", { status: "completed", completed_at: "2026-08-17T10:20:00Z" }),
+    progressTask("task-term-b", "act-term-b", { status: "completed", completed_at: "2026-08-17T10:20:00Z" }),
   ],
   executions: [
     progressExecution("exec-task-live", "task-live", "act-live", { status: "running", completed_at: null }),
     progressExecution("exec-task-achieved", "task-achieved", "act-achieved"),
     progressExecution("exec-task-superseded", "task-superseded", "act-superseded"),
+    progressExecution("exec-task-mixed-a", "task-mixed-a", "act-mixed-a"),
+    // Genuinely live: still running under the second Action of the same Decision.
+    progressExecution("exec-task-mixed-b", "task-mixed-b", "act-mixed-b", { status: "running", completed_at: null }),
+    progressExecution("exec-task-term-a", "task-term-a", "act-term-a"),
+    progressExecution("exec-task-term-b", "task-term-b", "act-term-b"),
   ],
   outcomes: [
     progressOutcome("out-achieved", "task-achieved", "act-achieved", "achieved"),
     progressOutcome("out-superseded", "task-superseded", "act-superseded", "superseded"),
+    progressOutcome("out-mixed-a", "task-mixed-a", "act-mixed-a", "achieved"),
+    progressOutcome("out-term-a", "task-term-a", "act-term-a", "achieved"),
+    progressOutcome("out-term-b", "task-term-b", "act-term-b", "superseded"),
   ],
   observations: [],
   lineages: [],
@@ -631,10 +658,53 @@ const fetchedButEmptySummary = summary({
   observations: [],
 });
 
+// ── W2 Codex remediation: server anchor vs client clock ─────────────────────
+//
+// The guard's authority must be the SERVER's reading for the payload. These fixtures put a
+// human-supplied `observed_at` between the server's instant and a browser running ten
+// minutes fast, which is exactly where a client-anchored ceiling silently accepts a future
+// timestamp.
+
+const SKEW_SERVER_GENERATED_AT = "2026-09-07T12:00:00.000Z";
+/** What a fast browser believes the time is. Nothing may consult it. */
+const SKEW_CLIENT_CLOCK = new Date("2026-09-07T12:10:00.000Z");
+
+function skewSummary(observationRecordedAt: string): OperationalSummary {
+  return summary({
+    generatedAt: SKEW_SERVER_GENERATED_AT,
+    evidence: [{ id: "ev-1", created_at: "2026-09-06T12:00:00.000Z" }],
+    signals: [],
+    decisions: [],
+    executions: [],
+    observations: [
+      { id: "obs-1", outcome_id: "out-1", observation_state: "achieved", recorded_at: observationRecordedAt },
+    ],
+  });
+}
+
+/** 12:07 — future to the server, past to the fast browser. Must be rejected. */
+const skewFutureSummary = skewSummary("2026-09-07T12:07:00.000Z");
+/** 11:58 — genuinely past. Must be accepted and read "2 minutes ago" from the server anchor. */
+const skewPastSummary = skewSummary("2026-09-07T11:58:00.000Z");
+
+/** No server anchor at all: no authoritative comparison is possible, so no claim is made. */
+const noServerAnchorSummary = (() => {
+  const base = summary({
+    evidence: [{ id: "ev-1", created_at: "2026-09-06T11:58:00.000Z" }],
+    signals: [],
+    decisions: [],
+    executions: [],
+    observations: [],
+  });
+  const withoutAnchor: Record<string, unknown> = { ...base, assurance: { ...base.assurance, asOf: undefined } };
+  delete withoutAnchor.generatedAt;
+  return withoutAnchor as unknown as OperationalSummary;
+})();
+
 /** The header rendered from the REAL derivation rather than a literal. */
 const freshnessHeader = section(
   renderCanvas(downstreamActivitySummary, {
-    lastUpdatedLabel: deriveLastUpdatedLabel(downstreamActivitySummary, FRESHNESS_NOW),
+    lastUpdatedLabel: deriveLastUpdatedLabel(downstreamActivitySummary),
     needsYouCount: 0,
   }),
   "cc-project-header"
@@ -705,6 +775,21 @@ process.stdout.write(
           title: chain.title,
           statusLabel: chain.status.label,
           group: classifyChainProgress(chain),
+          branchCount: chain.branches.length,
+          // Canonical branch facts, computed here from the read model's own predicates so
+          // the assertions compare the grouping against the contract rather than itself.
+          liveBranches: chain.branches.filter((branch) => isBranchLive(branch)).length,
+          achievedBranches: chain.branches.filter((branch) => branch.boundary.outcomeAchieved).length,
+          supersededBranches: chain.branches.filter(
+            (branch) => branch.outcome !== null && UNOBSERVABLE_OUTCOME_STATES.includes(branch.outcome.state)
+          ).length,
+          // A branch that is live AND not itself terminal — the fact the grouping turns on.
+          progressingBranches: chain.branches.filter(
+            (branch) =>
+              !branch.boundary.outcomeAchieved &&
+              !(branch.outcome !== null && UNOBSERVABLE_OUTCOME_STATES.includes(branch.outcome.state)) &&
+              isBranchLive(branch)
+          ).length,
         })),
         groups: {
           inProgress: progressGroups.inProgress.map((chain) => chain.decisionId),
@@ -736,25 +821,59 @@ process.stdout.write(
         raidItemsAreStillTheirOwnKind: deriveRaidNeedsYou([RAID_ACTION], async () => {}).map((item) => item.kind),
       },
       headerFreshness: {
-        downstreamLatest: latestOperationalActivityAt(downstreamActivitySummary, FRESHNESS_NOW),
-        downstreamLabel: deriveLastUpdatedLabel(downstreamActivitySummary, FRESHNESS_NOW),
-        unusableLatest: latestOperationalActivityAt(unusableTimestampSummary, FRESHNESS_NOW),
-        unusableLabel: deriveLastUpdatedLabel(unusableTimestampSummary, FRESHNESS_NOW),
-        futureOnlyLatest: latestOperationalActivityAt(futureOnlySummary, FRESHNESS_NOW),
-        rawInputCaptureLatest: latestOperationalActivityAt(rawInputCaptureSummary, FRESHNESS_NOW),
-        rawInputCaptureLabel: deriveLastUpdatedLabel(rawInputCaptureSummary, FRESHNESS_NOW),
-        futureCaptureLatest: latestOperationalActivityAt(futureCaptureSummary, FRESHNESS_NOW),
+        downstreamLatest: latestOperationalActivityAt(downstreamActivitySummary),
+        downstreamLabel: deriveLastUpdatedLabel(downstreamActivitySummary),
+        unusableLatest: latestOperationalActivityAt(unusableTimestampSummary),
+        unusableLabel: deriveLastUpdatedLabel(unusableTimestampSummary),
+        futureOnlyLatest: latestOperationalActivityAt(futureOnlySummary),
+        rawInputCaptureLatest: latestOperationalActivityAt(rawInputCaptureSummary),
+        rawInputCaptureLabel: deriveLastUpdatedLabel(rawInputCaptureSummary),
+        futureCaptureLatest: latestOperationalActivityAt(futureCaptureSummary),
+        fetchedButEmptyLatest: latestOperationalActivityAt(fetchedButEmptySummary),
+        renderedHeader: text(freshnessHeader),
         rawInputCaptureHeader: text(
           section(
             renderCanvas(rawInputCaptureSummary, {
-              lastUpdatedLabel: deriveLastUpdatedLabel(rawInputCaptureSummary, FRESHNESS_NOW),
+              lastUpdatedLabel: deriveLastUpdatedLabel(rawInputCaptureSummary),
               needsYouCount: 0,
             }),
             "cc-project-header"
           )
         ),
-        fetchedButEmptyLatest: latestOperationalActivityAt(fetchedButEmptySummary, FRESHNESS_NOW),
-        renderedHeader: text(freshnessHeader),
+      },
+      clockSkew: {
+        serverGeneratedAt: SKEW_SERVER_GENERATED_AT,
+        clientClock: SKEW_CLIENT_CLOCK.toISOString(),
+        serverCeiling: serverActivityCeiling(skewFutureSummary)?.toISOString() ?? null,
+        // 12:07 is future to the SERVER and past to the fast browser.
+        futureToServerLatest: latestOperationalActivityAt(skewFutureSummary),
+        futureToServerLabel: deriveLastUpdatedLabel(skewFutureSummary),
+        // 11:58 is genuinely past; the label is measured from the server anchor, so a
+        // ten-minute-fast browser cannot turn "2 minutes ago" into "12 minutes ago".
+        pastLatest: latestOperationalActivityAt(skewPastSummary),
+        pastLabel: deriveLastUpdatedLabel(skewPastSummary),
+        pastHeader: text(
+          section(
+            renderCanvas(skewPastSummary, {
+              lastUpdatedLabel: deriveLastUpdatedLabel(skewPastSummary),
+              needsYouCount: 0,
+            }),
+            "cc-project-header"
+          )
+        ),
+        // No trustworthy server reading: refuse to answer rather than answer with the browser's.
+        noAnchorCeiling: serverActivityCeiling(noServerAnchorSummary),
+        noAnchorLatest: latestOperationalActivityAt(noServerAnchorSummary),
+        noAnchorLabel: deriveLastUpdatedLabel(noServerAnchorSummary),
+      },
+      monitoringWindow: {
+        summary: deriveMonitoring(populatedSummary),
+        emptyWindowSummary: deriveMonitoring(noSignalsSummary),
+        panelText: text(section(populated, "cc-section-monitoring")),
+        emptyWindowPanelText: text(
+          section(renderCanvas(noSignalsSummary), "cc-section-monitoring")
+        ),
+        scopeNotePresent: populated.includes('data-testid="cc-monitoring-scope"'),
       },
     },
     null,

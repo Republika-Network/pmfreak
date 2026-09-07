@@ -35,35 +35,77 @@ import {
  *
  * None of these is closed either — they are all still open loops — so they are neither
  * counted as progress nor buried with the terminal chains.
+ *
+ * A Decision may hold SEVERAL branches, and the grouping is a statement about the whole
+ * chain. One achieved branch does not close a Decision that still has work running under
+ * another — see `classifyChainProgress` below.
  */
 export type ChainProgressGroup = "in_progress" | "not_progressing" | "closed";
 
 /**
- * Classifies ONE chain, mirroring `describeChainStatus`'s precedence exactly:
- * terminal stopped, then terminal achieved, then "no action yet", then liveness.
+ * Is THIS branch still moving?
  *
- * Precedence is the whole correctness argument. A rejected Decision that also carries a
- * live-looking branch is stopped, and reading liveness first would have said otherwise.
+ * `isBranchLive` answers "can a canonical operation still be run here", and it is true for
+ * an achieved Outcome — the Observation path stays open after achievement. That is correct
+ * for its own question and wrong for this one, so achievement and supersession are excluded
+ * first, using the same two facts `describeChainStatus` uses: `boundary.outcomeAchieved`
+ * and `UNOBSERVABLE_OUTCOME_STATES`.
+ *
+ * Everything here is a canonical fact about the branch. No parallel lifecycle is invented.
+ */
+function isBranchProgressing(branch: GovernedExecutionChain["branches"][number]): boolean {
+  // Achieved is finished work, not work in flight.
+  if (branch.boundary.outcomeAchieved) return false;
+  // Superseded is a dead end the contract defines no transition out of.
+  if (branch.outcome !== null && UNOBSERVABLE_OUTCOME_STATES.includes(branch.outcome.state)) return false;
+  return isBranchLive(branch);
+}
+
+/**
+ * Classifies ONE chain.
+ *
+ * `material_action_proposals.source_decision_id` carries no unique constraint, so a single
+ * Decision may legitimately fan out into several Action -> Task -> Execution -> Outcome
+ * branches. The first cut of this selector asked "does ANY branch have an achieved
+ * Outcome?" before it asked whether any OTHER branch was still running, and answered
+ * `closed` for a Decision with live work under it:
+ *
+ *     D1 ├── A1 -> T1 -> O1 achieved
+ *        └── A2 -> T2 -> E2 running        <- still real work, filed under "Closed"
+ *
+ * A chain is a whole; one finished branch does not finish it. So liveness is now decided
+ * across ALL branches before any terminal reading, and a terminal reading is only reached
+ * once nothing is moving anywhere in the chain.
+ *
+ * Precedence, and why each step comes where it does:
+ *
+ *   1. A rejected Decision stops the chain regardless of anything beneath it — there is no
+ *      branch it could legitimately have.
+ *   2. No Action requested: a Decision is not work.
+ *   3. ANY branch still progressing: the chain is progressing. This is the fix.
+ *   4. Nothing progressing, and something achieved or superseded: terminal.
+ *   5. Otherwise: expired, stale, or refused by governance — open, but not moving.
  */
 export function classifyChainProgress(chain: GovernedExecutionChain): ChainProgressGroup {
   // Terminal: the canonical Decision stops here.
   if (chain.decisionStatus === "rejected") return "closed";
 
-  // Terminal: the expected Outcome was achieved. Achieved work is finished work.
-  if (chain.branches.some((branch) => branch.boundary.outcomeAchieved)) return "closed";
-
   // A Decision with no Material Action has nothing under way to report.
   if (chain.branches.length === 0) return "not_progressing";
 
-  if (chain.branches.some((branch) => isBranchLive(branch))) return "in_progress";
+  // Whole-chain liveness, decided BEFORE any terminal reading.
+  if (chain.branches.some(isBranchProgressing)) return "in_progress";
 
-  // Terminal: a superseded Outcome is a dead end the contract defines no transition out
-  // of, so it is closed rather than blocked — naming it an authorization problem would
-  // imply reauthorizing could revive it, which it cannot.
-  const superseded = chain.branches.some(
-    (branch) => branch.outcome !== null && UNOBSERVABLE_OUTCOME_STATES.includes(branch.outcome.state)
-  );
-  if (superseded) return "closed";
+  // Nothing is moving. Now the terminal readings apply, in `describeChainStatus`'s order:
+  // achievement first, then supersession.
+  if (chain.branches.some((branch) => branch.boundary.outcomeAchieved)) return "closed";
+  if (
+    chain.branches.some(
+      (branch) => branch.outcome !== null && UNOBSERVABLE_OUTCOME_STATES.includes(branch.outcome.state)
+    )
+  ) {
+    return "closed";
+  }
 
   // Expired, stale, or refused by governance: open, but not moving.
   return "not_progressing";

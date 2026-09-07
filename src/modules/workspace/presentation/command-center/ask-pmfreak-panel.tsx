@@ -13,6 +13,19 @@ import { useId, type ReactNode } from "react";
  * Conversation state lives in the screen above this component, so collapsing the surface
  * hides the transcript, it never discards it — the collapsed control says how much is
  * there, and reopening shows the same messages.
+ *
+ * The composer's DRAFT, however, is `CommandFeed`'s own local state, and local state only
+ * survives while the component stays mounted. The first cut of this panel rendered
+ * `{open ? children : null}`, which unmounted the feed on collapse and silently threw away
+ * whatever the PM had typed but not sent. Reopening gave them an empty box.
+ *
+ * So the conversation is ALWAYS mounted and collapsing only hides it. `hidden` is the whole
+ * mechanism: React keeps the subtree — same type, same position, same state — while the
+ * browser gives the region `display: none`, which takes it out of the layout, out of the
+ * tab order and out of the accessibility tree. That last part matters as much as the draft:
+ * a merely transparent or off-screen composer would still be focusable, and a keyboard user
+ * would tab into a control nobody can see. The wrapper deliberately carries no display
+ * utility class, since one would override the `hidden` attribute's own `display: none`.
  */
 export function AskPmfreakPanel({
   open,
@@ -64,8 +77,15 @@ export function AskPmfreakPanel({
         </button>
       )}
 
-      <div id={regionId} hidden={!open} className="mt-2 overflow-hidden rounded-2xl border border-white/10 bg-white/[0.02]">
-        <div className="h-[420px] max-h-[60vh]">{open ? children : null}</div>
+      {/* Always mounted, never conditionally rendered: an unsent draft is component state,
+          and unmounting is what destroys it. */}
+      <div
+        id={regionId}
+        hidden={!open}
+        data-testid="cc-ask-pmfreak-region"
+        className="mt-2 overflow-hidden rounded-2xl border border-white/10 bg-white/[0.02]"
+      >
+        <div className="h-[420px] max-h-[60vh]">{children}</div>
       </div>
     </section>
   );

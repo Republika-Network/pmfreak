@@ -856,8 +856,15 @@ export function deriveRepository(data: OperationalSummary | undefined): Reposito
   ];
 }
 
-/** Counts real signals of the given type(s) and reports the highest severity among them
- *  (undefined when none exist) — the deterministic basis for every specialist agent below. */
+/**
+ * Counts real signals of the given type(s) and reports the highest severity among them
+ * (undefined when none exist) — the deterministic basis for every specialist agent below.
+ *
+ * IMPORTANT: `data.signals` is the newest-first presentation WINDOW the operational summary
+ * loads, not the project's whole signal history. A zero here means "none in the window",
+ * which is a weaker statement than "none in this project", and no copy built on it may
+ * claim the stronger one.
+ */
 function signalSlice(data: OperationalSummary | undefined, types: string[]) {
   const matches = (data?.signals ?? []).filter((signal) => types.includes(String(signal.signal_type)));
   const severityRank: Record<string, number> = { low: 0, medium: 1, high: 2, critical: 3 };
@@ -894,7 +901,7 @@ const SPECIALISTS: SpecialistDef[] = [
     name: "Risk Agent",
     types: ["governance_gap"],
     busyLabel: "Watching for new risk signals...",
-    clearLabel: "No open risk signals",
+    clearLabel: "No risk signals in recent activity",
     why: "Watches for blockers and delivery risks as new evidence comes in.",
     nextStep: "Paste new notes to refresh what the Risk Agent is watching.",
   },
@@ -904,7 +911,7 @@ const SPECIALISTS: SpecialistDef[] = [
     name: "Schedule Agent",
     types: ["schedule_risk", "delivery_impediment"],
     busyLabel: "Tracking schedule pressure...",
-    clearLabel: "Schedule looks clear",
+    clearLabel: "No schedule signals in recent activity",
     why: "Watches for slipping dates and delivery impediments across the project.",
     nextStep: "Review the flagged schedule signals in Needs You.",
   },
@@ -914,7 +921,7 @@ const SPECIALISTS: SpecialistDef[] = [
     name: "Scope Agent",
     types: ["scope_creep"],
     busyLabel: "Watching for scope drift...",
-    clearLabel: "Scope holding steady",
+    clearLabel: "No scope signals in recent activity",
     why: "Flags scope creep as it shows up in notes, emails, and requests.",
     nextStep: "Confirm whether the flagged scope changes are approved.",
   },
@@ -924,7 +931,7 @@ const SPECIALISTS: SpecialistDef[] = [
     name: "Budget Agent",
     types: ["cost_risk", "billing_risk"],
     busyLabel: "Watching cost signals...",
-    clearLabel: "No cost pressure detected",
+    clearLabel: "No cost signals in recent activity",
     why: "Watches for cost and billing risk as it's mentioned in project evidence.",
     nextStep: "Review the flagged cost signals before they escalate.",
   },
@@ -934,7 +941,7 @@ const SPECIALISTS: SpecialistDef[] = [
     name: "Stakeholder Agent",
     types: ["stakeholder_blocker"],
     busyLabel: "Watching stakeholder blockers...",
-    clearLabel: "No stakeholder blockers",
+    clearLabel: "No stakeholder signals in recent activity",
     why: "Tracks stakeholders who are blocking or slowing down the project.",
     nextStep: "Reach out to the stakeholders flagged as blockers.",
   },
@@ -944,7 +951,7 @@ const SPECIALISTS: SpecialistDef[] = [
     name: "Quality Agent",
     types: ["quality_risk"],
     busyLabel: "Watching quality signals...",
-    clearLabel: "No quality risk detected",
+    clearLabel: "No quality signals in recent activity",
     why: "Watches for quality risk called out in reviews, tickets, and notes.",
     nextStep: "Review the flagged quality risk before it affects delivery.",
   },
@@ -954,7 +961,7 @@ const SPECIALISTS: SpecialistDef[] = [
     name: "Change Agent",
     types: ["decision_needed", "missing_approval"],
     busyLabel: "Tracking pending decisions...",
-    clearLabel: "No changes waiting on you",
+    clearLabel: "No change signals in recent activity",
     why: "Tracks decisions and approvals a change needs before it can proceed.",
     nextStep: "Decide the pending items waiting in Needs You.",
   },
@@ -970,12 +977,17 @@ export function deriveAgents(data: OperationalSummary | undefined, hasBrief: boo
       id: spec.id,
       name: spec.name,
       statusText: count > 0 ? spec.busyLabel : spec.clearLabel,
-      badge: { tone, label: count > 0 ? `${count} signal${count === 1 ? "" : "s"}` : "Clear" },
+      // "Clear" would be a claim about the project. What is known is the window.
+      badge: { tone, label: count > 0 ? `${count} recent signal${count === 1 ? "" : "s"}` : "None recent" },
       activity: count === 0 ? "idle" : tone === "danger" ? "pulsing" : "progress",
       drawer: {
         title: spec.name,
         why: spec.why,
-        evidence: [count > 0 ? `${count} ${spec.name.toLowerCase()} signal(s) detected right now` : "No matching signals recorded yet"],
+        evidence: [
+          count > 0
+            ? `${count} ${spec.name.toLowerCase()} signal(s) in the most recent signal activity`
+            : "No matching signals in the most recent signal activity",
+        ],
         nextStep: count > 0 ? spec.nextStep : "Paste project notes to give this agent something to watch.",
       },
     };
@@ -1033,26 +1045,46 @@ export function deriveAgents(data: OperationalSummary | undefined, hasBrief: boo
  * something moving" — which is what a PM opens the Command Center to know.
  *
  * The specialist detail is not deleted; it is the collapsed disclosure beneath this summary.
+ *
+ * EPISTEMIC SCOPE. `data.signals` is the newest-first presentation window the summary
+ * loads, not the project's whole history, so every number here describes RECENT ACTIVITY
+ * and nothing more. A project with forty-five signals whose newest window happens to hold
+ * no Budget row must not be told "Budget — Clear": absence from the window is not absence
+ * from the project. The types and the copy below therefore say "recent" everywhere, and
+ * the surface discloses the scope rather than implying a total. Closing that gap for real
+ * would need a server-side aggregate this workstream is not authorized to add — and
+ * overstating what a bounded read knows is worse than saying what it knows.
  */
 export type MonitoringArea = {
   /** The specialist id this coverage line projects, so the two surfaces stay reconcilable. */
   id: string;
   /** PM-facing concern name, e.g. "Schedule". */
   label: string;
-  /** Real count of persisted signals in this family. Never a placeholder. */
-  signalCount: number;
-  /** Highest persisted severity in this family, or null when the family is clear. */
+  /** Signals of this family IN THE LOADED WINDOW. Never a project-wide total. */
+  recentSignalCount: number;
+  /** Highest persisted severity of this family in the window, or null when none appear. */
   topSeverity: string | null;
   tone: StatusTone;
-  /** "Clear" or "N signals" — the same reading the specialist badge carries. */
+  /** "N recent signals" or "No recent signals" — never "Clear", which would be a claim
+   *  about the project rather than about what was read. */
   statusLabel: string;
 };
 
 export type MonitoringSummary = {
   areas: MonitoringArea[];
-  /** Signals across every monitored family. Counted, never characterised as "new" —
-   *  nothing in the read model records what this PM has already seen. */
-  totalSignals: number;
+  /**
+   * Signals across every monitored family IN THE LOADED WINDOW.
+   *
+   * Not a project total, and never characterised as "new" — nothing in the read model
+   * records what this PM has already seen, nor how many signals exist beyond the window.
+   */
+  recentSignalCount: number;
+  /**
+   * True: every number in this summary describes the loaded recent-signal window rather
+   * than the project's whole history. Carried as data so the surface states its own scope
+   * instead of a component remembering to.
+   */
+  windowed: true;
 };
 
 export function deriveMonitoring(data: OperationalSummary | undefined): MonitoringSummary {
@@ -1062,11 +1094,15 @@ export function deriveMonitoring(data: OperationalSummary | undefined): Monitori
     return {
       id: spec.id,
       label: spec.area,
-      signalCount: count,
+      recentSignalCount: count,
       topSeverity: topSeverity ?? null,
       tone,
-      statusLabel: count > 0 ? `${count} signal${count === 1 ? "" : "s"}` : "Clear",
+      statusLabel: count > 0 ? `${count} recent signal${count === 1 ? "" : "s"}` : "No recent signals",
     } satisfies MonitoringArea;
   });
-  return { areas, totalSignals: areas.reduce((total, area) => total + area.signalCount, 0) };
+  return {
+    areas,
+    recentSignalCount: areas.reduce((total, area) => total + area.recentSignalCount, 0),
+    windowed: true,
+  };
 }

@@ -20,10 +20,23 @@ import type { OperationalSummary } from "@/lib/operational-flow/types";
  *   2. Timestamp fields are an ALLOWLIST, not "anything ending in _at". `expires_at`,
  *      `valid_until` and `stale_at` are deadlines in the future; treating them as activity
  *      would date the project forward to an event that has not happened.
- *   3. A value later than the caller's instant is ignored rather than reported as "just
+ *   3. A value later than the SERVER's own reading is ignored rather than reported as "just
  *      now". `observed_at` is supplied by a human and can legitimately be mis-entered; the
  *      honest answer to "when was this last updated" is never a moment in the future. When
  *      nothing qualifies, the result is null and the header shows no timestamp at all.
+ *
+ * Rule 3 turns on WHOSE clock decides what "future" means, and the browser's cannot. The
+ * Command Center advances a presentation clock from the client so relative labels tick
+ * forward between loads; handing that same value to this function let a browser running ten
+ * minutes fast accept an `observed_at` the server would call future, quietly defeating the
+ * guard. So the two clocks are now separate concerns and only one of them is authoritative:
+ *
+ *   ACTIVITY CEILING   what counts as "already happened"
+ *   LABEL BASELINE     what "ago" is measured from
+ *
+ * Both are the server's own reading for the payload, and both are read from the payload
+ * itself rather than accepted as arguments — so a caller cannot hand these functions a
+ * skewable clock even by accident. Nothing in this module reads a clock.
  */
 
 /**
@@ -99,15 +112,40 @@ export const ACTIVITY_TIMESTAMP_FIELDS = [
 ] as const;
 
 /**
- * The newest moment this project actually did something, ISO-8601, or null when no
- * record carries a usable timestamp.
+ * The server's own reading for this payload — the only clock allowed to decide what
+ * "future" means. Null when the payload carries no trustworthy server time.
  *
- * `now` is the caller's server-anchored instant and acts as the ceiling described in
- * rule 3, so this function is pure for a given payload.
+ * `generatedAt` is the server's reading at load. `assurance.asOf` is produced by
+ * `get_operational_assurance_summary` in the same request and is the fallback when an older
+ * payload shape carries no `generatedAt`. Both are server-side; neither is ever treated as
+ * project activity (see `ACTIVITY_COLLECTIONS`, which contains no summary metadata).
+ *
+ * There is deliberately no `new Date()` fallback. A client clock cannot adjudicate whether
+ * persisted server state is in the future, and silently substituting one would keep the
+ * label alive by dropping the guarantee it depends on.
  */
-export function latestOperationalActivityAt(data: OperationalSummary | undefined, now: Date): string | null {
+export function serverActivityCeiling(data: OperationalSummary | undefined): Date | null {
+  for (const candidate of [data?.generatedAt, data?.assurance?.asOf]) {
+    if (typeof candidate !== "string") continue;
+    const time = Date.parse(candidate);
+    if (Number.isFinite(time)) return new Date(time);
+  }
+  return null;
+}
+
+/**
+ * The newest moment this project actually did something, ISO-8601, or null when no record
+ * carries a usable timestamp — or when the payload carries no server anchor to judge
+ * "future" against, in which case no freshness claim is made at all.
+ *
+ * Pure for a given payload: the ceiling comes from the payload, not from a clock.
+ */
+export function latestOperationalActivityAt(data: OperationalSummary | undefined): string | null {
   if (!data) return null;
-  const ceiling = now.getTime();
+  const anchor = serverActivityCeiling(data);
+  // No trustworthy server reading: refuse to answer rather than answer with the browser's.
+  if (anchor === null) return null;
+  const ceiling = anchor.getTime();
   let latest = Number.NEGATIVE_INFINITY;
 
   for (const key of ACTIVITY_COLLECTIONS) {
@@ -143,11 +181,23 @@ export function relativeLabel(occurredMs: number, nowMs: number): string {
 }
 
 /**
- * The header's "Updated ..." value, or null when this project has no dated activity —
- * in which case the header states no time rather than guessing one.
+ * The header's "Updated ..." value, or null when this project has no dated activity — in
+ * which case the header states no time rather than guessing one.
+ *
+ * BOTH ends of this subtraction are server-side: the activity is a persisted column, and
+ * the instant it is measured against is the server's own reading for the same payload. The
+ * browser's clock is not consulted at all, so it can neither decide what counts as activity
+ * nor distort how old that activity appears. A browser running ten minutes fast reports the
+ * same "2 minutes ago" as one running ten minutes slow.
+ *
+ * The cost is that the label does not tick between loads. That is the right trade: the
+ * summary revalidates on an interval and on focus, so the reading is refreshed from the
+ * server anyway, and a label that is accurate at every load beats one that drifts with
+ * whatever the local clock happens to believe.
  */
-export function deriveLastUpdatedLabel(data: OperationalSummary | undefined, now: Date): string | null {
-  const latest = latestOperationalActivityAt(data, now);
-  if (latest === null) return null;
-  return relativeLabel(Date.parse(latest), now.getTime());
+export function deriveLastUpdatedLabel(data: OperationalSummary | undefined): string | null {
+  const latest = latestOperationalActivityAt(data);
+  const anchor = serverActivityCeiling(data);
+  if (latest === null || anchor === null) return null;
+  return relativeLabel(Date.parse(latest), anchor.getTime());
 }

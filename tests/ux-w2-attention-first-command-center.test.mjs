@@ -44,6 +44,15 @@ const harness = JSON.parse(
   }),
 );
 
+/** Real client-side render of the Ask PMFreak collapse lifecycle (jsdom + react-dom). */
+const draftHarness = JSON.parse(
+  execFileSync(process.execPath, ["node_modules/tsx/dist/cli.mjs", "tests/ux-w2-ask-pmfreak-draft-harness.tsx"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "inherit"],
+    maxBuffer: 16 * 1024 * 1024,
+  }),
+);
+
 /** Visible text of a markup fragment — what the reader actually gets. */
 const text = (markup) => markup.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 
@@ -73,14 +82,21 @@ test("W2: Needs You is the first section of the Command Center's main canvas", (
 test("W2: the conversation is the last section, and it does not open the viewport", () => {
   assert.equal(harness.screen.chatRole, "COPILOT");
   assert.equal(harness.screen.mainOrder.at(-1), "cc-section-ask-pmfreak");
-  // Collapsed by default: the composer, its prompt suggestions and its disclosure are all
-  // absent from the first paint. Chat is one click away, not the canvas.
+  // Collapsed by default: the conversation region is `hidden`, so it is out of the layout,
+  // out of the tab order and out of the accessibility tree. Chat is one click away, not the
+  // canvas. (It stays MOUNTED — see the draft-lifecycle tests below; that is a different
+  // guarantee from being visible, and both are required.)
   const collapsed = harness.canvas.askPmfreak;
-  assert.doesNotMatch(collapsed, /<input\b/, "the chat composer must not render while collapsed");
-  assert.doesNotMatch(collapsed, /chat-determinism-disclosure/);
+  assert.match(collapsed, /data-testid="cc-ask-pmfreak-region" class="[^"]*"|hidden[^>]*data-testid="cc-ask-pmfreak-region"/);
+  const collapsedRegion = /<div id="[^"]*"([^>]*)data-testid="cc-ask-pmfreak-region"/.exec(collapsed);
+  assert.ok(collapsedRegion, "the conversation region must be present in the collapsed panel");
+  assert.match(collapsedRegion[1], /\bhidden\b/, "the collapsed conversation region must be hidden");
   assert.match(text(collapsed), /Ask PMFreak about this project/);
-  // ...and nothing was removed: expanding renders the real CommandFeed, disclosure and all.
+  // Expanding reveals the same region, no longer hidden, with the real CommandFeed in it.
   const expanded = harness.chatExpanded.askPmfreak;
+  const expandedRegion = /<div id="[^"]*"([^>]*)data-testid="cc-ask-pmfreak-region"/.exec(expanded);
+  assert.ok(expandedRegion, "the conversation region must be present when expanded");
+  assert.doesNotMatch(expandedRegion[1], /\bhidden\b/, "the expanded conversation region must not be hidden");
   assert.match(expanded, /<input\b/);
   assert.match(expanded, /chat-determinism-disclosure/);
   assert.match(text(expanded), /answers are composed from your project data by deterministic rules/);
@@ -165,7 +181,7 @@ test("W2: PMFreak Monitoring is the same state the specialist agents already der
     assert.ok(rendered.includes(area.label), `"${area.label}" coverage must be visible`);
   }
   // The total is counted, never characterised as "new" — nothing records what this PM has seen.
-  assert.match(rendered, new RegExp(`${monitoring.totalSignals} signals detected`));
+  assert.match(rendered, new RegExp(`${monitoring.recentSignalCount} recent signals`));
   assert.ok(!/\bnew signals?\b/i.test(rendered), "novelty would be invented");
 });
 
@@ -177,8 +193,8 @@ test("W2: monitoring counts reconcile with the existing agent derivation, row fo
     assert.ok(agentText.includes(area.statusLabel), `"${area.statusLabel}" must be readable`);
   }
   assert.equal(
-    harness.readModels.monitoring.areas.reduce((total, a) => total + a.signalCount, 0),
-    harness.readModels.monitoring.totalSignals,
+    harness.readModels.monitoring.areas.reduce((total, a) => total + a.recentSignalCount, 0),
+    harness.readModels.monitoring.recentSignalCount,
   );
 });
 
@@ -272,7 +288,7 @@ test("W2: a failed read is never rendered as a successful empty", () => {
   // None of the "there is nothing" copy may appear on a read that never landed.
   assert.doesNotMatch(needsYou, /You&#x27;re clear\./);
   assert.doesNotMatch(whatChanged, /No meaningful changes detected yet\./);
-  assert.doesNotMatch(monitoring, /signals detected/);
+  assert.doesNotMatch(monitoring, /recent signals?/);
   // Nor may the roster be shown as universally "Clear" on the strength of a payload that
   // never arrived.
   assert.doesNotMatch(monitoring, /Risk Agent/);
@@ -378,6 +394,10 @@ const CHAIN_EXPECTATIONS = [
   { decisionId: "dec-rejected", statusLabel: "Decision rejected", group: "closed" },
   { decisionId: "dec-achieved", statusLabel: "Outcome achieved", group: "closed" },
   { decisionId: "dec-superseded", statusLabel: "Outcome superseded", group: "closed" },
+  // One Decision, two Actions: one achieved, one still running. The chain is not finished.
+  { decisionId: "dec-mixed", statusLabel: "Outcome achieved", group: "in_progress" },
+  // One Decision, two Actions, both terminal. Nothing is moving anywhere.
+  { decisionId: "dec-allterminal", statusLabel: "Outcome achieved", group: "closed" },
 ];
 
 test("W2-P1-01: the fixture really does exercise every canonical chain outcome", () => {
@@ -395,7 +415,7 @@ test("W2-P1-01: the fixture really does exercise every canonical chain outcome",
 
 test("W2-P1-01: no terminal or stopped chain is rendered as work in progress", () => {
   const rendered = harness.chainProgress.rendered;
-  assert.deepEqual(rendered.inProgressTitles, ["LIVE work under way"]);
+  assert.deepEqual(rendered.inProgressTitles, ["LIVE work under way", "MIXED achieved and running"]);
   for (const terminal of ["REJECTED decision", "ACHIEVED outcome", "SUPERSEDED outcome"]) {
     assert.ok(!rendered.inProgressTitles.includes(terminal), `"${terminal}" must not be shown as in progress`);
   }
@@ -418,17 +438,18 @@ test("W2-P1-01: the four non-live states are decided explicitly, not called prog
 });
 
 test("W2-P1-01: terminal chains are preserved and reachable, behind a collapsed disclosure", () => {
-  assert.deepEqual(harness.chainProgress.groups.closed, ["dec-rejected", "dec-achieved", "dec-superseded"]);
+  assert.deepEqual(harness.chainProgress.groups.closed, ["dec-rejected", "dec-achieved", "dec-superseded", "dec-allterminal"]);
   assert.deepEqual(harness.chainProgress.rendered.closedTitles, [
     "REJECTED decision",
     "ACHIEVED outcome",
     "SUPERSEDED outcome",
+    "ALL BRANCHES terminal",
   ]);
   // Hiding them would be its own dishonesty; they are one click away, and closed by default.
   const tag = harness.chainProgress.rendered.closedDetailsTag;
   assert.ok(tag, "the closed disclosure must exist");
   assert.doesNotMatch(tag.slice(0, tag.indexOf(">")), /\bopen\b/, "closed chains must not be expanded by default");
-  assert.match(harness.chainProgress.rendered.markup, /Closed \(3\)/);
+  assert.match(harness.chainProgress.rendered.markup, /Closed \(4\)/);
 });
 
 test("W2-P1-01: every chain lands in exactly one group — the projection drops nothing", () => {
@@ -439,22 +460,64 @@ test("W2-P1-01: every chain lands in exactly one group — the projection drops 
   assert.deepEqual([...all].sort(), harness.chainProgress.statuses.map((s) => s.decisionId).sort());
 });
 
-test("W2-P1-01: the presentation grouping reconciles with the canonical status reading", () => {
-  // The selector reads persisted state, never `status.label`. This proves the two agree
-  // anyway, which is what makes the grouping trustworthy rather than a parallel opinion.
+test("W2-P1-01: grouping is decided by canonical branch facts, across ALL branches", () => {
+  // The invariant, stated against the read model's own predicates rather than against the
+  // selector's output: a chain is in progress exactly when some branch is live and not
+  // itself terminal, and its Decision was not rejected.
   for (const entry of harness.chainProgress.statuses) {
+    const shouldProgress = entry.decisionId !== "dec-rejected" && entry.progressingBranches > 0;
+    assert.equal(entry.group === "in_progress", shouldProgress, `${entry.decisionId}: grouping must follow branch facts`);
+  }
+});
+
+test("W2-P1-01: a single-branch chain still reconciles with the canonical status label", () => {
+  // For one branch the chain reading and the branch reading are the same question, so the
+  // two must still agree exactly. This is the guarantee the original W2 fixture proved, and
+  // the mixed-chain fix does not weaken it.
+  for (const entry of harness.chainProgress.statuses.filter((e) => e.branchCount <= 1)) {
     assert.equal(
       entry.group === "in_progress",
       entry.statusLabel === "In progress",
-      `${entry.decisionId}: grouping and canonical status must agree`,
+      `${entry.decisionId}: single-branch grouping and canonical status must agree`,
     );
   }
+});
+
+test("W2-P1-01: a mixed multi-action chain stays In Progress while any branch is still running", () => {
+  const mixed = harness.chainProgress.statuses.find((e) => e.decisionId === "dec-mixed");
+  assert.ok(mixed, "the mixed fixture must exist");
+  // The fixture is genuinely mixed — otherwise this would pass for the wrong reason.
+  assert.equal(mixed.branchCount, 2);
+  assert.equal(mixed.achievedBranches, 1, "one branch really did achieve its Outcome");
+  assert.equal(mixed.progressingBranches, 1, "another branch really is still running");
+  // One finished branch does not finish the Decision.
+  assert.equal(mixed.group, "in_progress");
+  assert.ok(harness.chainProgress.rendered.inProgressTitles.includes("MIXED achieved and running"));
+  assert.ok(!harness.chainProgress.rendered.closedTitles.includes("MIXED achieved and running"));
+  assert.ok(!harness.chainProgress.groups.closed.includes("dec-mixed"));
+  // The canonical status is untouched: the chain still reads "Outcome achieved", because a
+  // branch did. Only the GROUP heading changed, which is what the finding was about.
+  assert.equal(mixed.statusLabel, "Outcome achieved");
+});
+
+test("W2-P1-01: a multi-action chain whose branches are ALL terminal is closed", () => {
+  // The companion case: the fix must not make every multi-action Decision permanently live.
+  const all = harness.chainProgress.statuses.find((e) => e.decisionId === "dec-allterminal");
+  assert.ok(all, "the all-terminal fixture must exist");
+  assert.equal(all.branchCount, 2);
+  assert.equal(all.progressingBranches, 0);
+  assert.equal(all.group, "closed");
+  assert.ok(harness.chainProgress.rendered.closedTitles.includes("ALL BRANCHES terminal"));
+  assert.ok(!harness.chainProgress.rendered.inProgressTitles.includes("ALL BRANCHES terminal"));
+  // And it is discriminating: `isBranchLive` alone is TRUE for its achieved branch, so a
+  // naive "any live branch means in progress" would have mis-grouped this one.
+  assert.ok(all.liveBranches > 0, "isBranchLive alone would have called this chain live");
 });
 
 test("W2-P1-01: the canonical execution read model is untouched", () => {
   // The fix is a selector over the projection, not a change to it: every decided chain,
   // terminal ones included, is still projected.
-  assert.equal(harness.chainProgress.statuses.length, 6, "all six decided chains are still projected");
+  assert.equal(harness.chainProgress.statuses.length, 8, "every decided chain is still projected");
   // Rejected Decisions are still built (the read model's own comment commits to this).
   assert.match(chainReadModel, /Rejected\s*\n?\s*\*\s*Decisions ARE included/);
   // The queue derives its groups; it does not filter by reading a display string.
@@ -609,9 +672,190 @@ test("W2-P1-03: the summary's fetch time is not reported as project activity", (
   // `generatedAt` is set on this fixture and every collection is empty. If fetch time were
   // being read, this would return a timestamp instead of null.
   assert.equal(harness.headerFreshness.fetchedButEmptyLatest, null);
-  const activitySrc = read("src/modules/workspace/presentation/command-center/activity-read-model.ts");
-  assert.doesNotMatch(activitySrc.replace(/\/\*[\s\S]*?\*\//g, ""), /generatedAt/);
+  // `generatedAt` IS read — as the ceiling that decides what counts as already-happened, and
+  // as the baseline "ago" is measured from (see the Codex clock-skew fix below). What it must
+  // never be is a RECORD of project activity, and the collection list is where that is
+  // decided: no summary metadata appears in it, so no scan can ever reach the field.
+  assert.ok(!ACTIVITY_COLLECTIONS.includes("generatedAt"));
+  assert.ok(!ACTIVITY_COLLECTIONS.includes("assurance"));
+  assert.ok(!ACTIVITY_TIMESTAMP_FIELDS.includes("generatedAt"));
+  assert.ok(!ACTIVITY_TIMESTAMP_FIELDS.includes("asOf"));
   // The screen no longer carries its own three-collection freshness helper.
   assert.doesNotMatch(layout, /function deriveLastUpdatedLabel/);
-  assert.match(layout, /deriveLastUpdatedLabel\(flowData, projectionNow\)/);
+  assert.match(layout, /deriveLastUpdatedLabel\(flowData\)/);
+});
+
+
+// ───────── Codex P2: an unsent draft survives collapsing Ask PMFreak ──────────
+//
+// The panel used to render `{open ? children : null}`, which unmounted `CommandFeed` on
+// collapse. The composer's draft is that component's own local state, so it was destroyed:
+// type, collapse, reopen, blank box. These assertions run against a REAL client render —
+// jsdom plus react-dom, driving the real controls — because the defect is a mount/unmount
+// question that server markup and source reading both cannot see.
+
+test("W2-CODEX: an unsent draft survives collapse and reopen", () => {
+  const { draft, drafted, collapsed, reopened } = draftHarness;
+  // Typed into the real composer, and genuinely not sent.
+  assert.equal(drafted.composerValue, draft);
+  assert.deepEqual(drafted.submitted, []);
+  // Collapsing keeps the feed mounted, so the draft is still there...
+  assert.equal(collapsed.composerMounted, true, "collapsing must not unmount the conversation");
+  assert.equal(collapsed.composerValue, draft);
+  // ...and reopening shows exactly what was typed.
+  assert.equal(reopened.composerValue, draft);
+});
+
+test("W2-CODEX: collapsing sends nothing and loses no transcript", () => {
+  assert.deepEqual(draftHarness.collapsed.submitted, [], "collapse must not submit the draft");
+  assert.deepEqual(draftHarness.reopened.submitted, [], "reopening must not submit the draft");
+  assert.equal(draftHarness.reopened.transcriptCount, draftHarness.transcriptAtStart);
+});
+
+test("W2-CODEX: there is exactly one CommandFeed, in every state", () => {
+  // Keeping it mounted must not become "mount a second one".
+  for (const [state, snapshot] of Object.entries({
+    initiallyCollapsed: draftHarness.initiallyCollapsed,
+    opened: draftHarness.opened,
+    collapsed: draftHarness.collapsed,
+    reopened: draftHarness.reopened,
+  })) {
+    assert.equal(snapshot.feedInstances, 1, `${state}: exactly one conversation instance`);
+  }
+});
+
+test("W2-CODEX: a collapsed conversation is hidden, not merely invisible", () => {
+  // `display: none` is what removes it from the tab order and the accessibility tree. A
+  // transparent or off-screen composer would still be focusable, and a keyboard user would
+  // land in a control nobody can see.
+  assert.equal(draftHarness.initiallyCollapsed.regionHidden, true);
+  assert.equal(draftHarness.collapsed.regionHidden, true);
+  assert.equal(draftHarness.collapsed.regionDisplay, "none");
+  assert.equal(draftHarness.opened.regionHidden, false);
+  assert.equal(draftHarness.reopened.regionHidden, false);
+});
+
+// ───────── Codex P2: the future-activity ceiling is the SERVER's clock ────────
+//
+// W2 added the future-timestamp guard but the caller handed it `projectionNow`, which is
+// floored on the browser's clock. A browser running fast therefore moved the accepted
+// ceiling forward and let through timestamps the server considers future.
+
+test("W2-CODEX: the activity ceiling comes from the server, not the browser", () => {
+  const skew = harness.clockSkew;
+  assert.equal(skew.serverCeiling, skew.serverGeneratedAt, "the ceiling is the server's own reading");
+  assert.notEqual(skew.serverGeneratedAt, skew.clientClock, "the fixture really is skewed");
+});
+
+test("W2-CODEX: an observation the server calls future is rejected even on a fast browser", () => {
+  // Server 12:00, browser 12:10, observed 12:07. Past to the browser, future to the server.
+  const skew = harness.clockSkew;
+  assert.notEqual(skew.futureToServerLatest, "2026-09-07T12:07:00.000Z", "a future observation must not be activity");
+  // It falls back to the genuinely older record instead.
+  assert.equal(skew.futureToServerLatest, "2026-09-06T12:00:00.000Z");
+  assert.equal(skew.futureToServerLabel, "1 day ago");
+});
+
+test("W2-CODEX: a genuinely past observation is accepted, and its age is server-measured", () => {
+  const skew = harness.clockSkew;
+  assert.equal(skew.pastLatest, "2026-09-07T11:58:00.000Z");
+  // Measured from the server's 12:00, not the browser's 12:10 — otherwise this would read
+  // "12 minutes ago" and the header would age the project by the local clock's error.
+  assert.equal(skew.pastLabel, "2 minutes ago");
+  assert.match(skew.pastHeader, /Updated 2 minutes ago/);
+});
+
+test("W2-CODEX: with no trustworthy server anchor, no freshness claim is made at all", () => {
+  // Substituting `new Date()` here would keep the label alive by dropping the guarantee it
+  // depends on. Refusing to answer is the honest failure.
+  const skew = harness.clockSkew;
+  assert.equal(skew.noAnchorCeiling, null);
+  assert.equal(skew.noAnchorLatest, null);
+  assert.equal(skew.noAnchorLabel, null);
+  const activitySrc = read("src/modules/workspace/presentation/command-center/activity-read-model.ts");
+  const code = activitySrc.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  assert.doesNotMatch(code, /new Date\(\)/, "no clock may be read in this module");
+  assert.doesNotMatch(code, /Date\.now\(\)/);
+  // And the screen no longer hands it the client-floored projection clock.
+  assert.match(layout, /deriveLastUpdatedLabel\(flowData\)/);
+  assert.doesNotMatch(layout, /deriveLastUpdatedLabel\(flowData, projectionNow\)/);
+});
+
+// ───────── Codex P2: monitoring describes the window it actually read ────────
+//
+// `data.signals` is the newest-first presentation window the summary loads, not the whole
+// project history. Per-area zero therefore means "none in the window", and the surface
+// used to render it as "Clear" — a claim about the project it has no basis for.
+
+/**
+ * Everything derived from `data.signals` — the coverage list and the seven signal-family
+ * specialists. Deliberately NOT the Dependency and Portfolio agents, which read the
+ * project-wide `assurance` aggregate from `get_operational_assurance_summary` rather than
+ * the window, and may therefore still speak in absolutes. That distinction is the whole
+ * point of the finding, so the test draws it rather than banning a word everywhere.
+ */
+const windowedMonitoringText = (body) => body.slice(0, body.indexOf("Dependency Agent"));
+
+test("W2-CODEX: no window-derived monitoring state is described as project-wide 'Clear'", () => {
+  const monitoring = harness.monitoringWindow;
+  for (const body of [monitoring.panelText, monitoring.emptyWindowPanelText]) {
+    const windowed = windowedMonitoringText(body);
+    assert.ok(windowed.length > 0, "the windowed portion must be found");
+    assert.ok(!/\bClear\b/.test(windowed), `"Clear" overstates a bounded read: ${windowed.slice(0, 140)}`);
+  }
+  // Zero areas say what is true instead.
+  const zeroAreas = monitoring.summary.areas.filter((area) => area.recentSignalCount === 0);
+  assert.ok(zeroAreas.length > 0, "the fixture must contain an area with no signals in the window");
+  for (const area of zeroAreas) assert.equal(area.statusLabel, "No recent signals");
+});
+
+test("W2-CODEX: the one remaining absolute is backed by a project-wide aggregate, not the window", () => {
+  // Dependency Agent reads `assurance.incompleteChainCount`, which the server computes over
+  // the whole project. It is allowed to say "Clear" precisely because it is not windowed.
+  const operationalData = read("src/modules/workspace/presentation/command-center/operational-data.ts");
+  const dependency = operationalData.slice(operationalData.indexOf("const dependencyAgent"));
+  assert.match(dependency, /incompleteChains/);
+  assert.match(operationalData, /const incompleteChains = assurance\?\.incompleteChainCount \?\? 0;/);
+  // And it is not derived from `signalSlice`, which is the windowed reader.
+  assert.doesNotMatch(dependency.slice(0, dependency.indexOf("};")), /signalSlice/);
+});
+
+test("W2-CODEX: monitoring counts are presented as recent activity, never as totals", () => {
+  const monitoring = harness.monitoringWindow;
+  assert.equal(monitoring.summary.windowed, true, "the read model states its own scope");
+  assert.match(monitoring.panelText, /5 recent signals/);
+  assert.ok(!/total/i.test(monitoring.panelText), "the window is not a total");
+  assert.ok(!/detected/i.test(monitoring.panelText), "'detected' implied completeness");
+  // The scope is disclosed rather than left to be inferred...
+  assert.equal(monitoring.scopeNotePresent, true);
+  assert.match(monitoring.panelText, /Based on the most recent signal activity available in this view/);
+  // ...without inventing a row limit. The loader's cap is not a shared constant, so no
+  // figure may be stated for it.
+  assert.ok(!/\b30\b/.test(monitoring.panelText), "no invented window size");
+});
+
+test("W2-CODEX: an empty window says so, rather than saying the project is clear", () => {
+  const body = harness.monitoringWindow.emptyWindowPanelText;
+  assert.match(body, /No recent signals in this view/);
+  assert.ok(!/\bClear\b/.test(windowedMonitoringText(body)));
+  assert.equal(harness.monitoringWindow.emptyWindowSummary.recentSignalCount, 0);
+});
+
+test("W2-CODEX: the specialist roster inherits the same scope, and stays collapsible", () => {
+  // It reads the same window through the same `signalSlice`, so it cannot claim more.
+  const body = harness.monitoringWindow.panelText;
+  assert.ok(!/\bClear\b/.test(windowedMonitoringText(body)));
+  assert.match(body, /recent signal/);
+  assert.match(harness.canvas.monitoring, /data-testid="cc-monitoring-detail"/);
+  assert.match(harness.canvas.monitoring, /View monitors/);
+});
+
+test("W2-CODEX: no server-side aggregate was added to close the window gap", () => {
+  // The honest fix was to describe what is read, not to build new intelligence.
+  const operationalData = read("src/modules/workspace/presentation/command-center/operational-data.ts");
+  assert.match(operationalData, /export function deriveMonitoring/);
+  const monitoringSlice = operationalData.slice(operationalData.indexOf("export function deriveMonitoring"));
+  assert.doesNotMatch(monitoringSlice, /fetch\(|useSWR|\/api\//, "monitoring must not gain a read of its own");
+  const service = read("src/lib/operational-flow/operational-flow-service.ts");
+  assert.match(service, /from\("operational_signals"\)[\s\S]{0,200}limit\(30\)/, "the loader is unchanged");
 });

@@ -269,9 +269,12 @@ export function CommandCenterLayout({
   const changes = useMemo(() => deriveWhatChanged(flowData, projectionNow), [flowData, projectionNow]);
   const monitoring = useMemo(() => deriveMonitoring(flowData), [flowData]);
   const memoryReal = useMemo(() => deriveMemory(flowData), [flowData]);
-  // Reads every collection of persisted records the summary carries — including everything
-  // downstream of a Decision — against the server-anchored instant, never `generatedAt`.
-  const lastUpdatedLabel = useMemo(() => deriveLastUpdatedLabel(flowData, projectionNow), [flowData, projectionNow]);
+  // Reads every collection of persisted records the summary carries, including everything
+  // downstream of a Decision. Deliberately NOT given `projectionNow`: that value is floored
+  // on the browser's clock, and a client running fast would then accept persisted timestamps
+  // the server considers to be in the future. Both the ceiling and the "ago" baseline come
+  // from the server's own reading inside the payload.
+  const lastUpdatedLabel = useMemo(() => deriveLastUpdatedLabel(flowData), [flowData]);
 
   // Real data or nothing: sections render honest empty states instead of fixtures.
   // RAID-derived suggestions are real extracted intelligence, so they show even
