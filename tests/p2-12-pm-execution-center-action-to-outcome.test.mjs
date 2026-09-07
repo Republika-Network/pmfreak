@@ -44,6 +44,19 @@ const text = (html) =>
     .replace(/\s+/g, " ")
     .trim();
 
+/**
+ * The text of the chain ROWS only, excluding the section's own heading.
+ *
+ * UX-W2 renamed this surface "In Progress" for the PM. That is a label for the region; it
+ * is never a claim about any one chain, and the claims below are about the chains. Reading
+ * the whole section would let the region's name answer a question only a chain's own status
+ * may answer — so these assertions read the list, which is where a status is stated.
+ */
+const chainRows = (html) => {
+  const start = html.indexOf("<ul");
+  return start < 0 ? "" : text(html.slice(start));
+};
+
 const stripComments = (source) => source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 
 // ── A. Canonical contract fidelity ───────────────────────────────────────────
@@ -586,19 +599,29 @@ test("P2-12 I4: the open drawer is resolved fresh so it reconciles after each wr
 // ── J. Surface composition ───────────────────────────────────────────────────
 
 test("P2-12 J1: the continuation is reachable from the Command Center at every breakpoint", () => {
-  // Rendered in the desktop rail and inside the mobile overlay, so it never becomes unreachable.
-  const occurrences = layout.match(/<ExecutionQueue/g) ?? [];
-  assert.equal(occurrences.length, 2);
+  // Before UX-W2 this was rendered twice — the desktop rail and a copy inside the mobile
+  // overlay — because the rail did not exist on a phone. It is now one section of the main
+  // attention canvas, laid out into the right column on a wide screen by CSS rather than by
+  // a second DOM. Mounted once, reachable everywhere, and never behind an overlay.
+  assert.equal((layout.match(/<ExecutionQueue/g) ?? []).length, 0, "the screen composes the canvas, not the queue directly");
+  const canvas = readFileSync("src/modules/workspace/presentation/command-center/command-center-canvas.tsx", "utf8");
+  assert.equal((canvas.match(/<ExecutionQueue/g) ?? []).length, 1);
+  assert.match(layout, /<CommandCenterCanvas/);
+  assert.match(layout, /chains=\{executionChains\}/);
 });
 
 test("P2-12 J2: the queue reports real stage progress and an honest empty state", () => {
   const populated = text(harness.rendered.queuePopulated);
-  assert.match(populated, /After Your Decision/i);
+  // UX-W2 renamed this surface for the PM ("In Progress") and kept its post-decision
+  // meaning stated in the section itself. The canonical semantics below are untouched.
+  assert.match(populated, /In Progress/i);
+  assert.match(populated, /after your decisions/i);
   assert.match(populated, /Work completed — no expected outcome yet/i);
-  assert.match(populated, /In progress/i);
+  assert.match(chainRows(harness.rendered.queuePopulated), /In progress/i);
   assert.doesNotMatch(populated, /Action authorized/i);
   assert.doesNotMatch(populated, /Outcome achieved/i);
-  assert.match(text(harness.rendered.queueEmpty), /Nothing has been decided yet/i);
+  assert.match(text(harness.rendered.queueEmpty), /Nothing is in progress yet/i);
+  assert.match(text(harness.rendered.queueEmpty), /Once you record a decision/i);
 });
 
 test("P2-12 J3: chain lookup is scoped to this project's persisted decisions", () => {
@@ -829,7 +852,7 @@ test("P2-12 M8: a rejected Decision reads as stopped, not as unfinished work", (
   assert.equal(harness.rejected.status.label, "Decision rejected");
   assert.equal(harness.rejected.status.tone, "danger");
   assert.match(harness.rejected.status.detail, /no governed action follows/i);
-  const queue = text(harness.rejected.queue);
+  const queue = chainRows(harness.rejected.queue);
   assert.match(queue, /Decision rejected/);
   assert.doesNotMatch(queue, /In progress/i);
   // Rejected is what the canonical Decision says; it is never relabelled as failed.
@@ -1253,7 +1276,7 @@ test("P2-12 T1: a superseded Outcome is terminal, not 'in progress', not reautho
   assert.equal(s.status.label, "Outcome superseded");
   assert.match(s.status.detail, /no governed operation continues from it/i);
   assert.notEqual(s.status.label, "In progress");
-  const queue = text(s.queue);
+  const queue = chainRows(s.queue);
   assert.match(queue, /Outcome superseded/);
   assert.doesNotMatch(queue, /In progress/i);
 

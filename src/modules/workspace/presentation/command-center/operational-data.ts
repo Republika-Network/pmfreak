@@ -872,6 +872,10 @@ function signalSlice(data: OperationalSummary | undefined, types: string[]) {
 type SpecialistDef = {
   id: string;
   name: string;
+  /** PM-facing name of the concern this signal family represents, used by the compact
+   *  "PMFreak is monitoring" summary. Same families, spoken as disciplines rather than
+   *  as a roster of AI personas. */
+  area: string;
   types: string[];
   busyLabel: string;
   clearLabel: string;
@@ -886,6 +890,7 @@ type SpecialistDef = {
 const SPECIALISTS: SpecialistDef[] = [
   {
     id: "risk-agent",
+    area: "Risks",
     name: "Risk Agent",
     types: ["governance_gap"],
     busyLabel: "Watching for new risk signals...",
@@ -895,6 +900,7 @@ const SPECIALISTS: SpecialistDef[] = [
   },
   {
     id: "schedule-agent",
+    area: "Schedule",
     name: "Schedule Agent",
     types: ["schedule_risk", "delivery_impediment"],
     busyLabel: "Tracking schedule pressure...",
@@ -904,6 +910,7 @@ const SPECIALISTS: SpecialistDef[] = [
   },
   {
     id: "scope-agent",
+    area: "Scope",
     name: "Scope Agent",
     types: ["scope_creep"],
     busyLabel: "Watching for scope drift...",
@@ -913,6 +920,7 @@ const SPECIALISTS: SpecialistDef[] = [
   },
   {
     id: "budget-agent",
+    area: "Budget",
     name: "Budget Agent",
     types: ["cost_risk", "billing_risk"],
     busyLabel: "Watching cost signals...",
@@ -922,6 +930,7 @@ const SPECIALISTS: SpecialistDef[] = [
   },
   {
     id: "stakeholder-agent",
+    area: "Stakeholders",
     name: "Stakeholder Agent",
     types: ["stakeholder_blocker"],
     busyLabel: "Watching stakeholder blockers...",
@@ -931,6 +940,7 @@ const SPECIALISTS: SpecialistDef[] = [
   },
   {
     id: "quality-agent",
+    area: "Quality",
     name: "Quality Agent",
     types: ["quality_risk"],
     busyLabel: "Watching quality signals...",
@@ -940,6 +950,7 @@ const SPECIALISTS: SpecialistDef[] = [
   },
   {
     id: "change-agent",
+    area: "Changes and approvals",
     name: "Change Agent",
     types: ["decision_needed", "missing_approval"],
     busyLabel: "Tracking pending decisions...",
@@ -1010,4 +1021,52 @@ export function deriveAgents(data: OperationalSummary | undefined, hasBrief: boo
   };
 
   return [...specialistAgents, dependencyAgent, portfolioAgent];
+}
+
+/**
+ * "PMFreak is monitoring" — one coverage line per signal family PMFreak actually watches.
+ *
+ * This is a SECOND PROJECTION of the state `deriveAgents` already computes, not a new
+ * derivation: the same `SPECIALISTS` families, counted by the same `signalSlice` over the
+ * same `data.signals` rows. The difference is only who the reader is. The specialist roster
+ * answers "which agent is busy"; this answers "is my project being watched, and where is
+ * something moving" — which is what a PM opens the Command Center to know.
+ *
+ * The specialist detail is not deleted; it is the collapsed disclosure beneath this summary.
+ */
+export type MonitoringArea = {
+  /** The specialist id this coverage line projects, so the two surfaces stay reconcilable. */
+  id: string;
+  /** PM-facing concern name, e.g. "Schedule". */
+  label: string;
+  /** Real count of persisted signals in this family. Never a placeholder. */
+  signalCount: number;
+  /** Highest persisted severity in this family, or null when the family is clear. */
+  topSeverity: string | null;
+  tone: StatusTone;
+  /** "Clear" or "N signals" — the same reading the specialist badge carries. */
+  statusLabel: string;
+};
+
+export type MonitoringSummary = {
+  areas: MonitoringArea[];
+  /** Signals across every monitored family. Counted, never characterised as "new" —
+   *  nothing in the read model records what this PM has already seen. */
+  totalSignals: number;
+};
+
+export function deriveMonitoring(data: OperationalSummary | undefined): MonitoringSummary {
+  const areas = SPECIALISTS.map((spec) => {
+    const { count, topSeverity } = signalSlice(data, spec.types);
+    const tone: StatusTone = count === 0 ? "success" : topSeverity === "critical" || topSeverity === "high" ? "danger" : "task";
+    return {
+      id: spec.id,
+      label: spec.area,
+      signalCount: count,
+      topSeverity: topSeverity ?? null,
+      tone,
+      statusLabel: count > 0 ? `${count} signal${count === 1 ? "" : "s"}` : "Clear",
+    } satisfies MonitoringArea;
+  });
+  return { areas, totalSignals: areas.reduce((total, area) => total + area.signalCount, 0) };
 }

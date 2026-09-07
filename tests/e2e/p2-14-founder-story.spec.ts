@@ -79,7 +79,7 @@ async function shot(name: string) {
  * Reach the operational attention surface through the product's own navigation.
  *
  * `/command-center` first renders the project activation surface ("Project Brain Online").
- * The Needs You / After Your Decision queues live behind its real "Enter Command Center"
+ * The attention canvas (Needs your attention / In Progress) lives behind its real "Enter Command Center"
  * control. Clicking it is ordinary product navigation performed by the browser — it is not
  * a shortcut around a gate, and nothing here fabricates state. The control is absent once
  * the surface is already open, so the click is conditional rather than assumed.
@@ -87,7 +87,7 @@ async function shot(name: string) {
 async function enterOperationalSurface(target: Page = page) {
   const enter = target.getByRole("button", { name: /Enter Command Center/i });
   if (await enter.count()) await enter.first().click();
-  await expect(target.getByRole("heading", { name: "Needs You" }).first()).toBeVisible({ timeout: 45_000 });
+  await expect(target.getByRole("heading", { name: "Needs your attention" }).first()).toBeVisible({ timeout: 45_000 });
 }
 
 /** Open the Tenant A Command Center and wait for the real read model to land. */
@@ -96,9 +96,15 @@ async function openCommandCenter(target: Page = page) {
   await enterOperationalSurface(target);
 }
 
-/** The desktop sidebar instance. Both responsive surfaces mount these queues. */
-function desktopAside(target: Page = page) {
-  return target.locator("aside").filter({ has: target.getByRole("heading", { name: "Needs You" }) }).first();
+/**
+ * The attention canvas.
+ *
+ * Until UX-W2 these queues were a desktop `<aside>` with a duplicate inside a mobile
+ * overlay, so a test had to pick an instance. They are now one attention-first main canvas
+ * mounted once at every width, addressed by the test id the canvas carries.
+ */
+function attentionCanvas(target: Page = page) {
+  return target.getByTestId("command-center-canvas");
 }
 
 test.describe.serial("P2-14 authenticated two-tenant Founder browser story", () => {
@@ -140,7 +146,7 @@ test.describe.serial("P2-14 authenticated two-tenant Founder browser story", () 
     // Already signed in above through the real /login form + /api/login.
     expect(page.url()).not.toContain("/login");
     await openCommandCenter();
-    await expect(page.getByRole("heading", { name: "Needs You" }).first()).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Needs your attention" }).first()).toBeVisible();
     checkpoint("STEP_01", `real form sign-in as ${OWNER_A.reference} through /login -> /api/login`);
     checkpoint("STEP_02", "authorized session established; Command Center read model rendered");
   });
@@ -203,8 +209,8 @@ test.describe.serial("P2-14 authenticated two-tenant Founder browser story", () 
     // decided id is read back off the persisted Decision in STEP 09 instead.
     proposedRecommendationIds = proposed.map((row) => String(row.id));
 
-    const aside = desktopAside();
-    const items = aside.getByRole("heading", { name: "Needs You" }).locator("xpath=../..").getByRole("button");
+    const canvas = attentionCanvas();
+    const items = canvas.getByRole("heading", { name: "Needs your attention" }).locator("xpath=../..").getByRole("button");
     await expect(items.first()).toBeVisible({ timeout: 30_000 });
     await items.first().click();
 
@@ -267,8 +273,8 @@ test.describe.serial("P2-14 authenticated two-tenant Founder browser story", () 
 
   test("STEP 11 — governed Material Action is explicitly proposed and authorized through the real AOC boundary", async () => {
     await openCommandCenter();
-    const aside = desktopAside();
-    await aside.getByRole("heading", { name: "After Your Decision" }).locator("xpath=../..").getByRole("button").first().click();
+    const canvas = attentionCanvas();
+    await canvas.getByRole("heading", { name: "In Progress" }).locator("xpath=../..").getByRole("button").first().click();
 
     const drawer = page.getByRole("dialog");
     await expect(drawer).toBeVisible();
@@ -398,8 +404,8 @@ test.describe.serial("P2-14 authenticated two-tenant Founder browser story", () 
 
   test("STEP 13 — Internal Execution runs through the real canonical lifecycle", async () => {
     await openCommandCenter();
-    const aside = desktopAside();
-    await aside.getByRole("heading", { name: "After Your Decision" }).locator("xpath=../..").getByRole("button").first().click();
+    const canvas = attentionCanvas();
+    await canvas.getByRole("heading", { name: "In Progress" }).locator("xpath=../..").getByRole("button").first().click();
     const drawer = page.getByRole("dialog");
     await expect(drawer).toBeVisible();
 
@@ -573,8 +579,8 @@ test.describe.serial("P2-14 authenticated two-tenant Founder browser story", () 
     }
 
     // Now the Observation, through the real P2-12 surface.
-    const aside = desktopAside();
-    await aside.getByRole("heading", { name: "After Your Decision" }).locator("xpath=../..").getByRole("button").first().click();
+    const canvas = attentionCanvas();
+    await canvas.getByRole("heading", { name: "In Progress" }).locator("xpath=../..").getByRole("button").first().click();
     const drawer = page.getByRole("dialog");
     await expect(drawer).toBeVisible();
     await drawer.getByLabel("What does the evidence say?").selectOption("achieved");
@@ -835,8 +841,8 @@ test.describe.serial("P2-14 authenticated two-tenant Founder browser story", () 
     expect(duplicates, "duplicate document ids").toEqual([]);
 
     // The attention item is keyboard reachable and activates on Enter, and focus is not lost.
-    const aside = desktopAside();
-    const chainButton = aside.getByRole("heading", { name: "After Your Decision" }).locator("xpath=../..").getByRole("button").first();
+    const canvas = attentionCanvas();
+    const chainButton = canvas.getByRole("heading", { name: "In Progress" }).locator("xpath=../..").getByRole("button").first();
     await chainButton.focus();
     await expect(chainButton).toBeFocused();
     await page.keyboard.press("Enter");
@@ -900,18 +906,17 @@ async function openCommandCenterResponsive(width: number) {
   await page.waitForLoadState("domcontentloaded");
   const enter = page.getByRole("button", { name: /Enter Command Center/i });
   if (await enter.count()) await enter.first().click();
-  // At xl the attention queues are mounted beside the feed. Below xl the Command Center
-  // presents a narrow-surface architecture instead (Project Brain, Decisions / Commitments
-  // / Evidence chips, the command feed), and the queues are reached through the top-bar
-  // "Open agents and notifications" control. Addressed by its real accessible name — a
-  // guessed name pattern would silently match nothing and assert against an empty overlay.
-  const queueHeading = page.getByRole("heading", { name: "Needs You" });
-  if (!(await queueHeading.count())) {
-    await page.getByRole("button", { name: "Open agents and notifications" }).first().click();
-  }
+  // UX-W2: attention is the main canvas at EVERY width. Below xl it used to be reachable
+  // only through the top bar's "Open agents and notifications" overlay; now there is nothing
+  // to open, which is the stronger guarantee this narrow-viewport check exists to make.
+  const queueHeading = page.getByRole("heading", { name: "Needs your attention" });
   await expect(queueHeading.first()).toBeVisible({ timeout: 45_000 });
+  await expect(page.getByRole("button", { name: "Open agents and notifications" })).toHaveCount(0);
 
   // Intake stays reachable at every breakpoint: a Founder who can only see the queue but
-  // cannot add an operational record has not been given a usable surface.
+  // cannot add an operational record has not been given a usable surface. Since UX-W2 the
+  // persistent control is the project header's attach button rather than the chat
+  // composer's paperclip, because chat no longer opens by default; the accessible name is
+  // unchanged, so this is still the same guarantee.
   await expect(page.getByRole("button", { name: /Add project notes/i }).first()).toBeVisible();
 }

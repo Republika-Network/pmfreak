@@ -32,12 +32,17 @@ export function ExecutionQueue({
   // after a hidden heading. Each instance names its own heading.
   const headingId = useId();
   return (
-    <section aria-labelledby={headingId}>
+    <section aria-labelledby={headingId} data-testid="cc-section-in-progress">
       <div className="flex items-center justify-between gap-2 px-1">
         <h2 id={headingId} className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
-          After Your Decision
+          In Progress
         </h2>
+        {!loading && chains.length > 0 && <span className="shrink-0 text-[11px] text-zinc-500">{chains.length}</span>}
       </div>
+      {/* The section is named for what the PM sees — work under way — while the sentence
+          below keeps the canonical meaning intact: this is what follows a recorded
+          Decision, and nothing appears here that a human did not decide. */}
+      <p className="mt-1 px-1 text-[11px] text-zinc-500">What is happening after your decisions.</p>
 
       <div role="status" aria-live="polite">
         {loading && chains.length === 0 && <SectionLoadingState label="Checking what you have decided…" />}
@@ -45,7 +50,7 @@ export function ExecutionQueue({
 
       {showEmpty && (
         <SectionEmptyState
-          title="Nothing has been decided yet."
+          title="Nothing is in progress yet."
           description="Once you record a decision, the governed action, task, execution and outcome appear here."
         />
       )}
