@@ -229,7 +229,13 @@ export function CommandCenterLayout({
 
   const needsYouReal = useMemo(() => deriveNeedsYou(flowData, handleDecide), [flowData]); // eslint-disable-line react-hooks/exhaustive-deps
   const governedAttentionAll = useMemo(() => deriveAllGovernedAttention(flowData, handleDecide), [flowData]); // eslint-disable-line react-hooks/exhaustive-deps
-  const raidNeedsYou = useMemo(() => deriveRaidNeedsYou(raidActions, handleRaidDecide), [raidActions]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The capability comes from the same server boundary the decision route enforces, so a
+  // read-only member sees these suggestions as Reviews rather than being offered a triage
+  // the server would refuse.
+  const raidNeedsYou = useMemo(
+    () => deriveRaidNeedsYou(raidActions?.actions, handleRaidDecide, raidActions?.canDecide === true),
+    [raidActions], // eslint-disable-line react-hooks/exhaustive-deps
+  );
   // P2-12: governed chains that continue past a recorded Decision, plus the canonical
   // evidence a PM may cite when recording an Observation.
   /** Pure: the later of the server's own reading for this payload and the last deadline
@@ -297,7 +303,11 @@ export function CommandCenterLayout({
    * Recommendations this page has not got, and the surface must not state a total or say
    * the PM is clear.
    */
-  const governedAttentionPartial = flowData !== undefined && flowData.governedAttentionComplete === false;
+  // Absence of proof is not proof. `governedAttentionComplete` is optional — an older or
+  // fixture payload carries no projection at all — so only an explicit `true` may authorise
+  // a definitive count or a clear state. Anything else is partial, never failed: the read
+  // succeeded, it simply cannot show its work.
+  const governedAttentionPartial = flowData !== undefined && flowData.governedAttentionComplete !== true;
   const governedAttentionTotal = flowData?.governedAttentionTotal ?? null;
 
   const attention = assessAttentionCompleteness([
@@ -453,7 +463,10 @@ export function CommandCenterLayout({
       title: chain.title,
       why: chain.rationale ?? "A human decision was recorded for this recommendation.",
       evidence: leading?.action.evidenceReferenceIds ?? [],
+      // `boundary.statement` is the read model's factual conclusion about this chain, not
+      // advice — so it is labelled as state rather than as a recommendation.
       nextStep: chain.boundary.statement,
+      nextStepLabel: "Current state",
       badge: { tone: chain.status.tone, label: `Governed · ${chain.status.label}` },
       kindSummary: "The governed chain that follows your recorded decision.",
       chain: [

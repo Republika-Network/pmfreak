@@ -30,6 +30,8 @@ const WORKSPACE = "ws-1";
 const PROJECT = "proj-1";
 const ACTOR = "actor-pm";
 
+const ASSURANCE_AS_OF = "2027-01-01T00:00:00Z";
+
 const scoped = (row: Row): Row => ({ workspace_id: WORKSPACE, project_id: PROJECT, ...row });
 
 const OLD = "2026-01-01T00:00:00Z";
@@ -42,7 +44,7 @@ function lineageFor(id: string, createdAt: string, status: string): Row[] {
     scoped({ id: `sig-${id}`, evidence_item_id: `ev-${id}`, signal_type: "scope_creep", severity: "high", summary: `Finding ${id}`, rationale: `Rationale ${id}`, created_at: createdAt }),
     scoped({ id: `risk-${id}`, signal_id: `sig-${id}`, type: "risk", status: "open", rationale: `Risk rationale ${id}`, created_at: createdAt }),
     scoped({ id: `gov-${id}`, related_entity_id: `risk-${id}`, rule_key: "scope_change_requires_sponsor", authority_required: "project manager", governance_status: "decision_required", explanation: `Explanation ${id}`, created_at: createdAt }),
-    scoped({ id: `rec-${id}`, recommendation: `Recommendation ${id}`, status, governance_event_id: `gov-${id}`, risk_issue_id: `risk-${id}`, created_at: createdAt }),
+    scoped({ id: `rec-${id}`, recommendation: `Recommendation ${id}`, status, governance_event_id: `gov-${id}`, risk_issue_id: `risk-${id}`, created_at: createdAt, updated_at: createdAt }),
   ];
 }
 
@@ -72,7 +74,7 @@ function tablesFrom(groups: Row[][], openCount: number, decisions: Row[], links:
     operational_raw_inputs: [],
     operational_normalized_events: [],
     workspace_memberships: [{ workspace_id: WORKSPACE, user_id: ACTOR, role: "owner" }],
-    __assurance: [{ openRecommendations: openCount }],
+    __assurance: [{ openRecommendations: openCount, asOf: ASSURANCE_AS_OF }],
   };
 }
 
@@ -146,6 +148,24 @@ const duplicateHistoryTables = tablesFrom(
   [],
 );
 
+/**
+ * The CODEX-P2-03 case: an old root carrying a prior `escalated` Decision that is outside
+ * the recent Decision window, then terminally decided.
+ *
+ * It leaves the open set and survives only through reconciliation — and history rooted on
+ * the open set alone would then have nothing fetching the older escalation, so the PM's own
+ * earlier reasoning would vanish from a drawer that stayed open.
+ */
+const reconciledWithOldHistoryTables = tablesFrom(
+  [...NEWER_HISTORY, lineageFor("old", OLD, "accepted")],
+  0,
+  [OLD_ESCALATION, TERMINAL_DECISION, ...NEWER_DECISIONS],
+  [
+    scoped({ decision_record_id: "dec-old", evidence_item_id: "ev-old", evidence_hash_at_decision: `sha256:${"c".repeat(64)}`, evidence_version_at_decision: "3", evidence_title_snapshot: "Evidence old", created_at: OLD }),
+    scoped({ decision_record_id: "dec-new", evidence_item_id: "ev-old", evidence_hash_at_decision: `sha256:${"d".repeat(64)}`, evidence_version_at_decision: "4", evidence_title_snapshot: "Evidence old", created_at: "2026-07-01T00:00:00Z" }),
+  ],
+);
+
 let TABLES: Record<string, Row[]> = preDecisionTables;
 
 /** Exactly the query-builder surface `getOperationalSummary` uses. Naming it keeps the
@@ -155,6 +175,7 @@ type QueryBuilder = {
   select: (columns: string) => QueryBuilder;
   eq: (column: string, value: unknown) => QueryBuilder;
   in: (column: string, values: unknown[]) => QueryBuilder;
+  lte: (column: string, value: unknown) => QueryBuilder;
   not: (column: string, operator: string, value: unknown) => QueryBuilder;
   is: (column: string, value: unknown) => QueryBuilder;
   order: (column: string, options?: { ascending?: boolean }) => QueryBuilder;
@@ -178,6 +199,7 @@ function makeClient() {
     const ins: Array<[string, unknown[]]> = [];
     const notNull: string[] = [];
     const isNull: string[] = [];
+    const lte: Array<[string, unknown]> = [];
     // Ordered clauses in CALL order, not a single column. A `.order(a).order(b)` chain is a
     // lexicographic sort in PostgREST, and modelling only the last column would make this
     // stub unable to see the very defect multi-column ordering exists to prevent: tied rows
@@ -200,6 +222,12 @@ function makeClient() {
       let rows = [...(TABLES[table] ?? [])];
       for (const [column, value] of eqs) rows = rows.filter((row) => String(read(column, row)) === String(value));
       for (const [column, values] of ins) rows = rows.filter((row) => values.map(String).includes(String(read(column, row))));
+      for (const [column, value] of lte) {
+        rows = rows.filter((row) => {
+          const cell = read(column, row);
+          return cell !== null && cell !== undefined && String(cell) <= String(value);
+        });
+      }
       for (const column of notNull) rows = rows.filter((row) => read(column, row) !== null && read(column, row) !== undefined);
       for (const column of isNull) rows = rows.filter((row) => read(column, row) === null || read(column, row) === undefined);
       if (orderBy.length > 0) {
@@ -224,6 +252,7 @@ function makeClient() {
       select: () => chain,
       eq: (column: string, value: unknown) => { eqs.push([column, value]); filters.push(`eq:${column}`); return chain; },
       in: (column: string, values: unknown[]) => { ins.push([column, values]); filters.push(`in:${column}`); return chain; },
+      lte: (column: string, value: unknown) => { lte.push([column, value]); filters.push(`lte:${column}`); return chain; },
       is: (column: string, value: unknown) => {
         if (value !== null) throw new Error(`unsupported_stub_filter: is(${column}, ${String(value)})`);
         isNull.push(column);
@@ -313,7 +342,10 @@ async function main() {
   const postDecision = await snapshot(postDecisionTables);
   const oldHistory = await snapshot(oldHistoryTables);
   const duplicateHistory = await snapshot(duplicateHistoryTables);
-  process.stdout.write(JSON.stringify({ preDecision, postDecision, oldHistory, duplicateHistory }, null, 2));
+  const reconciledWithOldHistory = await snapshot(reconciledWithOldHistoryTables);
+  process.stdout.write(
+    JSON.stringify({ preDecision, postDecision, oldHistory, duplicateHistory, reconciledWithOldHistory }, null, 2),
+  );
 }
 
 void main();

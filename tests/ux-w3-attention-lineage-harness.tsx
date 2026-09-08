@@ -117,6 +117,7 @@ const TABLES: Record<string, Row[]> = {
       governance_event_id: "gov-old",
       risk_issue_id: "risk-old",
       created_at: OLD,
+      updated_at: OLD,
     }),
     scoped({
       id: "rec-broken",
@@ -125,6 +126,7 @@ const TABLES: Record<string, Row[]> = {
       governance_event_id: "gov-broken",
       risk_issue_id: "risk-missing",
       created_at: OLD,
+      updated_at: OLD,
     }),
   ],
   // Every upstream collection is flooded with newer unrelated rows, so the linked ones fall
@@ -156,6 +158,7 @@ type QueryBuilder = {
   select: (columns: string) => QueryBuilder;
   eq: (column: string, value: unknown) => QueryBuilder;
   in: (column: string, values: unknown[]) => QueryBuilder;
+  lte: (column: string, value: unknown) => QueryBuilder;
   not: (column: string, operator: string, value: unknown) => QueryBuilder;
   is: (column: string, value: unknown) => QueryBuilder;
   order: (column: string, options?: { ascending?: boolean }) => QueryBuilder;
@@ -179,6 +182,7 @@ function makeClient() {
     const ins: Array<[string, unknown[]]> = [];
     const notNull: string[] = [];
     const isNull: string[] = [];
+    const lte: Array<[string, unknown]> = [];
     // Ordered clauses in CALL order, not a single column. A `.order(a).order(b)` chain is a
     // lexicographic sort in PostgREST, and modelling only the last column would make this
     // stub unable to see the very defect multi-column ordering exists to prevent: tied rows
@@ -201,6 +205,12 @@ function makeClient() {
       let rows = [...(TABLES[table] ?? [])];
       for (const [column, value] of eqs) rows = rows.filter((row) => String(read(column, row)) === String(value));
       for (const [column, values] of ins) rows = rows.filter((row) => values.map(String).includes(String(read(column, row))));
+      for (const [column, value] of lte) {
+        rows = rows.filter((row) => {
+          const cell = read(column, row);
+          return cell !== null && cell !== undefined && String(cell) <= String(value);
+        });
+      }
       for (const column of notNull) rows = rows.filter((row) => read(column, row) !== null && read(column, row) !== undefined);
       for (const column of isNull) rows = rows.filter((row) => read(column, row) === null || read(column, row) === undefined);
       if (orderBy.length > 0) {
@@ -225,6 +235,7 @@ function makeClient() {
       select: () => chain,
       eq: (column: string, value: unknown) => { eqs.push([column, value]); filters.push(`eq:${column}`); return chain; },
       in: (column: string, values: unknown[]) => { ins.push([column, values]); filters.push(`in:${column}`); return chain; },
+      lte: (column: string, value: unknown) => { lte.push([column, value]); filters.push(`lte:${column}`); return chain; },
       is: (column: string, value: unknown) => {
         if (value !== null) throw new Error(`unsupported_stub_filter: is(${column}, ${String(value)})`);
         isNull.push(column);
@@ -261,7 +272,7 @@ function makeClient() {
   return {
     client: {
       from: (table: string) => builder(table),
-      rpc: async (name: string) => (name === "get_operational_assurance_summary" ? { data: {}, error: null } : { data: null, error: null }),
+      rpc: async (name: string) => (name === "get_operational_assurance_summary" ? { data: { openRecommendations: 2, asOf: "2027-01-01T00:00:00Z" }, error: null } : { data: null, error: null }),
     },
     queries,
   };

@@ -1743,10 +1743,48 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
    * is assumed; the value is deliberately conservative.
    */
   const ID_FILTER_CHUNK = 50;
+  /**
+   * How many independent id chunks may be in flight at once.
+   *
+   * W3's attention root can legitimately exceed one page, and each lineage level then splits
+   * into a chunk per 50 ids. Run strictly one at a time, 501 roots become roughly 44
+   * consecutive round trips across the four levels before the Decision reads even begin —
+   * and the ceiling is 10,000 rows, where that is pathological. Run them all at once and a
+   * large project opens hundreds of simultaneous connections.
+   *
+   * Six is a deliberate middle: enough to collapse the waterfall, small enough to stay a
+   * polite client. It bounds concurrency WITHIN one level only; the levels themselves stay
+   * sequential because each discovers the ids the next one needs.
+   */
+  const CHUNK_CONCURRENCY = 6;
   /** Rows fetched per page. PostgREST applies its own max-rows cap, so a single unpaged
    *  read could silently return a truncated set — the exact false-absence F7 exists to
    *  prevent. Pages are drained explicitly until one comes back short. */
   const ROW_PAGE_SIZE = 500;
+
+  /**
+   * Runs `task` over `items` with at most `CHUNK_CONCURRENCY` in flight, preserving input
+   * order in the result.
+   *
+   * Order matters: callers flatten the result and downstream consumers re-sort, but a
+   * result whose order depended on completion timing would make the same data render
+   * differently run to run. The first rejection propagates — a failed chunk fails the whole
+   * read, because a partial set silently presented as complete is the defect this file
+   * exists to prevent.
+   */
+  const mapWithConcurrency = async <T, R>(items: T[], task: (item: T) => Promise<R>): Promise<R[]> => {
+    const results: R[] = new Array(items.length);
+    let next = 0;
+    const workers = Array.from({ length: Math.min(CHUNK_CONCURRENCY, items.length) }, async () => {
+      for (;;) {
+        const index = next++;
+        if (index >= items.length) return;
+        results[index] = await task(items[index]);
+      }
+    });
+    await Promise.all(workers);
+    return results;
+  };
 
   const linkedRows = async (
     table: string,
@@ -1757,9 +1795,14 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
     match?: readonly [string, string]
   ): Promise<SummaryRow[]> => {
     if (values.length === 0) return [];
-    const collected: SummaryRow[] = [];
+    const chunks: string[][] = [];
     for (let start = 0; start < values.length; start += ID_FILTER_CHUNK) {
-      const chunk = values.slice(start, start + ID_FILTER_CHUNK);
+      chunks.push(values.slice(start, start + ID_FILTER_CHUNK));
+    }
+    // Chunks are independent of one another; only the PAGES within a chunk are sequential,
+    // because the next offset belongs to that chunk. See `mapWithConcurrency`.
+    const perChunk = await mapWithConcurrency(chunks, async (chunk) => {
+      const collected: SummaryRow[] = [];
       for (let offset = 0; ; offset += ROW_PAGE_SIZE) {
         const scoped = client.from(table).select("*").eq("workspace_id", workspaceId).eq("project_id", projectId);
         const result = await (match ? scoped.eq(match[0], match[1]) : scoped)
@@ -1775,10 +1818,11 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
         // A short page is the last page. Every id filter is bounded, so this terminates.
         if (page.length < ROW_PAGE_SIZE) break;
       }
-    }
+      return collected;
+    });
     // Duplicates across chunks/pages are removed by canonical id in `unionById`, which also
     // restores the window's ordering after the union.
-    return collected;
+    return perChunk.flat();
   };
 
   /**
@@ -1791,9 +1835,12 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
    */
   const linkedRowsByReference = async (table: string, column: string, values: string[]): Promise<SummaryRow[]> => {
     if (values.length === 0) return [];
-    const collected: SummaryRow[] = [];
+    const chunks: string[][] = [];
     for (let start = 0; start < values.length; start += ID_FILTER_CHUNK) {
-      const chunk = values.slice(start, start + ID_FILTER_CHUNK);
+      chunks.push(values.slice(start, start + ID_FILTER_CHUNK));
+    }
+    const perChunk = await mapWithConcurrency(chunks, async (chunk) => {
+      const collected: SummaryRow[] = [];
       for (let offset = 0; ; offset += ROW_PAGE_SIZE) {
         const result = await client
           .from(table)
@@ -1808,8 +1855,9 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
         collected.push(...page);
         if (page.length < ROW_PAGE_SIZE) break;
       }
-    }
-    return collected;
+      return collected;
+    });
+    return perChunk.flat();
   };
 
   /**
@@ -1899,6 +1947,38 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
    * show every unresolved item. A safety bound exists so a pathological project cannot
    * spin here, and crossing it is reported as incompleteness rather than silently truncating.
    */
+  /*
+   * Membership is frozen to the assurance snapshot.
+   *
+   * Ordering and de-duplication made a single pass reproducible, but the pages still ran
+   * against a MOVING table: a Recommendation created, decided or reopened between page one
+   * and page three lands in a result assembled from several different instants, and
+   * comparing that mixture to a count taken at yet another instant proves nothing.
+   *
+   * Two persisted facts make a real snapshot possible without a schema change:
+   *
+   *   - `get_operational_assurance_summary` computes `asOf` and `openRecommendations` in ONE
+   *     statement, so the count is exactly |rows proposed at asOf|.
+   *   - every mutation of `recommended_actions` bumps `updated_at` through the
+   *     `recommended_actions_set_updated_at` BEFORE UPDATE trigger — a database guarantee,
+   *     not writer discipline.
+   *
+   * So `status = 'proposed' AND created_at <= asOf AND updated_at <= asOf` selects exactly
+   * the rows that existed at `asOf`, were proposed then, and have not changed since. Every
+   * such row was in the snapshot, which makes the loaded set a SUBSET of it. A subset whose
+   * size equals the snapshot's size is the snapshot — that is the proof, and it holds
+   * however the pages interleave with concurrent writes.
+   *
+   * The failure direction is safe by construction. A row that changed after `asOf` is
+   * excluded, so the loaded count falls BELOW the aggregate and the answer is reported
+   * incomplete. Nothing outside the snapshot can be counted into it.
+   */
+  const assuranceSnapshot = assuranceResult.data as OperationalSummary["assurance"];
+  const attentionSnapshotAt =
+    typeof assuranceSnapshot?.asOf === "string" && Number.isFinite(Date.parse(assuranceSnapshot.asOf))
+      ? assuranceSnapshot.asOf
+      : null;
+
   const ATTENTION_ROOT_MAX_PAGES = 20;
   const collectedAttentionRootRows: SummaryRow[] = [];
   let attentionRootDrained = false;
@@ -1911,6 +1991,11 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
       .eq("project_id", projectId)
       .not("governance_event_id", "is", null)
       .eq("status", "proposed")
+      // The snapshot predicate. Without a trustworthy `asOf` the read is still performed —
+      // the PM sees every open item — but it can prove nothing, and `governedAttentionComplete`
+      // below stays false rather than claiming a completeness it cannot demonstrate.
+      .lte("created_at", attentionSnapshotAt ?? "9999-12-31T23:59:59.999Z")
+      .lte("updated_at", attentionSnapshotAt ?? "9999-12-31T23:59:59.999Z")
       // TOTAL server-side order, applied BEFORE `range`. `created_at` alone is not unique,
       // and a non-unique ORDER BY leaves tied rows free to land in a different sequence on
       // each page request — which silently duplicates one row across a page boundary and
@@ -1949,7 +2034,7 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
    * computes over `recommended_actions` with `status = 'proposed'`. Never counted from a
    * presentation window, because counting a window is how this defect arose.
    */
-  const assuranceSummary = assuranceResult.data as OperationalSummary["assurance"];
+  const assuranceSummary = assuranceSnapshot;
   const governedAttentionTotal = Number(assuranceSummary?.openRecommendations ?? 0);
   /**
    * Completeness is PROVEN, not assumed. A request that succeeded says nothing about
@@ -1959,7 +2044,10 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
    * the loaded set larger, never a false claim of completeness.
    */
   const governedAttentionComplete =
-    attentionRootDrained && openGovernedRecommendations.length >= governedAttentionTotal;
+    // No server instant to freeze against means no proof, whatever the counts say.
+    attentionSnapshotAt !== null &&
+    attentionRootDrained &&
+    openGovernedRecommendations.length >= governedAttentionTotal;
   // `openGovernedRecommendations` is the DEDUPED set, so the comparison above counts
   // distinct canonical Recommendations. A page boundary that returned the same row twice
   // shrinks this count rather than padding it, and the answer is reported as incomplete.
@@ -1989,11 +2077,25 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
    * previous judgment — and on an old root that Decision can be older than the newest-30
    * Decision window. Reading history from the window alone silently drops it.
    */
-  const openAttentionRecommendationIds = [...new Set(openGovernedRecommendations.map((row) => String(row.id)))];
+  /*
+   * History is fetched for the open roots AND the reconciled ones.
+   *
+   * Rooting it on the open set alone lost history at exactly the moment it mattered most:
+   * an old Recommendation with a prior `escalated` Decision, terminally decided now, leaves
+   * the open set and survives only through reconciliation — and its earlier judgment, older
+   * than the Decision window, then had nothing fetching it. The drawer stayed open and the
+   * PM's own previous reasoning vanished from it.
+   */
+  const attentionDecisionHistoryRecommendationIds = [
+    ...new Set([
+      ...openGovernedRecommendations.map((row) => String(row.id)),
+      ...reconciliationRecommendations.map((row) => String(row.id)),
+    ]),
+  ];
   const governedAttentionDecisions = await linkedRows(
     "operational_decision_records",
     "recommendation_id",
-    openAttentionRecommendationIds,
+    attentionDecisionHistoryRecommendationIds,
   );
   // Their frozen evidence snapshots, so the technical disclosure keeps its provenance.
   // `decision_evidence_links` carries no tenant columns; its scope comes from these

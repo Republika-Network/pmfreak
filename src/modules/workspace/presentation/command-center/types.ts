@@ -114,6 +114,16 @@ export type DrawerContent = {
    *  and does not do, what authority it needs. Rendered beneath the recommendation, never
    *  as the recommendation. */
   nextStep: string;
+  /**
+   * Heading for `nextStep` when it stands alone.
+   *
+   * Not every drawer carries advice. A governed execution chain supplies
+   * `boundary.statement` here — "Internal work completed. The Outcome has no evidence-backed
+   * Observation yet" — which is a factual conclusion of the read model, not something
+   * PMFreak recommends. Labelling it as advice would turn a status into a suggestion, so
+   * such surfaces name their own heading and only a real recommendation gets the
+   * recommendation heading. */
+  nextStepLabel?: string;
   /** Real actions (e.g. on an agent card). No buttons are shown when omitted. */
   actions?: DrawerAction[];
   /** e.g. "Requires an authorized decision-maker for: ..." shown below the actions. */

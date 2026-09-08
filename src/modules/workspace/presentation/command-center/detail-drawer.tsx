@@ -333,7 +333,12 @@ export function DetailDrawer({ content, onClose }: { content: DrawerContent | nu
             </section>
 
             <div className="mt-5 rounded-xl border border-sky-500/20 bg-sky-500/[0.06] p-3">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-sky-300">PMFreak recommends</p>
+              {/* "PMFreak recommends" is a claim that what follows is advice. It is used only
+                  when the read model actually derived a recommendation; a drawer carrying a
+                  factual state supplies its own neutral heading instead. */}
+              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-sky-300">
+                {content.recommendation ? "PMFreak recommends" : content.nextStepLabel ?? "PMFreak recommends"}
+              </p>
               <p className="mt-1.5 text-sm leading-relaxed text-zinc-200">{content.recommendation ?? content.nextStep}</p>
               {/* The caveat qualifies the recommendation; it is never presented AS the
                   recommendation, which is what "Suggested next step" used to do here. */}

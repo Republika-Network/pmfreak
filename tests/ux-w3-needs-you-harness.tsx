@@ -34,6 +34,7 @@ import {
   HUMAN_JOB_GROUP_LABELS,
 } from "../src/modules/workspace/presentation/command-center/attention-presentation";
 import { NeedsYouQueue } from "../src/modules/workspace/presentation/command-center/needs-you-queue";
+import { assessAttentionCompleteness } from "../src/modules/workspace/presentation/command-center/attention-completeness";
 import { DetailDrawer } from "../src/modules/workspace/presentation/command-center/detail-drawer";
 import { DECISION_OPTIONS } from "../src/modules/workspace/presentation/command-center/attention-read-model";
 import type { NeedsYouItem } from "../src/modules/workspace/presentation/command-center/types";
@@ -308,7 +309,16 @@ const missingEvidenceItems = deriveNeedsYou(missingEvidenceSummary, noopDecide);
 const escalatedItems = deriveNeedsYou(escalatedSummary, noopDecide);
 const reviewOnlyItems = deriveNeedsYou(reviewOnlySummary, noopDecide);
 const mixedItems = deriveNeedsYou(mixedSummary, noopDecide);
-const raidItems = deriveRaidNeedsYou([RAID_ACTION], noopDecide);
+const raidItems = deriveRaidNeedsYou([RAID_ACTION], noopDecide, true);
+/** The same suggestion seen by a project member with READ access only. The decision route
+ *  requires project write, so offering triage controls here would promise a refused write. */
+const raidReadOnlyItems = deriveRaidNeedsYou([RAID_ACTION], noopDecide, false);
+/** `impact_level` absent: `String(null)` used to render the badge text "null". */
+const raidNoSeverityItems = deriveRaidNeedsYou(
+  [{ ...RAID_ACTION, id: "raid-no-severity", raid_item_id: "raid-item-no-severity", impact_level: null as unknown as string }],
+  noopDecide,
+  true,
+);
 
 /** The queue as the Command Center composes it: governed items then RAID suggestions. */
 const allItems: NeedsYouItem[] = [...mixedItems, ...raidItems];
@@ -385,6 +395,85 @@ process.stdout.write(
   JSON.stringify(
     {
       approvalItemsAvailable: APPROVAL_ITEMS_AVAILABLE,
+      raidAuthorization: {
+        writable: {
+          items: raidItems.map(itemShape),
+          grouping: groupAttentionItems(raidItems).map((g) => ({ job: g.job, ids: g.items.map((i) => i.id) })),
+          drawer: renderToStaticMarkup(<DetailDrawer content={raidItems[0].drawer} onClose={noop} />),
+        },
+        readOnly: {
+          items: raidReadOnlyItems.map(itemShape),
+          grouping: groupAttentionItems(raidReadOnlyItems).map((g) => ({ job: g.job, ids: g.items.map((i) => i.id) })),
+          drawer: renderToStaticMarkup(<DetailDrawer content={raidReadOnlyItems[0].drawer} onClose={noop} />),
+          queue: renderToStaticMarkup(
+            <NeedsYouQueue variant="canvas" items={raidReadOnlyItems} onSelect={noop} loading={false} errorMessage={null} />,
+          ),
+        },
+      },
+      raidSeverity: {
+        withSeverity: raidItems[0].severity ?? null,
+        withoutSeverity: raidNoSeverityItems[0].severity ?? null,
+        cardWithout: renderToStaticMarkup(
+          <NeedsYouQueue variant="canvas" items={raidNoSeverityItems} onSelect={noop} loading={false} errorMessage={null} />,
+        ),
+        drawerWithout: renderToStaticMarkup(<DetailDrawer content={raidNoSeverityItems[0].drawer} onClose={noop} />),
+      },
+      executionBoundaryDrawer: (() => {
+        // Exactly the shape `buildChainDrawer` produces for a governed execution chain: a
+        // factual boundary conclusion, no recommendation. It must not be called advice.
+        const markup = renderToStaticMarkup(
+          <DetailDrawer
+            content={{
+              title: "Raise a formal Change Request",
+              why: "A human decision was recorded for this recommendation.",
+              evidence: ["ev-1"],
+              nextStep: "Internal work completed. The Outcome has no evidence-backed Observation yet, so achievement is still unknown.",
+              nextStepLabel: "Current state",
+            }}
+            onClose={noop}
+          />,
+        );
+        return { markup, text: text(markup) };
+      })(),
+      absentCompletenessProof: (() => {
+        // A loaded payload that carries no completeness projection at all: the read
+        // succeeded, and it can prove nothing about whether it saw every open item.
+        const attention = assessAttentionCompleteness([
+          { label: "governed recommendations", loading: false, failed: false, partial: undefined !== true },
+          { label: "suggested actions", loading: false, failed: false },
+        ]);
+        return {
+          completeness: attention,
+          queue: text(
+            renderToStaticMarkup(
+              <NeedsYouQueue
+                variant="canvas"
+                items={[]}
+                onSelect={noop}
+                loading={false}
+                errorMessage={null}
+                incomplete={attention.partial}
+                incompleteNote={null}
+                emptyStateNote={null}
+              />,
+            ),
+          ),
+        };
+      })(),
+      provenCompleteness: (() => {
+        const attention = assessAttentionCompleteness([
+          { label: "governed recommendations", loading: false, failed: false, partial: true !== true },
+          { label: "suggested actions", loading: false, failed: false },
+        ]);
+        return {
+          completeness: attention,
+          queue: text(
+            renderToStaticMarkup(
+              <NeedsYouQueue variant="canvas" items={[]} onSelect={noop} loading={false} errorMessage={null} incomplete={attention.partial} emptyStateNote={null} />,
+            ),
+          ),
+        };
+      })(),
       raidContract: {
         // The generator's own field meanings, so the assertions compare presentation
         // against the contract rather than against itself.

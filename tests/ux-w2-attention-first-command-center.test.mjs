@@ -336,7 +336,9 @@ test("W2: the canonical post-decision chain is unchanged — W2 moved it, it did
   // Governed recommendations and RAID suggestions remain two collections with two write
   // paths — W2 changed placement, not the data model.
   assert.match(layout, /deriveNeedsYou\(flowData, handleDecide\)/);
-  assert.match(layout, /deriveRaidNeedsYou\(raidActions, handleRaidDecide\)/);
+  // CODEX-P2-01: the RAID derivation also receives the server-evaluated project write
+  // capability. Two derivations, two handlers, two models — unchanged.
+  assert.match(layout, /deriveRaidNeedsYou\(raidActions\?\.actions, handleRaidDecide, raidActions\?\.canDecide === true\)/);
 });
 
 test("W2: the new sections add no request of their own", () => {
@@ -577,14 +579,18 @@ test("W2-P1-02: the screen binds completeness to both reads, and merges neither 
   // returned less than the project holds, proven against `assurance.openRecommendations`.
   // The binding is otherwise unchanged.
   assert.match(layout, /\{ label: "governed recommendations", loading: flowLoading, failed: Boolean\(flowError\), partial: governedAttentionPartial \}/);
-  assert.match(layout, /const governedAttentionPartial = flowData !== undefined && flowData\.governedAttentionComplete === false;/);
+  // CODEX-P2-05: absence of proof is not proof. Only an explicit `true` authorises a
+  // definitive count or a clear state; an optional/absent field is partial, never complete.
+  assert.match(layout, /const governedAttentionPartial = flowData !== undefined && flowData\.governedAttentionComplete !== true;/);
   assert.match(layout, /\{ label: "suggested actions", loading: raidLoading, failed: Boolean\(raidError\) \}/);
   assert.match(layout, /const needsYouCount = attention\.complete \? needsYouItems\.length : null;/);
   assert.match(layout, /const attentionErrorMessage = attention\.failed \? "We couldn't load project attention\." : null;/);
   // The two collections stay distinct business objects with distinct write paths.
   assert.deepEqual(harness.attentionCompleteness.raidItemsAreStillTheirOwnKind, ["raid_suggestion"]);
   assert.match(layout, /deriveNeedsYou\(flowData, handleDecide\)/);
-  assert.match(layout, /deriveRaidNeedsYou\(raidActions, handleRaidDecide\)/);
+  // CODEX-P2-01: the RAID derivation also receives the server-evaluated project write
+  // capability. Two derivations, two handlers, two models — unchanged.
+  assert.match(layout, /deriveRaidNeedsYou\(raidActions\?\.actions, handleRaidDecide, raidActions\?\.canDecide === true\)/);
 });
 
 test("W2-P1-02: a suggestion failure does not make the activity sections claim they failed", () => {

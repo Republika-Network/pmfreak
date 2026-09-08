@@ -849,11 +849,14 @@ test("P2-12 M7b: linked rows are fetched by exact persisted reference, not a wid
     // The Recommendation the recent Decision points at, so a drawer opened on an old
     // attention root still resolves after the Decision removes it from the open set.
     "recommended_actions:in:id",
+    // Decision history for the attention roots is rooted on open UNION reconciled
+    // Recommendations (CODEX-P2-03), so a reconciled root's own history is fetched here —
+    // and its frozen evidence snapshots with it.
+    "operational_decision_records:in:recommendation_id",
+    "decision_evidence_links:in:decision_record_id",
     // Only `governance_events` follows because this fixture's Recommendation carries no
-    // `risk_issue_id`, so the risk / signal / evidence id sets are empty; and this project
-    // has no `proposed` Recommendation, so the attention Decision and evidence-link reads
-    // issue no query either. `linkedRows` returning early on an empty id set is the bound
-    // working, and it is why this list is shorter than the full set of completions.
+    // `risk_issue_id`, so the risk / signal / evidence id sets stay empty — `linkedRows`
+    // returning early on an empty id set is the bound working.
     "governance_events:in:id",
     // The probe run that proves the windows alone would have dropped the chain.
     "decision_evidence_links:in:decision_record_id",

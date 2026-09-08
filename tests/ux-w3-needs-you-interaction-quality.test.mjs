@@ -67,6 +67,9 @@ const lineage = JSON.parse(
   }),
 );
 
+/** The root harness now also carries the concurrency and snapshot scenarios. */
+const lineageRoots = roots;
+
 const harness = JSON.parse(
   execFileSync(process.execPath, ["node_modules/tsx/dist/cli.mjs", "tests/ux-w3-needs-you-harness.tsx"], {
     encoding: "utf8",
@@ -74,6 +77,9 @@ const harness = JSON.parse(
     maxBuffer: 64 * 1024 * 1024,
   }),
 );
+
+/** Visible text of a markup fragment. */
+const visibleText = (markup) => markup.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 
 /** Everything a card or drawer shows before the collapsed governance detail begins. */
 function primarySurface(markup) {
@@ -184,7 +190,9 @@ test("W3-A: grouping does not merge the two attention sources", () => {
   assert.ok(!DECISION_OPTIONS.some((option) => option.status === "deferred"));
   // The screen still calls two separate derivations with two separate handlers.
   assert.match(layout, /deriveNeedsYou\(flowData, handleDecide\)/);
-  assert.match(layout, /deriveRaidNeedsYou\(raidActions, handleRaidDecide\)/);
+  // The RAID derivation now also receives the server-evaluated project write capability, so
+  // a read-only member is not offered a triage the decision route would refuse.
+  assert.match(layout, /deriveRaidNeedsYou\(raidActions\?\.actions, handleRaidDecide, raidActions\?\.canDecide === true\)/);
 });
 
 // ───────────────────────────── W3-B: card anatomy ────────────────────────────
@@ -868,8 +876,10 @@ test("W3-P1-05: decided-drawer reconciliation still works — history is unioned
   const attentionModel = read("src/modules/workspace/presentation/command-center/attention-read-model.ts");
   assert.match(attentionModel, /for \(const row of summary\.governedAttentionRecommendations \?\? \[\]\) byId\.set\(String\(row\.id\), row\);/);
   assert.match(attentionModel, /if \(!byId\.has\(String\(row\.id\)\)\) byId\.set\(String\(row\.id\), row\);/);
-  // No duplicate reaches the queue in any scenario.
+  // No duplicate reaches the queue in any scenario. (`roots.concurrency` holds observation
+  // counters rather than a rendered scenario, so it is skipped.)
   for (const [name, scenario] of Object.entries(roots)) {
+    if (!scenario.needsYouIds) continue;
     assert.equal(new Set(scenario.needsYouIds).size, scenario.needsYouIds.length, `${name}: no duplicated item`);
   }
 });
@@ -933,8 +943,10 @@ test("W3-P2-07: an open root's escalation older than the Decision window is stil
   // The window genuinely excludes it — 30 newer Decisions on other Recommendations.
   assert.equal(s.recentDecisionIds.length, 30);
   assert.ok(!s.recentDecisionIds.includes("dec-old"), "the recent Decision window excludes it");
-  // The attention projection fetches it by exact recommendation_id.
-  assert.deepEqual(s.attentionDecisionIds, ["dec-old"]);
+  // The attention projection fetches it by exact recommendation_id. The projection is now
+  // rooted on open ∪ reconciled Recommendations (CODEX-P2-03), so it legitimately carries
+  // other Decisions too — what matters is that the out-of-window one is among them.
+  assert.ok(s.attentionDecisionIds.includes("dec-old"), "the out-of-window escalation is fetched");
   // And the Recommendation is still open, because escalation reopens it.
   assert.ok(s.needsYouIds.includes("governed-rec-rec-old"));
 });
@@ -972,7 +984,10 @@ test("W3-P1-06/07: both projections are exact, bounded and separate from the win
   assert.match(service, /await linkedRows\("recommended_actions", "id", decisionRecommendationIds\)/);
   assert.match(service, /row\.governance_event_id !== null && row\.governance_event_id !== undefined/);
   // Attention history: by exact recommendation_id, over the bounded open root set.
-  assert.match(service, /await linkedRows\(\s*"operational_decision_records",\s*"recommendation_id",\s*openAttentionRecommendationIds,\s*\)/);
+  // Rooted on open ∪ reconciled Recommendations, so a terminally-decided old root keeps its
+  // earlier history (CODEX-P2-03).
+  assert.match(service, /await linkedRows\(\s*"operational_decision_records",\s*"recommendation_id",\s*attentionDecisionHistoryRecommendationIds,\s*\)/);
+  assert.match(service, /\.\.\.openGovernedRecommendations\.map\(\(row\) => String\(row\.id\)\),\s*\.\.\.reconciliationRecommendations\.map\(\(row\) => String\(row\.id\)\),/);
   // Evidence links: chunked and paged, tenancy through the Decision ids and RLS.
   assert.match(service, /const linkedRowsByReference = async/);
   assert.match(service, /await linkedRowsByReference\(\s*"decision_evidence_links",\s*"decision_record_id",/);
@@ -1073,7 +1088,8 @@ test("W3-P1-08: completeness is computed from the deduped set, never from raw ro
   // The collected rows are deduped by canonical id into `openGovernedRecommendations`...
   assert.match(service, /const openGovernedRecommendations = \(\(\) => \{[\s\S]{0,400}for \(const row of collectedAttentionRootRows\) byId\.set\(String\(row\.id\), row\);/);
   // ...and that is what the comparison counts.
-  assert.match(service, /attentionRootDrained && openGovernedRecommendations\.length >= governedAttentionTotal/);
+  // Now also gated on a trustworthy server instant to freeze membership against (CODEX-P2-02).
+  assert.match(service, /attentionSnapshotAt !== null &&\s*attentionRootDrained &&\s*openGovernedRecommendations\.length >= governedAttentionTotal/);
   // The raw array is never compared against the aggregate.
   assert.doesNotMatch(service, /collectedAttentionRootRows\.length\s*>=/);
 });
@@ -1090,7 +1106,7 @@ test("W3-P1-08: every attention paged read has a total server order", () => {
 
 test("W3-P1-08: no canonical object is duplicated in any scenario", () => {
   for (const [name, scenario] of Object.entries(roots)) {
-    if (!scenario.rootIds) continue;
+    if (!scenario.rootIds || !scenario.needsYouIds) continue;
     assert.equal(scenario.duplicateRootIds, 0, `${name}: no duplicated Recommendation`);
     assert.equal(new Set(scenario.needsYouIds).size, scenario.needsYouIds.length, `${name}: no duplicated queue item`);
   }
@@ -1098,4 +1114,199 @@ test("W3-P1-08: no canonical object is duplicated in any scenario", () => {
   const attentionModel = read("src/modules/workspace/presentation/command-center/attention-read-model.ts");
   assert.match(attentionModel, /byId\.set\(String\(row\.id\), row\);/);
   assert.match(attentionModel, /byIdentity\.set\(`\$\{String\(link\.decision_record_id\)\}::\$\{String\(link\.evidence_item_id\)\}`, link\);/);
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CODEX REVIEW REMEDIATION — seven P2 findings
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ───────── P2-01: RAID controls follow real project write authority ──────────
+
+test("CODEX-P2-01: a read-only project member sees RAID suggestions as Reviews, with no controls", () => {
+  // `PATCH /api/recommended-actions/decision` requires project WRITE. A member who can read
+  // the project sees these suggestions but may not triage them — and the controls were
+  // hardcoded `allowed: true`, promising an action the server had already made unavailable.
+  const ro = harness.raidAuthorization.readOnly;
+  assert.deepEqual(ro.items.map((i) => i.humanJob), ["review"]);
+  assert.deepEqual(ro.grouping, [{ job: "review", ids: ["raid-action-raid-9"] }]);
+  assert.equal(ro.items[0].anyAllowed, false);
+  assert.equal(ro.items[0].terminalAllowed, false);
+  // The suggestion itself stays fully visible and inspectable.
+  assert.match(ro.queue, /Confirm the integration owner|Integration owner unknown/);
+  const primary = primarySurface(ro.drawer);
+  for (const verb of ["Accept", "Reject", "Defer"]) {
+    assert.ok(!new RegExp(`<button[^>]*>\\s*${verb}\\s*<`).test(ro.drawer.slice(0, ro.drawer.indexOf("Evidence &amp; governance"))), `${verb} must not be offered`);
+  }
+  assert.match(primary, /read-only/);
+});
+
+test("CODEX-P2-01: a writable member keeps the existing RAID Decisions behaviour", () => {
+  const rw = harness.raidAuthorization.writable;
+  assert.deepEqual(rw.items.map((i) => i.humanJob), ["decision"]);
+  assert.deepEqual(rw.grouping, [{ job: "decision", ids: ["raid-action-raid-9"] }]);
+  assert.equal(rw.items[0].anyAllowed, true);
+  assert.deepEqual(rw.items[0].decisionStatuses, ["accepted", "rejected", "deferred"]);
+  const primary = rw.drawer.slice(0, rw.drawer.indexOf("Evidence &amp; governance"));
+  for (const verb of ["Accept", "Reject", "Defer"]) {
+    assert.ok(new RegExp(`<button[^>]*>\\s*${verb}\\s*<`).test(primary), `${verb} must be offered`);
+  }
+});
+
+test("CODEX-P2-01: the capability is server-evaluated, and the write route keeps its own check", () => {
+  const route = read("src/app/api/recommended-actions/route.ts");
+  // The GET evaluates the SAME boundary the write route enforces — no client role logic.
+  assert.match(route, /await requireProjectAccess\(projectId, "write"\)/);
+  assert.match(route, /capabilities: \{ canDecide \}/);
+  // Read-only is an outcome, not an error: the denial is caught, not surfaced as a failure.
+  assert.match(route, /if \(!\(error instanceof AccessDeniedError\)\) throw error;/);
+  // The write path still authorizes independently — the route delegates to the shared
+  // decision workflow, which is where `requireProjectAccess(..., "write")` is enforced.
+  const decisionWorkflow = read("src/lib/recommended-actions/decision-workflow.ts");
+  assert.match(decisionWorkflow, /await requireProjectAccess\(action\.project_id, "write"\)/);
+  // The client never assumes yes.
+  const operationalData = read("src/modules/workspace/presentation/command-center/operational-data.ts");
+  assert.match(operationalData, /canDecide: payload\.capabilities\?\.canDecide === true/);
+});
+
+// ───────── P2-02: completeness is proven against a frozen snapshot ───────────
+
+test("CODEX-P2-02: membership is frozen to the assurance instant", () => {
+  const service = read("src/lib/operational-flow/operational-flow-service.ts");
+  // `asOf` and `openRecommendations` come from one statement, and every mutation bumps
+  // `updated_at` through a BEFORE UPDATE trigger — so this predicate selects exactly the
+  // rows that were proposed at `asOf` and have not changed since.
+  assert.match(service, /\.lte\("created_at", attentionSnapshotAt/);
+  assert.match(service, /\.lte\("updated_at", attentionSnapshotAt/);
+  // No trustworthy server instant means no proof, whatever the counts say.
+  assert.match(service, /attentionSnapshotAt !== null &&/);
+});
+
+test("CODEX-P2-02: a Recommendation created mid-read is outside the snapshot and changes nothing", () => {
+  const s = lineageRoots.concurrency.insert;
+  assert.equal(s.assuranceOpenRecommendations, 501);
+  assert.equal(s.uniqueRootIds, 501, "the frozen snapshot is loaded in full");
+  assert.equal(s.governedAttentionComplete, true, "the snapshot IS complete — the new row is not part of it");
+  assert.equal(s.duplicateRootIds, 0);
+});
+
+test("CODEX-P2-02: a snapshot member closed mid-read makes the answer provably incomplete", () => {
+  // Its `updated_at` moves past `asOf`, so it drops out of the predicate and the loaded set
+  // falls below the aggregate. The failure direction is safe by construction.
+  const s = lineageRoots.concurrency.close;
+  assert.equal(s.assuranceOpenRecommendations, 501);
+  assert.equal(s.uniqueRootIds, 500);
+  assert.equal(s.governedAttentionComplete, false);
+  assert.equal(s.youreClearVisible, false);
+  assert.equal(s.incompleteNote, "Showing 500 of 501 governed items needing review.");
+});
+
+test("CODEX-P2-02: a Recommendation reopened mid-read cannot contaminate the snapshot", () => {
+  // It was NOT proposed at `asOf`, so it must not be counted into that snapshot — and it
+  // cannot be, because its `updated_at` is later than the instant.
+  const s = lineageRoots.concurrency.reopen;
+  assert.equal(s.uniqueRootIds, 501);
+  assert.equal(s.governedAttentionComplete, true);
+  assert.equal(s.duplicateRootIds, 0);
+});
+
+// ───────── P2-03: reconciled roots keep their older history ─────────────────
+
+test("CODEX-P2-03: a terminally decided old root keeps BOTH its Decisions", () => {
+  // History rooted on the open set alone lost the earlier escalation at exactly the moment
+  // the drawer needed it: the root had left the open set and survived via reconciliation.
+  const s = reconciliation.reconciledWithOldHistory;
+  assert.equal(s.attentionRootContainsOld, false, "no longer open");
+  assert.equal(s.historyContainsOld, false, "and never in the history window");
+  assert.equal(s.reconciliationContainsOld, true);
+  assert.deepEqual([...s.oldRecordedStatuses].sort(), ["accepted", "escalated"]);
+  assert.deepEqual([...s.oldRecordedRationales].sort(), [
+    "Needs sponsor review before proceeding.",
+    "Sponsor confirmed the change in writing.",
+  ]);
+  // Both frozen evidence snapshots survive, at their own recorded versions.
+  assert.equal(s.oldEvidenceSnapshots.filter(Boolean).length, 2);
+  assert.ok(s.oldEvidenceSnapshots.some((snapshot) => String(snapshot).includes("v3")));
+  assert.ok(s.oldEvidenceSnapshots.some((snapshot) => String(snapshot).includes("v4")));
+  // Still not back in the queue, and no Decision counted twice.
+  assert.ok(!s.needsYouIds.includes("governed-rec-rec-old"));
+  assert.equal(new Set(s.oldRecordedDecisionIds).size, s.oldRecordedDecisionIds.length);
+});
+
+// ───────── P2-04: a null RAID impact is no severity at all ──────────────────
+
+test("CODEX-P2-04: an absent RAID impact renders no severity, not the text 'null'", () => {
+  // `String(null)` is "null" — a truthy, customer-visible string that rendered as a badge.
+  assert.equal(harness.raidSeverity.withoutSeverity, null);
+  assert.equal(harness.raidSeverity.withSeverity, "medium", "a real severity still renders");
+  const card = visibleText(harness.raidSeverity.cardWithout);
+  assert.ok(!card.includes("cc-attention-severity"));
+  assert.ok(!/\bnull\b/.test(card), "no stringified null");
+  assert.ok(!/\bundefined\b/.test(card));
+  assert.ok(!/\bnull\b/.test(visibleText(harness.raidSeverity.drawerWithout)));
+});
+
+// ───────── P2-05: absence of proof is not proof ─────────────────────────────
+
+test("CODEX-P2-05: a payload with no completeness projection is partial, never complete", () => {
+  const absent = harness.absentCompletenessProof;
+  assert.equal(absent.completeness.partial, true);
+  assert.equal(absent.completeness.complete, false);
+  assert.equal(absent.completeness.failed, false, "absence of proof is not a failure");
+  assert.ok(!absent.queue.includes("You&#x27;re clear."));
+  assert.ok(!/<span class="shrink-0 text-\[11px\] text-zinc-500">\d+<\/span>/.test(absent.queue));
+  assert.match(layout, /flowData\.governedAttentionComplete !== true/);
+});
+
+test("CODEX-P2-05: an explicitly proven complete read still allows the clear state", () => {
+  const proven = harness.provenCompleteness;
+  assert.equal(proven.completeness.complete, true);
+  assert.match(proven.queue, /You&#x27;re clear\./);
+});
+
+// ───────── P2-06: bounded concurrency across independent chunks ─────────────
+
+test("CODEX-P2-06: independent chunks run concurrently, within an explicit bound", () => {
+  const c = lineageRoots.concurrency;
+  assert.ok(c.observedChunkConcurrency > 1, "the serial waterfall is gone");
+  assert.ok(c.observedChunkConcurrency <= 6, `observed ${c.observedChunkConcurrency} must respect the bound`);
+  const service = read("src/lib/operational-flow/operational-flow-service.ts");
+  assert.match(service, /const CHUNK_CONCURRENCY = 6;/);
+  // Bounded, never an unbounded Promise.all over every chunk.
+  assert.match(service, /const mapWithConcurrency = async/);
+  assert.doesNotMatch(service, /Promise\.all\(chunks/);
+});
+
+test("CODEX-P2-06: concurrency changes nothing about what is loaded", () => {
+  const c = lineageRoots.concurrency;
+  assert.equal(c.allRowsWithConcurrency, 501);
+  assert.equal(c.duplicatesWithConcurrency, 0);
+  assert.equal(c.completeWithConcurrency, true);
+});
+
+test("CODEX-P2-06: a failure inside one concurrent chunk fails the whole read", () => {
+  // A partial set silently presented as complete is the defect this file exists to prevent.
+  const c = lineageRoots.concurrency;
+  assert.equal(c.chunkFailurePropagated, true);
+  assert.match(c.chunkFailureMessage, /load_operational_summary: stub_chunk_failure:risk_issue_records/);
+});
+
+// ───────── P2-07: a factual state is not advice ────────────────────────────
+
+test("CODEX-P2-07: an execution boundary statement is labelled as state, not as advice", () => {
+  // `boundary.statement` is the read model's conclusion — "Internal work completed. The
+  // Outcome has no evidence-backed Observation yet" — which is a fact, not a recommendation.
+  const drawer = harness.executionBoundaryDrawer;
+  assert.match(drawer.text, /Current state Internal work completed\./);
+  assert.ok(!drawer.text.includes("PMFreak recommends"), "a factual state must not be called advice");
+  // The screen labels the governed chain's boundary accordingly.
+  assert.match(layout, /nextStepLabel: "Current state"/);
+});
+
+test("CODEX-P2-07: genuine recommendations still say PMFreak recommends", () => {
+  assert.match(primarySurface(harness.drawers.governed.markup), /PMFreak recommends Raise a formal Change Request/);
+  assert.match(primarySurface(harness.drawers.raid.markup), /PMFreak recommends Confirm the integration owner/);
+  const drawerSrc = read("src/modules/workspace/presentation/command-center/detail-drawer.tsx");
+  // The heading is chosen by whether a recommendation actually exists.
+  assert.match(drawerSrc, /content\.recommendation \? "PMFreak recommends" : content\.nextStepLabel/);
 });

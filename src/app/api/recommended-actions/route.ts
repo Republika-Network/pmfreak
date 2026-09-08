@@ -39,6 +39,30 @@ export async function GET(request: Request) {
     throw error;
   }
 
+  /**
+   * Whether this actor may DECIDE these actions, evaluated by the same server authorization
+   * boundary the write route enforces.
+   *
+   * `PATCH /api/recommended-actions/decision` requires project WRITE access, so a member who
+   * can read the project — and therefore see these suggestions — may still be unable to act
+   * on any of them. Without this the surface offered Accept/Reject/Defer to such a reader
+   * and let the server refuse afterwards, promising an action it had already made
+   * unavailable.
+   *
+   * Evaluated with the existing `requireProjectAccess`, so no role logic is duplicated and
+   * nothing is inferred client-side. Read-only is a normal outcome here, not an error, so
+   * the denial is caught and reported as a capability rather than failing the read. The
+   * PATCH route keeps its own check regardless: this is presentation eligibility, never
+   * authorization.
+   */
+  let canDecide = false;
+  try {
+    await requireProjectAccess(projectId, "write");
+    canDecide = true;
+  } catch (error) {
+    if (!(error instanceof AccessDeniedError)) throw error;
+  }
+
   const supabase = await createSupabaseServerClient();
   let query = supabase
     .from("recommended_actions")
@@ -62,5 +86,5 @@ export async function GET(request: Request) {
     return Response.json({ error: "Unable to load recommended actions." }, { status: 500 });
   }
 
-  return Response.json({ recommendedActions: data ?? [] });
+  return Response.json({ recommendedActions: data ?? [], capabilities: { canDecide } });
 }

@@ -223,18 +223,31 @@ export type RaidRecommendedAction = {
   created_at: string;
 };
 
-const raidActionsFetcher = async (url: string) => {
+/** The suggestions, plus whether this actor may actually decide them. */
+export type RaidRecommendedActionsRead = {
+  actions: RaidRecommendedAction[];
+  /** Server-evaluated project write capability — the same boundary the decision route
+   *  enforces. Absent capability means read-only, never "assume yes". */
+  canDecide: boolean;
+};
+
+const raidActionsFetcher = async (url: string): Promise<RaidRecommendedActionsRead> => {
   const response = await fetch(url, { cache: "no-store" });
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.error ?? "Unable to load recommended actions.");
-  return (payload.recommendedActions ?? []) as RaidRecommendedAction[];
+  return {
+    actions: (payload.recommendedActions ?? []) as RaidRecommendedAction[],
+    // Only an explicit `true` grants the controls. An older payload without the capability
+    // is treated as read-only: offering a write the server may refuse is the defect.
+    canDecide: payload.capabilities?.canDecide === true,
+  };
 };
 
 /** Proposed recommended actions materialized from RAID items extracted out of the
  *  project's real notes/documents — the triage queue for extracted intelligence. */
 export function useRaidRecommendedActions(projectId: string) {
   const endpoint = `/api/recommended-actions?projectId=${encodeURIComponent(projectId)}&status=proposed`;
-  return useSWR<RaidRecommendedAction[]>(projectId ? endpoint : null, raidActionsFetcher, {
+  return useSWR<RaidRecommendedActionsRead>(projectId ? endpoint : null, raidActionsFetcher, {
     refreshInterval: 30000,
     revalidateOnFocus: true,
   });
@@ -775,7 +788,11 @@ function toNeedsYouItem(
  *  extracted risk doesn't flood the queue. `onDecide` receives the action id. */
 export function deriveRaidNeedsYou(
   actions: RaidRecommendedAction[] | undefined,
-  onDecide: (actionId: string, status: DecisionStatus, reason: string) => Promise<void>
+  onDecide: (actionId: string, status: DecisionStatus, reason: string) => Promise<void>,
+  /** Server-evaluated project write capability. False means the actor may inspect these
+   *  suggestions but not triage them, which is a Review — not a Decision with controls the
+   *  write route would refuse. */
+  canDecide = true
 ): NeedsYouItem[] {
   if (!actions || actions.length === 0) return [];
   const bestPerRaidItem = new Map<string, RaidRecommendedAction>();
@@ -787,8 +804,14 @@ export function deriveRaidNeedsYou(
       bestPerRaidItem.set(key, action);
     }
   }
+  const raidDeniedExplanation = "Triaging a suggestion needs write access to this project.";
   return [...bestPerRaidItem.values()].map((action) => {
-    const impact = String(action.impact_level);
+    // `String(null)` is "null" and `String(undefined)` is "undefined" — both truthy strings
+    // that would render as a severity badge. The rule is frozen: no persisted severity means
+    // no badge, never an invented or stringified one.
+    const impact = typeof action.impact_level === "string" && action.impact_level.trim().length > 0
+      ? action.impact_level
+      : null;
     const tone: StatusTone = impact === "critical" || impact === "high" ? "danger" : "task";
     const summary = (action.evidence_summary ?? {}) as Record<string, unknown>;
     const raidTitle = typeof summary.raidTitle === "string" ? summary.raidTitle : null;
@@ -833,7 +856,8 @@ export function deriveRaidNeedsYou(
       badge,
       subject,
       // `impact_level` is this path's own persisted severity. It is NOT remapped onto the
-      // governed severity vocabulary — only rendered with the same visual weight.
+      // governed severity vocabulary — only rendered with the same visual weight, and only
+      // when the row actually carries one.
       severity: impact,
       whyItMatters: action.description,
       evidenceSummary: raidCategory ? `Detected from your project notes · ${raidCategory}` : "Detected from your project notes",
@@ -855,7 +879,7 @@ export function deriveRaidNeedsYou(
             title: "Suggestion detail",
             rows: [
               { label: "Action type", value: String(labelize(action.recommended_action_type) ?? action.recommended_action_type) },
-              { label: "Impact", value: impact },
+              ...(impact ? [{ label: "Impact", value: impact }] : []),
               { label: "Extraction confidence", value: `${Math.round(Number(action.confidence_score) * 100)}%` },
               { label: "Suggested action ID", value: action.id },
               ...(action.raid_item_id ? [{ label: "RAID item ID", value: action.raid_item_id }] : []),
@@ -867,13 +891,17 @@ export function deriveRaidNeedsYou(
           subjectId: action.id,
           writePathLabel:
             "Triage only — updates this suggested action through /api/recommended-actions/decision. No canonical operational Decision record is created.",
+          // `allowed` mirrors the server's own verdict for this project. It was hardcoded
+          // true, which offered triage controls to a reader the decision route would refuse.
           controls: [
-            { status: "accepted", label: "Accept", effect: "Marks this suggested action as accepted for triage.", terminal: true, allowed: true, deniedExplanation: null },
-            { status: "rejected", label: "Reject", effect: "Dismisses this suggested action.", terminal: true, allowed: true, deniedExplanation: null },
-            { status: "deferred", label: "Defer", effect: "Snoozes this suggested action for a week.", terminal: false, allowed: true, deniedExplanation: null },
+            { status: "accepted", label: "Accept", effect: "Marks this suggested action as accepted for triage.", terminal: true, allowed: canDecide, deniedExplanation: canDecide ? null : raidDeniedExplanation },
+            { status: "rejected", label: "Reject", effect: "Dismisses this suggested action.", terminal: true, allowed: canDecide, deniedExplanation: canDecide ? null : raidDeniedExplanation },
+            { status: "deferred", label: "Defer", effect: "Snoozes this suggested action for a week.", terminal: false, allowed: canDecide, deniedExplanation: canDecide ? null : raidDeniedExplanation },
           ],
-          anyAllowed: true,
-          readOnlyNote: null,
+          anyAllowed: canDecide,
+          readOnlyNote: canDecide
+            ? null
+            : "You can review this suggestion, but your access to this project is read-only, so you cannot triage it.",
           blockedReason: null,
           requiresRationale: false,
           onDecide: (status, reason) => onDecide(action.id, status as DecisionStatus, reason),
