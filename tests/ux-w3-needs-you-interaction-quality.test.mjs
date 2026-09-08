@@ -863,7 +863,9 @@ test("W3-P1-05: the attention root is a separate, bounded, exact query — the h
   assert.match(service, /from\("recommended_actions"\)[\s\S]{0,220}not\("governance_event_id", "is", null\)\.order\("created_at", \{ ascending: false \}\)\.limit\(30\)/);
   // The total comes from the assurance aggregate, never from a window.
   assert.match(service, /const governedAttentionTotal = Number\(assuranceSummary\?\.openRecommendations \?\? 0\);/);
-  assert.match(service, /openGovernedRecommendations\.length >= governedAttentionTotal/);
+  // ...and completeness is decided by identity against that same statement's id set.
+  assert.match(service, /missingAttentionMembers\.length === 0;/);
+  assert.doesNotMatch(service, /openGovernedRecommendations\.length >= governedAttentionTotal/);
   // And the two collections stay distinct in the payload.
   assert.match(service, /recommendations: safeRecommendations,/);
   assert.match(service, /governedAttentionRecommendations: safeGovernedAttentionRecommendations,/);
@@ -1037,6 +1039,8 @@ test("W3-P1-08: a total server order keeps every canonical Recommendation exactl
   assert.equal(s.uniqueRootIds, 501);
   assert.equal(s.duplicateRootIds, 0);
   assert.equal(s.attentionRootLoaded, 501);
+  assert.deepEqual(s.missingFrozenIds, [], "every named member was loaded");
+  assert.deepEqual(s.nonMemberIdsLoaded, []);
   assert.equal(s.governedAttentionComplete, true);
   assert.equal(s.needsYouCount, 501);
   assert.equal(s.youreClearVisible, false);
@@ -1072,6 +1076,8 @@ test("W3-P1-08: a duplicate delivered across an unstable boundary can never read
   // only the first order clause and rotates tied rows per request, exactly as an engine may.
   // One row comes back twice and another is dropped.
   const s = roots.unstableBoundary;
+  assert.deepEqual(s.nonMemberIdsLoaded, [], "nothing outside the frozen membership was loaded");
+  assert.equal(s.missingFrozenIds.length, 1, "a named member was genuinely lost at the boundary");
   assert.equal(s.attentionRootRawRowsReturned, 501, "the raw row count still equals the aggregate");
   assert.equal(s.assuranceOpenRecommendations, 501);
   // Counting rows would therefore have concluded 501 >= 501 and claimed a complete set.
@@ -1085,11 +1091,18 @@ test("W3-P1-08: a duplicate delivered across an unstable boundary can never read
 
 test("W3-P1-08: completeness is computed from the deduped set, never from raw rows", () => {
   const service = read("src/lib/operational-flow/operational-flow-service.ts");
-  // The collected rows are deduped by canonical id into `openGovernedRecommendations`...
-  assert.match(service, /const openGovernedRecommendations = \(\(\) => \{[\s\S]{0,400}for \(const row of collectedAttentionRootRows\) byId\.set\(String\(row\.id\), row\);/);
-  // ...and that is what the comparison counts.
-  // Now also gated on a trustworthy server instant to freeze membership against (CODEX-P2-02).
-  assert.match(service, /attentionSnapshotAt !== null &&\s*attentionRootDrained &&\s*openGovernedRecommendations\.length >= governedAttentionTotal/);
+  // The collected rows are filtered to snapshot members, then deduped by canonical id
+  // into `openGovernedRecommendations`...
+  assert.match(
+    service,
+    /const openGovernedRecommendations = \(\(\) => \{[\s\S]{0,400}for \(const row of collectedAttentionRootRows\) \{[\s\S]{0,600}byId\.set\(id, row\);/,
+  );
+  // ...and that deduped, membership-filtered set is what completeness is proven over.
+  // Gated on a trustworthy server instant AND on a named membership set (CODEX-P2-02).
+  assert.match(
+    service,
+    /attentionSnapshotAt !== null &&[\s\S]{0,900}frozenAttentionMembershipIds !== null &&[\s\S]{0,900}attentionRootDrained &&\s*missingAttentionMembers\.length === 0;/,
+  );
   // The raw array is never compared against the aggregate.
   assert.doesNotMatch(service, /collectedAttentionRootRows\.length\s*>=/);
 });
@@ -1102,6 +1115,21 @@ test("W3-P1-08: every attention paged read has a total server order", () => {
   assert.match(linked, /\.order\("id", \{ ascending: true \}\)[\s\S]{0,120}\.range\(offset/);
   const byReference = service.slice(service.indexOf("const linkedRowsByReference = async"));
   assert.match(byReference.slice(0, byReference.indexOf("};")), /\.order\("id", \{ ascending: true \}\)[\s\S]{0,120}\.range\(offset/);
+});
+
+test("CODEX-P2-02: across every scenario, no non-member is ever loaded", () => {
+  const scenarios = { ...roots, ...roots.concurrency };
+  let checked = 0;
+  for (const [name, scenario] of Object.entries(scenarios)) {
+    if (!scenario || !Array.isArray(scenario.nonMemberIdsLoaded)) continue;
+    checked += 1;
+    assert.deepEqual(scenario.nonMemberIdsLoaded, [], `${name}: a row outside the frozen membership entered the snapshot`);
+    // And a complete answer is one where nothing named is missing.
+    if (scenario.governedAttentionComplete === true) {
+      assert.deepEqual(scenario.missingFrozenIds, [], `${name}: complete while a member was missing`);
+    }
+  }
+  assert.ok(checked >= 8, `expected the membership invariant to be checked broadly, saw ${checked}`);
 });
 
 test("W3-P1-08: no canonical object is duplicated in any scenario", () => {
@@ -1171,21 +1199,109 @@ test("CODEX-P2-01: the capability is server-evaluated, and the write route keeps
 
 // ───────── P2-02: completeness is proven against a frozen snapshot ───────────
 
-test("CODEX-P2-02: membership is frozen to the assurance instant", () => {
+test("CODEX-P2-02: membership is frozen by canonical id, in the assurance statement itself", () => {
   const service = read("src/lib/operational-flow/operational-flow-service.ts");
-  // `asOf` and `openRecommendations` come from one statement, and every mutation bumps
-  // `updated_at` through a BEFORE UPDATE trigger — so this predicate selects exactly the
-  // rows that were proposed at `asOf` and have not changed since.
+  // The authoritative set is named by the database, not inferred from a clock.
+  assert.match(service, /const frozenAttentionMembershipIds = \(\) => \{|const frozenAttentionMembershipIds = \(\(\) => \{/);
+  assert.match(service, /\?\.openRecommendationIds/);
+  // A non-member is dropped before de-duplication — it can never reach the snapshot set.
+  assert.match(service, /if \(frozenAttentionMembership !== null && !frozenAttentionMembership\.has\(id\)\) continue;/);
+  // The loader keeps its instant clamp, so a member changed after the snapshot drops out
+  // and the answer becomes provably incomplete rather than silently mixing states.
   assert.match(service, /\.lte\("created_at", attentionSnapshotAt/);
   assert.match(service, /\.lte\("updated_at", attentionSnapshotAt/);
-  // No trustworthy server instant means no proof, whatever the counts say.
+  // No trustworthy server instant, and no named membership, mean no proof.
   assert.match(service, /attentionSnapshotAt !== null &&/);
+  assert.match(service, /frozenAttentionMembershipIds !== null &&/);
+  // The ceiling lives in the client, and crossing it denies proof rather than truncating.
+  assert.match(service, /const ATTENTION_MEMBERSHIP_CEILING = ATTENTION_ROOT_MAX_PAGES \* ROW_PAGE_SIZE;/);
+  assert.match(service, /frozenAttentionMembershipIds\.length <= ATTENTION_MEMBERSHIP_CEILING &&/);
+});
+
+test("CODEX-P2-02: the database names the members in the same statement as the count and the instant", () => {
+  // The whole proof rests on ONE statement snapshot producing all three. Read from the
+  // committed migration, not from a fixture.
+  const migration = read("supabase/migrations/20260908000000_p2_02_attention_membership_snapshot.sql");
+  const body = migration.slice(migration.indexOf("select jsonb_build_object("), migration.indexOf(") into result;"));
+  assert.ok(body.includes("'asOf',now()"), "asOf comes from this statement");
+  assert.ok(body.includes("'openRecommendations',(select count(*) from public.recommended_actions"), "so does the count");
+  assert.ok(body.includes("'openRecommendationIds',(select coalesce(jsonb_agg(r.id"), "and so do the ids");
+  // The ids carry EXACTLY the predicates the count carries — a wider or narrower set would
+  // make the cross-check meaningless.
+  const idPredicates = body.slice(body.indexOf("'openRecommendationIds'"));
+  for (const predicate of [
+    "r.workspace_id=p_workspace_id",
+    "r.project_id=p_project_id",
+    "r.governance_event_id is not null",
+    "r.status='proposed'",
+  ]) {
+    assert.ok(idPredicates.includes(predicate), `membership predicate missing: ${predicate}`);
+  }
+  // Nothing about the function's security posture moves.
+  assert.match(migration, /stable security invoker set search_path = public/);
+  assert.match(migration, /revoke all on function public\.get_operational_assurance_summary\(uuid,uuid\) from public;/);
+  assert.match(migration, /grant execute on function public\.get_operational_assurance_summary\(uuid,uuid\) to authenticated;/);
+  // And no id cap in SQL: a silent truncation of authoritative membership is the one thing
+  // that would look authoritative while being wrong.
+  assert.doesNotMatch(idPredicates.slice(0, idPredicates.indexOf("),")), /\blimit\b/i);
+});
+
+// ── The MVCC substitution counterexample ───────────────────────────────────
+//
+// `asOf` is `now()` = `transaction_timestamp()`, not a token of MVCC visibility. A
+// transaction beginning before `asOf` stamps rows that predate `asOf` and may commit after
+// the assurance statement's snapshot: never counted, yet matching the timestamp predicate
+// for every later read. With a counted row closing after the snapshot, a later read loads a
+// set of EQUAL SIZE and DIFFERENT MEMBERSHIP.
+
+test("CODEX-P2-02: the substitution fixture really defeats a cardinality-only proof", () => {
+  // Without this, the fix could pass against a fixture that never posed the problem.
+  const s = roots.mvccFrozen;
+  assert.deepEqual(s.frozenMembershipIds, ["rec-mvcc-a", "rec-mvcc-c", "rec-mvcc-d"], "the statement named these three");
+  assert.equal(s.governedAttentionTotal, 3, "and counted the same three");
+  // The unfrozen run is the SAME fixture read the old way — timestamps and a count only.
+  const legacy = roots.mvccUnfrozen;
+  assert.deepEqual(legacy.rootIds, ["rec-mvcc-b", "rec-mvcc-c", "rec-mvcc-d"], "a timestamp-only read loads the substituted set");
+  assert.ok(!legacy.rootIds.includes("rec-mvcc-a"), "the member that closed after the snapshot is gone");
+  assert.ok(legacy.rootIds.includes("rec-mvcc-b"), "and a row that was never counted took its place");
+  // Which is exactly the condition the superseded rule called complete.
+  assert.equal(legacy.cardinalityOnlyWouldBeComplete, true, "loaded >= aggregate over a substituted set");
+});
+
+test("CODEX-P2-02: a row outside the frozen membership can never enter the snapshot", () => {
+  const s = roots.mvccFrozen;
+  assert.deepEqual(s.nonMemberIdsLoaded, [], "no non-member reaches the attention root");
+  assert.ok(!s.rootIds.includes("rec-mvcc-b"));
+  assert.deepEqual(s.rootIds, ["rec-mvcc-c", "rec-mvcc-d"]);
+});
+
+test("CODEX-P2-02: equal cardinality over a substituted set is never called complete", () => {
+  const s = roots.mvccFrozen;
+  assert.deepEqual(s.missingFrozenIds, ["rec-mvcc-a"], "a named member was not loaded");
+  assert.equal(s.governedAttentionComplete, false);
+  assert.equal(s.youreClearVisible, false);
+  // ...and the surface states no coverage it cannot prove.
+  assert.equal(s.incompleteNote, "This list may not be every governed item needing review.");
+  assert.ok(!/Showing 3 of 3/.test(s.queueText), "never 'N of N' on an unproven answer");
+});
+
+test("CODEX-P2-02: without a named membership set, nothing is complete", () => {
+  // A deployment that has not applied the migration still SHOWS every open item — hiding
+  // them would be the opposite false-absence defect — but proves nothing about the set.
+  const s = roots.mvccUnfrozen;
+  assert.equal(s.frozenMembershipIds, null);
+  assert.equal(s.governedAttentionComplete, false, "absence of proof is not proof");
+  assert.equal(s.youreClearVisible, false);
+  assert.equal(s.incompleteNote, "This list may not be every governed item needing review.");
+  assert.equal(s.needsYouIds.length, 3, "the open items are still shown");
 });
 
 test("CODEX-P2-02: a Recommendation created mid-read is outside the snapshot and changes nothing", () => {
   const s = lineageRoots.concurrency.insert;
   assert.equal(s.assuranceOpenRecommendations, 501);
   assert.equal(s.uniqueRootIds, 501, "the frozen snapshot is loaded in full");
+  assert.deepEqual(s.nonMemberIdsLoaded, [], "the new row is not a member and does not enter");
+  assert.deepEqual(s.missingFrozenIds, [], "and every member was loaded");
   assert.equal(s.governedAttentionComplete, true, "the snapshot IS complete — the new row is not part of it");
   assert.equal(s.duplicateRootIds, 0);
 });
@@ -1196,6 +1312,8 @@ test("CODEX-P2-02: a snapshot member closed mid-read makes the answer provably i
   const s = lineageRoots.concurrency.close;
   assert.equal(s.assuranceOpenRecommendations, 501);
   assert.equal(s.uniqueRootIds, 500);
+  assert.equal(s.missingFrozenIds.length, 1, "one named member could not be loaded");
+  assert.deepEqual(s.nonMemberIdsLoaded, [], "and nothing outside the snapshot filled the gap");
   assert.equal(s.governedAttentionComplete, false);
   assert.equal(s.youreClearVisible, false);
   assert.equal(s.incompleteNote, "Showing 500 of 501 governed items needing review.");
@@ -1206,6 +1324,8 @@ test("CODEX-P2-02: a Recommendation reopened mid-read cannot contaminate the sna
   // cannot be, because its `updated_at` is later than the instant.
   const s = lineageRoots.concurrency.reopen;
   assert.equal(s.uniqueRootIds, 501);
+  assert.deepEqual(s.nonMemberIdsLoaded, [], "the reopened row is not a member of this snapshot");
+  assert.deepEqual(s.missingFrozenIds, []);
   assert.equal(s.governedAttentionComplete, true);
   assert.equal(s.duplicateRootIds, 0);
 });

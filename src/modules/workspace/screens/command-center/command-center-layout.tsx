@@ -309,6 +309,7 @@ export function CommandCenterLayout({
   // succeeded, it simply cannot show its work.
   const governedAttentionPartial = flowData !== undefined && flowData.governedAttentionComplete !== true;
   const governedAttentionTotal = flowData?.governedAttentionTotal ?? null;
+  const governedShownCount = needsYouItems.filter((item) => item.kind === "governed_recommendation").length;
 
   const attention = assessAttentionCompleteness([
     { label: "governed recommendations", loading: flowLoading, failed: Boolean(flowError), partial: governedAttentionPartial },
@@ -559,8 +560,16 @@ export function CommandCenterLayout({
             attentionIncompleteNote={
               // A known-partial governed read gets the server's own numbers, so the PM is
               // told how much of the answer they are looking at rather than a vague caveat.
-              governedAttentionPartial && !attention.failed && governedAttentionTotal !== null
-                ? `Showing ${needsYouItems.filter((item) => item.kind === "governed_recommendation").length} of ${governedAttentionTotal} governed items needing review.`
+              //
+              // "X of Y" is only said when X is genuinely fewer than Y. A partial answer can
+              // still hold Y items — a Recommendation outside the frozen snapshot is shown
+              // because it IS open, it simply is not the one the snapshot named — and
+              // phrasing that as "3 of 3" would claim exactly the coverage this read could
+              // not prove. That case gets the caveat instead of a number.
+              governedAttentionPartial && !attention.failed
+                ? governedAttentionTotal !== null && governedShownCount < governedAttentionTotal
+                  ? `Showing ${governedShownCount} of ${governedAttentionTotal} governed items needing review.`
+                  : "This list may not be every governed item needing review."
                 : attention.loading && !attention.failed && needsYouItems.length > 0
                   ? `Still checking ${attention.unresolved.join(" and ")}.`
                   : null

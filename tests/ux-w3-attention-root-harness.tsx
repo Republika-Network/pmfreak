@@ -53,7 +53,7 @@ const OLD = "2026-01-01T00:00:00Z";
 const NEWER = (index: number) => `2026-06-${String((index % 28) + 1).padStart(2, "0")}T00:00:00Z`;
 
 /** Splits the per-recommendation lineage rows back into their tables. */
-function tablesFrom(groups: Row[][], openCount: number): Record<string, Row[]> {
+function tablesFrom(groups: Row[][], openCount: number, openIds?: string[]): Record<string, Row[]> {
   const all = groups.flat();
   const pick = (prefix: string) => all.filter((row) => String(row.id).startsWith(prefix));
   return {
@@ -74,10 +74,22 @@ function tablesFrom(groups: Row[][], openCount: number): Record<string, Row[]> {
     operational_raw_inputs: [],
     operational_normalized_events: [],
     workspace_memberships: [{ workspace_id: WORKSPACE, user_id: ACTOR, role: "owner" }],
-    /** The assurance RPC's own project-wide open count, carried through the stub. */
-    // `asOf` and the count come from ONE statement in the real RPC; the snapshot predicate
-    // freezes membership to this instant.
-    __assurance: [{ openRecommendations: openCount, asOf: ASSURANCE_AS_OF }],
+    /**
+     * The assurance RPC's projection, carried through the stub.
+     *
+     * `asOf`, `openRecommendations` and `openRecommendationIds` come from ONE statement in
+     * the real RPC, so the ids ARE the snapshot's membership — not a timestamp range that a
+     * transaction committing later can still satisfy. Fixtures that model a skew between
+     * the aggregate and what a page can load pass their own id set.
+     */
+    __assurance: [
+      {
+        openRecommendations: openCount,
+        asOf: ASSURANCE_AS_OF,
+        openRecommendationIds:
+          openIds ?? pick("rec-").filter((row) => String(row.status) === "proposed").map((row) => String(row.id)),
+      },
+    ],
   };
 }
 
@@ -108,6 +120,11 @@ const manyOpenTables = tablesFrom(
 const skewedTables = tablesFrom(
   Array.from({ length: 35 }, (_, index) => lineageFor(`open-${index}`, NEWER(index), "proposed")),
   40,
+  // Forty authoritative members; five of them are rows this read cannot reach.
+  [
+    ...Array.from({ length: 35 }, (_, index) => `rec-open-${index}`),
+    ...Array.from({ length: 5 }, (_, index) => `rec-unreachable-${index}`),
+  ],
 );
 
 /**
@@ -136,6 +153,49 @@ const boundaryTables = tablesFrom(
   ),
   501,
 );
+
+/**
+ * The MVCC substitution counterexample (CODEX-P2-02).
+ *
+ * `asOf` is `now()` — `transaction_timestamp()` — not a token of snapshot membership. A
+ * transaction that BEGINS before `asOf` stamps its rows with timestamps that predate `asOf`,
+ * and may still commit AFTER the assurance statement took its snapshot. Such a row was never
+ * counted, yet it satisfies `created_at <= asOf AND updated_at <= asOf` for every later read.
+ *
+ *   snapshot S (counted) = { A, C, D }
+ *   B  inserted by a transaction whose timestamps are <= asOf, committed after S
+ *   A  closed after S, so the trigger moved its `updated_at` past asOf
+ *
+ * A timestamp-only read therefore loads { B, C, D } — three canonical Recommendations
+ * against an aggregate of three. Equal cardinality over a SUBSTITUTED set. Membership has to
+ * be frozen by identity for this to be excluded.
+ */
+const BEFORE_AS_OF = "2026-12-01T00:00:00Z";
+const AFTER_AS_OF = "2027-02-01T00:00:00Z";
+
+function mvccSubstitutionFixture(withFrozenIds: boolean): Record<string, Row[]> {
+  const tables = tablesFrom(
+    ["mvcc-a", "mvcc-c", "mvcc-d", "mvcc-b"].map((id) => lineageFor(id, BEFORE_AS_OF, "proposed")),
+    3,
+    // The authoritative membership set: exactly what the assurance statement saw. B is absent
+    // from it because B's transaction had not committed when that statement ran.
+    ["rec-mvcc-a", "rec-mvcc-c", "rec-mvcc-d"],
+  );
+  // A closed after the assurance statement. `recommended_actions_set_updated_at` is an
+  // unconditional BEFORE UPDATE trigger, so `updated_at` moved past `asOf`.
+  tables.recommended_actions = tables.recommended_actions.map((row) =>
+    String(row.id) === "rec-mvcc-a" ? { ...row, status: "accepted", updated_at: AFTER_AS_OF } : row,
+  );
+  if (!withFrozenIds) {
+    // Models a database that has not yet run the membership-snapshot migration: the count and
+    // the instant are there, the authoritative id set is not.
+    tables.__assurance = [{ openRecommendations: 3, asOf: ASSURANCE_AS_OF }];
+  }
+  return tables;
+}
+
+const mvccFrozenTables = mvccSubstitutionFixture(true);
+const mvccUnfrozenTables = mvccSubstitutionFixture(false);
 
 let TABLES: Record<string, Row[]> = falseClearTables;
 
@@ -356,10 +416,14 @@ async function scenario(tables: Record<string, Row[]>) {
     { label: "suggested actions", loading: false, failed: false },
   ]);
   const total = summary.governedAttentionTotal ?? null;
-  const incompleteNote =
-    governedPartial && total !== null
-      ? `Showing ${items.filter((item) => item.kind === "governed_recommendation").length} of ${total} governed items needing review.`
-      : null;
+  const governedShownCount = items.filter((item) => item.kind === "governed_recommendation").length;
+  // Mirrors `command-center-layout.tsx`: a count is only stated when it is genuinely
+  // smaller than the authoritative total, never as "N of N" on an unproven answer.
+  const incompleteNote = governedPartial
+    ? total !== null && governedShownCount < total
+      ? `Showing ${governedShownCount} of ${total} governed items needing review.`
+      : "This list may not be every governed item needing review."
+    : null;
 
   const queue = renderToStaticMarkup(
     <NeedsYouQueue
@@ -375,8 +439,22 @@ async function scenario(tables: Record<string, Row[]>) {
   );
 
   const rootIds = (summary.governedAttentionRecommendations ?? []).map((row) => String(row.id));
+  const frozenIds = ((TABLES.__assurance?.[0]?.openRecommendationIds as string[] | undefined) ?? null);
   return {
     rootIds,
+    /** The authoritative membership the assurance statement froze, per the fixture. */
+    frozenMembershipIds: frozenIds,
+    /** Members the read never produced — the only thing that may deny completeness. */
+    missingFrozenIds: frozenIds === null ? null : frozenIds.filter((id) => !new Set(rootIds).has(id)),
+    /** Loaded ids that were NOT authoritative members. Must always be empty. */
+    nonMemberIdsLoaded: frozenIds === null ? null : rootIds.filter((id) => !new Set(frozenIds).has(id)),
+    /**
+     * What the superseded CARDINALITY-ONLY rule would have concluded from this same read:
+     * `loaded >= aggregate`. Retained so the counterexample stays visible rather than
+     * becoming an untested claim about the past.
+     */
+    cardinalityOnlyWouldBeComplete:
+      new Set(rootIds).size >= Number((TABLES.__assurance?.[0]?.openRecommendations as number | undefined) ?? 0),
     attentionRootRawRowsReturned,
     uniqueRootIds: new Set(rootIds).size,
     duplicateRootIds: rootIds.length - new Set(rootIds).size,
@@ -450,6 +528,9 @@ const reopenedDuringRead = (tables: Record<string, Row[]>) => {
 
 async function main() {
   const falseClear = await scenario(falseClearTables);
+  // The MVCC substitution counterexample, with and without a frozen membership set.
+  const mvccFrozen = await scenario(mvccFrozenTables);
+  const mvccUnfrozen = await scenario(mvccUnfrozenTables);
   const manyOpen = await scenario(manyOpenTables);
   const knownIncomplete = await scenario(skewedTables);
   const tieBoundary = await scenario(boundaryTables);
@@ -487,6 +568,8 @@ async function main() {
     JSON.stringify(
       {
         falseClear,
+        mvccFrozen: { ...mvccFrozen, queueMarkup: undefined },
+        mvccUnfrozen: { ...mvccUnfrozen, queueMarkup: undefined },
         manyOpen,
         knownIncomplete,
         tieBoundary: { ...tieBoundary, queueMarkup: undefined, queueText: undefined },

@@ -56,6 +56,21 @@ export type OperationalAssuranceSummary = {
   decisionRequiredCount: number;
   violationsCount: number;
   openRecommendations: number;
+  /**
+   * Canonical ids of exactly the Recommendations `openRecommendations` counted, produced by
+   * the SAME statement — therefore the same snapshot.
+   *
+   * `asOf` is `now()`, a wall-clock reading, not a token of MVCC visibility: a transaction
+   * that began before `asOf` can commit after the assurance statement's snapshot, and its
+   * row then satisfies `created_at <= asOf AND updated_at <= asOf` for every later read
+   * while never having been counted. Timestamps therefore cannot decide membership, and
+   * cardinality cannot prove it. These ids can.
+   *
+   * Optional because a database that has not yet applied
+   * `20260908000000_p2_02_attention_membership_snapshot.sql` does not return it. Absence
+   * means membership is unfrozen, and completeness is then UNPROVEN rather than assumed.
+   */
+  openRecommendationIds?: string[];
   unresolvedRisksIssues: number;
   evidenceLinkedDecisionsCount: number;
   evidenceWithoutSignalCount: number;

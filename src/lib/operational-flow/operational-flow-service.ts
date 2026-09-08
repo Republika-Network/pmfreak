@@ -1948,36 +1948,55 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
    * spin here, and crossing it is reported as incompleteness rather than silently truncating.
    */
   /*
-   * Membership is frozen to the assurance snapshot.
+   * Membership is frozen by IDENTITY, not by a clock.
    *
    * Ordering and de-duplication made a single pass reproducible, but the pages still ran
    * against a MOVING table: a Recommendation created, decided or reopened between page one
-   * and page three lands in a result assembled from several different instants, and
-   * comparing that mixture to a count taken at yet another instant proves nothing.
+   * and page three lands in a result assembled from several different instants.
    *
-   * Two persisted facts make a real snapshot possible without a schema change:
+   * An earlier attempt froze that against timestamps — `status = 'proposed' AND
+   * created_at <= asOf AND updated_at <= asOf` — and proved completeness by comparing
+   * cardinality against the assurance count. That does not hold. `asOf` is `now()`, i.e.
+   * `transaction_timestamp()`: a wall-clock reading, NOT a token of MVCC visibility. A
+   * transaction that BEGINS before `asOf` stamps its rows with timestamps that predate
+   * `asOf` and may COMMIT after the assurance statement took its snapshot. Such a row was
+   * never counted, yet satisfies the predicate for every later read:
    *
-   *   - `get_operational_assurance_summary` computes `asOf` and `openRecommendations` in ONE
-   *     statement, so the count is exactly |rows proposed at asOf|.
-   *   - every mutation of `recommended_actions` bumps `updated_at` through the
-   *     `recommended_actions_set_updated_at` BEFORE UPDATE trigger — a database guarantee,
-   *     not writer discipline.
+   *     snapshot   = { A, C, D }   counted by the assurance statement
+   *     later read = { B, C, D }   B committed late; A closed late and left the predicate
    *
-   * So `status = 'proposed' AND created_at <= asOf AND updated_at <= asOf` selects exactly
-   * the rows that existed at `asOf`, were proposed then, and have not changed since. Every
-   * such row was in the snapshot, which makes the loaded set a SUBSET of it. A subset whose
-   * size equals the snapshot's size is the snapshot — that is the proof, and it holds
-   * however the pages interleave with concurrent writes.
+   * Same size, different set. Equal cardinality proves nothing about membership.
    *
-   * The failure direction is safe by construction. A row that changed after `asOf` is
-   * excluded, so the loaded count falls BELOW the aggregate and the answer is reported
-   * incomplete. Nothing outside the snapshot can be counted into it.
+   * So membership comes from the database, by canonical id, in the same statement that
+   * produced the count and the instant: `openRecommendationIds`. Those ids are the
+   * authoritative set. The paged read below is only a LOADER — anything it returns whose id
+   * is not a member is discarded before de-duplication, and completeness requires every
+   * member to have been loaded. Identity in, identity out.
+   *
+   * The timestamp clamp is retained on the loader for a different job: every mutation of
+   * `recommended_actions` bumps `updated_at` through the `recommended_actions_set_updated_at`
+   * BEFORE UPDATE trigger, so a member that changed after `asOf` drops out of the read and
+   * the answer becomes provably incomplete rather than quietly mixing a post-snapshot state
+   * into a set presented as the snapshot. That is the conservative direction.
    */
   const assuranceSnapshot = assuranceResult.data as OperationalSummary["assurance"];
   const attentionSnapshotAt =
     typeof assuranceSnapshot?.asOf === "string" && Number.isFinite(Date.parse(assuranceSnapshot.asOf))
       ? assuranceSnapshot.asOf
       : null;
+  /**
+   * The authoritative membership set, or `null` when the database did not name it.
+   *
+   * `null` is the honest state for a deployment that has not yet applied
+   * `20260908000000_p2_02_attention_membership_snapshot.sql`: the open items are still read
+   * and still shown, but nothing about them can be called complete.
+   */
+  const frozenAttentionMembershipIds = (() => {
+    const raw = (assuranceSnapshot as { openRecommendationIds?: unknown } | null)?.openRecommendationIds;
+    if (!Array.isArray(raw)) return null;
+    return [...new Set(raw.map((value) => String(value)).filter((value) => value.length > 0))];
+  })();
+  const frozenAttentionMembership = frozenAttentionMembershipIds === null ? null : new Set(frozenAttentionMembershipIds);
 
   const ATTENTION_ROOT_MAX_PAGES = 20;
   const collectedAttentionRootRows: SummaryRow[] = [];
@@ -2022,7 +2041,14 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
    */
   const openGovernedRecommendations = (() => {
     const byId = new Map<string, SummaryRow>();
-    for (const row of collectedAttentionRootRows) byId.set(String(row.id), row);
+    for (const row of collectedAttentionRootRows) {
+      const id = String(row.id);
+      // A Recommendation the assurance statement did not name is not a member of the
+      // snapshot, however its timestamps read. This is the gate a late-committing insert
+      // cannot pass — the exact substitution that made cardinality equality meaningless.
+      if (frozenAttentionMembership !== null && !frozenAttentionMembership.has(id)) continue;
+      byId.set(id, row);
+    }
     return [...byId.values()].sort((a, b) => {
       const at = String(b.created_at ?? "").localeCompare(String(a.created_at ?? ""));
       return at !== 0 ? at : String(a.id ?? "").localeCompare(String(b.id ?? ""));
@@ -2037,20 +2063,42 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
   const assuranceSummary = assuranceSnapshot;
   const governedAttentionTotal = Number(assuranceSummary?.openRecommendations ?? 0);
   /**
-   * Completeness is PROVEN, not assumed. A request that succeeded says nothing about
-   * whether it returned everything; only comparing what was loaded against the project-wide
-   * aggregate does. Loading at least as many as the aggregate reports counts as complete —
-   * the two readings are taken moments apart and a new Recommendation between them makes
-   * the loaded set larger, never a false claim of completeness.
+   * An explicit ceiling on how large an authoritative membership set this read will attempt.
+   *
+   * The database deliberately does not cap `openRecommendationIds` — a silent cap would
+   * truncate authoritative membership while still looking authoritative. The bound lives
+   * here instead, and crossing it makes completeness UNPROVEN rather than truncating a set
+   * that is then called complete. It matches what the loader below can actually drain.
+   */
+  const ATTENTION_MEMBERSHIP_CEILING = ATTENTION_ROOT_MAX_PAGES * ROW_PAGE_SIZE;
+  /** Members the read did not produce. Non-empty means the answer is not the snapshot. */
+  const loadedAttentionIds = new Set(openGovernedRecommendations.map((row) => String(row.id)));
+  const missingAttentionMembers =
+    frozenAttentionMembershipIds === null
+      ? null
+      : frozenAttentionMembershipIds.filter((id) => !loadedAttentionIds.has(id));
+  /**
+   * Completeness is PROVEN by IDENTITY. A request that succeeded says nothing about what it
+   * returned, and neither does a matching count: equal cardinality over a substituted set is
+   * exactly the defect this replaced. Every loaded row is a member (the filter above), so
+   * proving that no member is missing proves the loaded set IS the snapshot.
    */
   const governedAttentionComplete =
-    // No server instant to freeze against means no proof, whatever the counts say.
+    // No server instant to anchor the read means no proof, whatever the counts say.
     attentionSnapshotAt !== null &&
+    // No named membership means membership was never frozen — absence of proof, not proof.
+    frozenAttentionMembershipIds !== null &&
+    missingAttentionMembers !== null &&
+    // The count and the ids come from ONE statement, so they must agree; disagreement means
+    // the projection is not the one this proof assumes and nothing may be claimed from it.
+    frozenAttentionMembershipIds.length === governedAttentionTotal &&
+    frozenAttentionMembershipIds.length <= ATTENTION_MEMBERSHIP_CEILING &&
     attentionRootDrained &&
-    openGovernedRecommendations.length >= governedAttentionTotal;
-  // `openGovernedRecommendations` is the DEDUPED set, so the comparison above counts
-  // distinct canonical Recommendations. A page boundary that returned the same row twice
-  // shrinks this count rather than padding it, and the answer is reported as incomplete.
+    missingAttentionMembers.length === 0;
+  // `openGovernedRecommendations` is the DEDUPED, membership-filtered set, so the check
+  // above is over distinct canonical Recommendations that are all snapshot members. A page
+  // boundary that returned the same row twice collapses to one rather than padding a count,
+  // and the member it displaced is then reported missing.
 
   /*
    * Reconciliation lookup: the Recommendations the recent Decisions point at.
