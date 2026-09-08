@@ -846,16 +846,23 @@ test("P2-12 M7b: linked rows are fetched by exact persisted reference, not a wid
     // Decision. It is completed the same way: a bounded root set (the recommendation
     // window) and exact-id reads through the same helper.
     //
-    // Only `governance_events` appears here because this fixture's Recommendation carries
-    // no `risk_issue_id`, so the risk / signal / evidence id sets are empty and
-    // `linkedRows` returns without querying at all. That is the bound working.
+    // The Recommendation the recent Decision points at, so a drawer opened on an old
+    // attention root still resolves after the Decision removes it from the open set.
+    "recommended_actions:in:id",
+    // Only `governance_events` follows because this fixture's Recommendation carries no
+    // `risk_issue_id`, so the risk / signal / evidence id sets are empty; and this project
+    // has no `proposed` Recommendation, so the attention Decision and evidence-link reads
+    // issue no query either. `linkedRows` returning early on an empty id set is the bound
+    // working, and it is why this list is shorter than the full set of completions.
     "governance_events:in:id",
     // The probe run that proves the windows alone would have dropped the chain.
     "decision_evidence_links:in:decision_record_id",
   ]);
   // Every upstream completion is an exact-id read, never a widened window or a fuzzy join.
-  for (const table of ["governance_events", "risk_issue_records", "operational_signals", "evidence_items"]) {
-    assert.match(service, new RegExp(`linkedRows\\("${table}", "id", \\[`), `${table} is completed by exact id`);
+  for (const table of ["governance_events", "risk_issue_records", "operational_signals", "evidence_items", "recommended_actions", "operational_decision_records"]) {
+    // The id column varies (`id`, or `recommendation_id` for the attention Decision read);
+    // what must hold is that every completion goes through the chunked/paged helper.
+    assert.match(service, new RegExp(`linkedRows\\(\\s*"${table}",\\s*"(id|recommendation_id)"`), `${table} is completed by exact reference`);
   }
   // The by-id reads union with the windowed ones rather than replacing them, so no
   // existing surface loses a row it used to see.

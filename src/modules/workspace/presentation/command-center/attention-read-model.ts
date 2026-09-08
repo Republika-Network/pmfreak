@@ -295,7 +295,37 @@ export function buildCanonicalAttention(summary: OperationalSummary | undefined)
   const signalById = new Map((summary.signals ?? []).map((row) => [String(row.id), row]));
   const riskById = new Map((summary.risksIssues ?? []).map((row) => [String(row.id), row]));
   const governanceById = new Map((summary.governanceEvents ?? []).map((row) => [String(row.id), row]));
-  const evidenceLinks = summary.evidenceLinks ?? [];
+  /**
+   * Frozen evidence snapshots available to attention items.
+   *
+   * The attention-specific links first, then the recent window, deduped by the pair that
+   * identifies a link — a Decision and the Evidence it froze. `summary.evidenceLinks` keeps
+   * its own contract; this only widens what a governed attention item can LOOK UP.
+   */
+  const evidenceLinks = (() => {
+    const byIdentity = new Map<string, AnyRecord>();
+    for (const link of [...(summary.governedAttentionDecisionEvidenceLinks ?? []), ...(summary.evidenceLinks ?? [])]) {
+      byIdentity.set(`${String(link.decision_record_id)}::${String(link.evidence_item_id)}`, link);
+    }
+    return [...byIdentity.values()];
+  })();
+
+  /**
+   * Decisions available to attention items.
+   *
+   * `summary.decisions` is the newest-30 project-wide window, and an open root's own
+   * `escalated` / `needs_more_evidence` history can be older than it — Project Memory and
+   * every other consumer keep that window exactly as it is, while a governed attention item
+   * resolves its history from the exact-by-recommendation projection unioned in. Deduped by
+   * canonical Decision id, so a Decision present in both is counted once.
+   */
+  const attentionDecisions = (() => {
+    const byId = new Map<string, AnyRecord>();
+    for (const row of [...(summary.governedAttentionDecisions ?? []), ...(summary.decisions ?? [])]) {
+      byId.set(String(row.id), row);
+    }
+    return [...byId.values()];
+  })();
 
   // Risk/Issue -> Signal is the only reliable direction back down the chain: governance events
   // reference the risk, and the risk references the signal that produced it.
@@ -331,6 +361,12 @@ export function buildCanonicalAttention(summary: OperationalSummary | undefined)
   const attentionRoots = (() => {
     const byId = new Map<string, AnyRecord>();
     for (const row of summary.governedAttentionRecommendations ?? []) byId.set(String(row.id), row);
+    // Recommendations the recent Decisions point at. An old root that has just been decided
+    // has left the open set and was never in the history window, so this is the only thing
+    // that keeps its drawer resolvable at the moment the decision lands.
+    for (const row of summary.governedAttentionReconciliationRecommendations ?? []) {
+      if (!byId.has(String(row.id))) byId.set(String(row.id), row);
+    }
     for (const row of summary.recommendations ?? []) {
       if (!byId.has(String(row.id))) byId.set(String(row.id), row);
     }
@@ -376,7 +412,7 @@ export function buildCanonicalAttention(summary: OperationalSummary | undefined)
      */
     const lineageComplete = context ? context.lineageComplete : true;
 
-    const decisions = (summary.decisions ?? [])
+    const decisions = attentionDecisions
       .filter((row) => str(row.recommendation_id) === recommendationId)
       .map((row) => buildDecisionRecord(row, evidenceLinks))
       .sort((a, b) => String(b.recordedAt ?? "").localeCompare(String(a.recordedAt ?? "")));

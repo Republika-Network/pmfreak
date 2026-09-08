@@ -37,6 +37,16 @@ const operationalData = read("src/modules/workspace/presentation/command-center/
 const layout = read("src/modules/workspace/screens/command-center/command-center-layout.tsx");
 const cardSrc = read("src/modules/workspace/presentation/command-center/attention-card.tsx");
 
+/** The REAL `getOperationalSummary` before and after a terminal Decision on an OLD root,
+ *  and for an open root whose escalation predates the recent Decision window. */
+const reconciliation = JSON.parse(
+  execFileSync(process.execPath, ["node_modules/tsx/dist/cli.mjs", "tests/ux-w3-attention-reconciliation-harness.tsx"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "inherit"],
+    maxBuffer: 64 * 1024 * 1024,
+  }),
+);
+
 /** The REAL `getOperationalSummary` against a faithful Data API stub, rooted on the open
  *  governed set — false-clear, >30 open, and a known-incomplete read. */
 const roots = JSON.parse(
@@ -861,5 +871,128 @@ test("W3-P1-05: decided-drawer reconciliation still works — history is unioned
   // No duplicate reaches the queue in any scenario.
   for (const [name, scenario] of Object.entries(roots)) {
     assert.equal(new Set(scenario.needsYouIds).size, scenario.needsYouIds.length, `${name}: no duplicated item`);
+  }
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// W3-P1-06 / W3-P2-07 — an OLD attention root keeps its drawer and its history
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Making the root authoritative let it reach Recommendations older than every history
+// window, and two more false-absence defects followed from that reach.
+
+test("W3-P1-06: before the decision, the old root is in Needs You and outside the history window", () => {
+  const pre = reconciliation.preDecision;
+  assert.equal(pre.historyContainsOld, false, "the history window genuinely excludes it");
+  assert.equal(pre.attentionRootContainsOld, true, "the authoritative root has it");
+  assert.ok(pre.needsYouIds.includes("governed-rec-rec-old"));
+  assert.equal(pre.oldResolvable, true);
+  // Nothing recorded yet, and the full controls are offered.
+  assert.deepEqual(pre.oldRecordedDecisionIds, []);
+  assert.deepEqual(pre.drawerSubmitButtons, ["Accept", "Reject", "Record modification"]);
+});
+
+test("W3-P1-06: after a terminal Decision the old root is gone from BOTH windows", () => {
+  // This is the state that used to make the drawer vanish: the canonical write flipped the
+  // Recommendation out of the open set, and its `created_at` never made it eligible for the
+  // history window.
+  const post = reconciliation.postDecision;
+  assert.equal(post.attentionRootContainsOld, false, "no longer open");
+  assert.equal(post.historyContainsOld, false, "and never in the history window");
+  // The Recommendation the new Decision points at is fetched by exact reference.
+  assert.equal(post.reconciliationContainsOld, true);
+});
+
+test("W3-P1-06: the drawer reconciles onto the persisted Decision instead of disappearing", () => {
+  const post = reconciliation.postDecision;
+  assert.equal(post.oldResolvable, true, "the open drawer still resolves");
+  assert.ok(post.allGovernedIds.includes("governed-rec-rec-old"));
+  assert.deepEqual(post.oldRecordedDecisionIds, ["dec-new"]);
+  assert.deepEqual(post.oldRecordedStatuses, ["accepted"]);
+  assert.equal(post.oldBadge, "Decision recorded");
+  assert.match(post.drawerPrimary, /Decision recorded — accepted/);
+  assert.match(post.drawerPrimary, /Sponsor confirmed the change in writing\./);
+  // A decided item offers no further decision.
+  assert.deepEqual(post.drawerSubmitButtons, []);
+  assert.match(post.drawerPrimary, /This recommendation has been decided\./);
+});
+
+test("W3-P1-06: a decided Recommendation does not re-enter Needs You", () => {
+  // Reconciliation is a LOOKUP projection. `selectPendingAttention` still decides membership.
+  const post = reconciliation.postDecision;
+  assert.ok(!post.needsYouIds.includes("governed-rec-rec-old"));
+  assert.deepEqual(post.needsYouIds, []);
+  const attentionModel = read("src/modules/workspace/presentation/command-center/attention-read-model.ts");
+  assert.match(attentionModel, /export function selectPendingAttention/);
+  assert.match(read("src/modules/workspace/presentation/command-center/operational-data.ts"), /selectPendingAttention\(buildCanonicalAttention\(data\)\)/);
+});
+
+test("W3-P2-07: an open root's escalation older than the Decision window is still found", () => {
+  const s = reconciliation.oldHistory;
+  // The window genuinely excludes it — 30 newer Decisions on other Recommendations.
+  assert.equal(s.recentDecisionIds.length, 30);
+  assert.ok(!s.recentDecisionIds.includes("dec-old"), "the recent Decision window excludes it");
+  // The attention projection fetches it by exact recommendation_id.
+  assert.deepEqual(s.attentionDecisionIds, ["dec-old"]);
+  // And the Recommendation is still open, because escalation reopens it.
+  assert.ok(s.needsYouIds.includes("governed-rec-rec-old"));
+});
+
+test("W3-P2-07: that history reaches the PM, in human terms, with its snapshot preserved", () => {
+  const s = reconciliation.oldHistory;
+  assert.deepEqual(s.oldRecordedDecisionIds, ["dec-old"]);
+  assert.deepEqual(s.oldRecordedStatuses, ["escalated"]);
+  assert.deepEqual(s.oldRecordedRationales, ["Needs sponsor review before proceeding."]);
+  // Primary surface: what was decided, that it stays open, why, and when.
+  assert.match(s.drawerPrimary, /Decision recorded — escalated \(recommendation stays open\)/);
+  assert.match(s.drawerPrimary, /Needs sponsor review before proceeding\./);
+  assert.match(s.drawerPrimary, /Recorded at/);
+  // The frozen evidence snapshot survives, and stays behind the disclosure.
+  assert.deepEqual(s.attentionLinkDecisionIds, ["dec-old"]);
+  assert.match(String(s.oldEvidenceSnapshots[0]), /^sha256 /);
+  assert.match(s.drawerDetail, /Evidence snapshot/);
+  assert.ok(!/Evidence snapshot/.test(s.drawerPrimary), "the digest never precedes the judgment");
+  // It is still an open item, so the controls are still offered.
+  assert.deepEqual(s.drawerSubmitButtons, ["Accept", "Reject", "Record modification"]);
+});
+
+test("W3-P2-07: a Decision present in both projections is counted once", () => {
+  const s = reconciliation.duplicateHistory;
+  assert.ok(s.recentDecisionIds.includes("dec-old"), "it IS in the recent window here");
+  assert.deepEqual(s.attentionDecisionIds, ["dec-old"], "and in the attention projection");
+  // One record, not two.
+  assert.deepEqual(s.oldRecordedDecisionIds, ["dec-old"]);
+  assert.equal(s.drawerPrimary.match(/Decision recorded — escalated/g).length, 1);
+});
+
+test("W3-P1-06/07: both projections are exact, bounded and separate from the windows", () => {
+  const service = read("src/lib/operational-flow/operational-flow-service.ts");
+  // Reconciliation: by the recommendation_id the recent Decisions carry, governed only.
+  assert.match(service, /await linkedRows\("recommended_actions", "id", decisionRecommendationIds\)/);
+  assert.match(service, /row\.governance_event_id !== null && row\.governance_event_id !== undefined/);
+  // Attention history: by exact recommendation_id, over the bounded open root set.
+  assert.match(service, /await linkedRows\(\s*"operational_decision_records",\s*"recommendation_id",\s*openAttentionRecommendationIds,\s*\)/);
+  // Evidence links: chunked and paged, tenancy through the Decision ids and RLS.
+  assert.match(service, /const linkedRowsByReference = async/);
+  assert.match(service, /await linkedRowsByReference\(\s*"decision_evidence_links",\s*"decision_record_id",/);
+  // The two history windows keep their exact queries.
+  assert.match(service, /from\("recommended_actions"\)[\s\S]{0,220}not\("governance_event_id", "is", null\)\.order\("created_at", \{ ascending: false \}\)\.limit\(30\)/);
+  assert.match(service, /from\("operational_decision_records"\)[\s\S]{0,200}limit\(30\)/);
+  // ...and stay distinct fields in the payload.
+  assert.match(service, /decisions: decisions\.data \?\? \[\],/);
+  assert.match(service, /evidenceLinks: links\.data \?\? \[\],/);
+  assert.match(service, /governedAttentionDecisions,/);
+});
+
+test("W3-P1-06/07: no Recommendation or Decision is duplicated across projections", () => {
+  for (const [name, scenario] of Object.entries(reconciliation)) {
+    assert.equal(new Set(scenario.needsYouIds).size, scenario.needsYouIds.length, `${name}: no duplicated queue item`);
+    assert.equal(new Set(scenario.allGovernedIds).size, scenario.allGovernedIds.length, `${name}: no duplicated lookup item`);
+    assert.equal(
+      new Set(scenario.oldRecordedDecisionIds).size,
+      scenario.oldRecordedDecisionIds.length,
+      `${name}: no duplicated Decision record`,
+    );
   }
 });

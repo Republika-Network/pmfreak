@@ -298,6 +298,31 @@ export type OperationalSummary = {
   /** Project-wide count of open governed Recommendations, from `assurance.openRecommendations`
    *  — never counted from a presentation window. */
   governedAttentionTotal?: number;
+  /**
+   * Governed Recommendations referenced by the Decisions already in `decisions`, fetched by
+   * exact canonical id.
+   *
+   * Needed because the attention root reaches Recommendations older than every history
+   * window. Deciding one terminally removes it from the open set, and it was never in the
+   * newest-30 Recommendation window — so without this the drawer the PM just used would
+   * resolve to nothing at the moment their decision landed. This is a LOOKUP projection:
+   * `selectPendingAttention` still decides queue membership, so a decided Recommendation
+   * never re-enters Needs You.
+   */
+  governedAttentionReconciliationRecommendations?: Array<Record<string, unknown>>;
+  /**
+   * Decisions recorded against the OPEN attention roots, fetched by exact
+   * `recommendation_id`.
+   *
+   * `decisions` is the newest-30 project-wide window. `escalated` and
+   * `needs_more_evidence` write a real Decision and return the Recommendation to
+   * `proposed`, so an open item legitimately carries history — and that history can be
+   * older than the window. Reading it from the window alone loses it.
+   */
+  governedAttentionDecisions?: Array<Record<string, unknown>>;
+  /** Frozen evidence snapshots for `governedAttentionDecisions`, by exact
+   *  `decision_record_id`, so the technical disclosure keeps its provenance. */
+  governedAttentionDecisionEvidenceLinks?: Array<Record<string, unknown>>;
   governedAttentionContexts?: GovernedAttentionContext[];
   lineages?: CompleteLineageProjection[];
   assurance: OperationalAssuranceSummary;

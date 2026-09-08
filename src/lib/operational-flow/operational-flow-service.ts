@@ -1778,6 +1778,30 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
   };
 
   /**
+   * Chunked, paged reader for a table that carries no workspace/project columns of its own.
+   *
+   * `decision_evidence_links` is the case: its tenancy comes from the Decision it points at
+   * and from RLS, exactly as the existing links query above relies on. Everything else —
+   * bounded id filters, explicit paging, no row-count assumption — is identical to
+   * `linkedRows`, so this cannot become the unpaged read that hides rows.
+   */
+  const linkedRowsByReference = async (table: string, column: string, values: string[]): Promise<SummaryRow[]> => {
+    if (values.length === 0) return [];
+    const collected: SummaryRow[] = [];
+    for (let start = 0; start < values.length; start += ID_FILTER_CHUNK) {
+      const chunk = values.slice(start, start + ID_FILTER_CHUNK);
+      for (let offset = 0; ; offset += ROW_PAGE_SIZE) {
+        const result = await client.from(table).select("*").in(column, chunk).range(offset, offset + ROW_PAGE_SIZE - 1);
+        if (result.error) throw new Error(`load_operational_summary: ${result.error.message}`);
+        const page = (result.data ?? []) as unknown as SummaryRow[];
+        collected.push(...page);
+        if (page.length < ROW_PAGE_SIZE) break;
+      }
+    }
+    return collected;
+  };
+
+  /**
    * Union, then restore the window's own ordering.
    *
    * Each collection above is ordered by a specific column descending, and consumers read
@@ -1913,6 +1937,46 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
     attentionRootDrained && openGovernedRecommendations.length >= governedAttentionTotal;
 
   /*
+   * Reconciliation lookup: the Recommendations the recent Decisions point at.
+   *
+   * An attention root can be older than every history window. Deciding it terminally drops
+   * it out of the open set, and it was never in the newest-30 Recommendation window — so
+   * the drawer the PM was just using would resolve to nothing at the exact moment their
+   * decision succeeded. Fetching by the `recommendation_id` the new Decision carries brings
+   * it back for LOOKUP only; queue membership is still decided by `selectPendingAttention`,
+   * so nothing decided re-enters Needs You.
+   */
+  const decisionRecommendationIds = [
+    ...new Set(((decisions.data ?? []) as unknown as SummaryRow[]).map((row) => String(row.recommendation_id ?? "")).filter(Boolean)),
+  ];
+  const reconciliationRecommendations = (
+    await linkedRows("recommended_actions", "id", decisionRecommendationIds)
+  ).filter((row) => row.governance_event_id !== null && row.governance_event_id !== undefined);
+
+  /*
+   * Decision history for the OPEN attention roots, by exact `recommendation_id`.
+   *
+   * `escalated` and `needs_more_evidence` write a real Decision and return the
+   * Recommendation to `proposed`, so an item that still needs the PM can legitimately carry
+   * previous judgment — and on an old root that Decision can be older than the newest-30
+   * Decision window. Reading history from the window alone silently drops it.
+   */
+  const openAttentionRecommendationIds = [...new Set(openGovernedRecommendations.map((row) => String(row.id)))];
+  const governedAttentionDecisions = await linkedRows(
+    "operational_decision_records",
+    "recommendation_id",
+    openAttentionRecommendationIds,
+  );
+  // Their frozen evidence snapshots, so the technical disclosure keeps its provenance.
+  // `decision_evidence_links` carries no tenant columns; its scope comes from these
+  // Decision ids, which are already workspace- and project-scoped, plus RLS.
+  const governedAttentionDecisionEvidenceLinks = await linkedRowsByReference(
+    "decision_evidence_links",
+    "decision_record_id",
+    [...new Set(governedAttentionDecisions.map((row) => String(row.id)))],
+  );
+
+  /*
    * Lineage is completed for the attention roots AND for the history window.
    *
    * The roots are what Needs You is built from. The history window is still needed so a
@@ -1923,6 +1987,9 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
   const rootRecommendations: SummaryRow[] = (() => {
     const byId = new Map<string, SummaryRow>();
     for (const row of openGovernedRecommendations) byId.set(String(row.id), row);
+    for (const row of reconciliationRecommendations) {
+      if (!byId.has(String(row.id))) byId.set(String(row.id), row);
+    }
     for (const row of (recommendations.data ?? []) as unknown as SummaryRow[]) {
       if (!byId.has(String(row.id))) byId.set(String(row.id), row);
     }
@@ -1988,6 +2055,7 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
   // projection is shared, so both collections speak about authority the same way.
   const safeRecommendations = ((recommendations.data ?? []) as unknown as SummaryRow[]).map(withActorAuthority);
   const safeGovernedAttentionRecommendations = openGovernedRecommendations.map(withActorAuthority);
+  const safeReconciliationRecommendations = reconciliationRecommendations.map(withActorAuthority);
 
   const lineages = await getCompleteLineageProjection(client, workspaceId, projectId);
 
@@ -2012,6 +2080,9 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
     tasks: allTasks,
     executions: allExecutions,
     governedAttentionRecommendations: safeGovernedAttentionRecommendations,
+    governedAttentionReconciliationRecommendations: safeReconciliationRecommendations,
+    governedAttentionDecisions,
+    governedAttentionDecisionEvidenceLinks,
     governedAttentionComplete,
     governedAttentionTotal,
     governedAttentionContexts,
