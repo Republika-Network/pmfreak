@@ -190,10 +190,22 @@ export function isResultEstablished(branch: GovernedActionBranch): boolean {
   if (state === null) return false;
   if (RESULT_PENDING_OUTCOME_STATES.includes(state)) return false;
   if (UNOBSERVABLE_OUTCOME_STATES.includes(state)) return false;
-  // A resolved Outcome state is only reachable through an Observation. Requiring the
-  // Observation itself as well means a chain whose Observation could not be resolved is
-  // reported as partial rather than silently read as learned.
-  return branch.boundary.observationCount > 0;
+  /*
+   * A RESOLVED state is the result, and the Observation row is not required to believe it.
+   *
+   * An earlier cut demanded `observationCount > 0` as well, reasoning that only an
+   * Observation can move an Outcome off `expected`. That is true of the contract and the
+   * wrong test to apply here: `achieved` is a persisted canonical fact, and treating a
+   * chain whose Observation could not be resolved as "result unknown" flipped finished work
+   * back into "In Progress" — telling a PM work was under way when it had ended, which is a
+   * worse lie than the one it was trying to prevent.
+   *
+   * The anomaly is real and is still reported, in the place it belongs: `branchPartialReason`
+   * names the unresolvable Observation, and `learning` stays null rather than being invented.
+   * The result is stated because the database states it; the learning is withheld because
+   * nothing recorded it.
+   */
+  return true;
 }
 
 export function branchPhase(branch: GovernedActionBranch): JourneyPhase {
@@ -290,6 +302,7 @@ function branchNext(branch: GovernedActionBranch): string | null {
   if (!branch.boundary.outcomeExists) return "Record what this work was meant to achieve.";
   if (!isResultEstablished(branch)) return "Record what actually happened, with evidence.";
   return null;
+
 }
 
 /**
@@ -301,9 +314,11 @@ function branchNext(branch: GovernedActionBranch): string | null {
  * over it.
  */
 function branchPartialReason(branch: GovernedActionBranch): string | null {
-  const state = branch.boundary.outcomeState;
-  if (state !== null && !RESULT_PENDING_OUTCOME_STATES.includes(state) && !UNOBSERVABLE_OUTCOME_STATES.includes(state) && branch.boundary.observationCount === 0) {
-    return "The result refers to an observation this project cannot currently resolve.";
+  if (isResultEstablished(branch) && branch.boundary.observationCount === 0) {
+    // P2-09 moves an Outcome off `expected` only through an Observation, so a resolved
+    // state with no Observation is a data-integrity anomaly rather than an ordinary gap.
+    // The result is still shown; what is withheld is any claim about what was learned.
+    return "The result is recorded, but the observation behind it cannot be resolved.";
   }
   if (branch.task && branch.task.sourceActionId !== null && branch.task.sourceActionId !== branch.action.actionId) {
     return "The work references a different action than the one it is filed under.";
@@ -324,7 +339,8 @@ export function buildBranchJourney(branch: GovernedActionBranch, actorUserId: st
     result: isResultEstablished(branch)
       ? (OUTCOME_RESULT_LABELS[String(branch.boundary.outcomeState)] ?? null)
       : null,
-    learning: isResultEstablished(branch) ? (branch.observations[0]?.summary ?? null) : null,
+    // Present only when an Observation actually recorded it. Never derived from the result.
+    learning: branch.observations[0]?.summary ?? null,
   };
 }
 

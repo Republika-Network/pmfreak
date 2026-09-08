@@ -236,7 +236,7 @@ export function CommandCenterLayout({
     // the loop with a statement of its own. `escalated` and `needs_more_evidence` leave the
     // Recommendation open and belong to Needs You, so they are deliberately not followed.
     if (TERMINAL_DECISION_STATUSES.includes(decisionStatus as CanonicalDecisionStatus)) {
-      setFollowDecidedRecommendationId(recommendationId);
+      selectDrawer({ followRecommendationId: recommendationId });
     }
   };
 
@@ -413,10 +413,16 @@ export function CommandCenterLayout({
    * click would look unresponsive. Every selection path therefore goes through this
    * helper, which clears the two it is not, instead of each handler remembering to.
    */
-  const selectDrawer = (next: { chainId?: string | null; attentionId?: string | null; content?: DrawerContent | null }) => {
+  const selectDrawer = (next: {
+    chainId?: string | null;
+    attentionId?: string | null;
+    content?: DrawerContent | null;
+    followRecommendationId?: string | null;
+  }) => {
     setOpenChainId(next.chainId ?? null);
     setOpenAttentionId(next.attentionId ?? null);
     setDrawerContent(next.content ?? null);
+    setFollowDecidedRecommendationId(next.followRecommendationId ?? null);
   };
 
   const handleSourceClick = (source: string) => {
@@ -444,23 +450,6 @@ export function CommandCenterLayout({
   const handleAgentSelect = (agent: Agent) => {
     selectDrawer({ content: agent.drawer });
   };
-  /**
-   * W4 — open the work a recorded Decision produced, once the SERVER says it exists.
-   *
-   * Runs on the refreshed payload rather than the submission, so what opens is persisted
-   * state. A rejected Decision produces a chain too — one that says the loop legitimately
-   * closes here — which is why this does not filter by whether work follows.
-   */
-  useEffect(() => {
-    if (!followDecidedRecommendationId) return;
-    const chain = executionChains.find((entry) => entry.recommendationId === followDecidedRecommendationId);
-    if (!chain) return;
-    setFollowDecidedRecommendationId(null);
-    setOpenChainId(chain.decisionId);
-    setOpenAttentionId(null);
-    setDrawerContent(null);
-  }, [followDecidedRecommendationId, executionChains]);
-
   const closeDrawer = () => {
     selectDrawer({});
   };
@@ -558,9 +547,30 @@ export function CommandCenterLayout({
         const chain = executionChains.find((entry) => entry.decisionId === openChainId);
         return chain ? buildChainDrawer(chain) : null;
       })()
-    : openAttentionId
-      ? ([...governedAttentionAll, ...raidNeedsYou].find((item) => item.id === openAttentionId)?.drawer ?? null)
-      : drawerContent;
+    : /*
+       * W4 — the DECIDE -> DO handoff, resolved rather than assigned.
+       *
+       * An earlier cut held the just-decided Recommendation in state and used an effect to
+       * copy it into `openChainId` once the chain appeared. That is a cascading render, and
+       * React is right to refuse it: the follow id is not a second source of truth to be
+       * synchronised, it is a SELECTOR, exactly like `openChainId` and `openAttentionId`.
+       *
+       * So it is resolved here, on the refreshed payload, in its own precedence slot. What
+       * opens is persisted state — the chain exists because the server produced it, never
+       * because the submission implied it. A rejected Decision resolves too, onto a chain
+       * that says the loop legitimately closes there. If no chain was produced, nothing
+       * opens and nothing is claimed.
+       */
+      followDecidedRecommendationId
+      ? (() => {
+          const chain = executionChains.find(
+            (entry) => entry.recommendationId === followDecidedRecommendationId
+          );
+          return chain ? buildChainDrawer(chain) : null;
+        })()
+      : openAttentionId
+        ? ([...governedAttentionAll, ...raidNeedsYou].find((item) => item.id === openAttentionId)?.drawer ?? null)
+        : drawerContent;
 
   const handleIntakeComplete = (summary: string) => {
     setUserInteracted(true);

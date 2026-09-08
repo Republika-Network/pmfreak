@@ -515,9 +515,17 @@ const progressChains = deriveExecutionChains(progressSummary, PROGRESS_NOW);
 const progressGroups = projectChainProgress(progressChains);
 const progressQueueMarkup = renderToStaticMarkup(<ExecutionQueue chains={progressChains} onSelect={noop} />);
 
-/** The chain titles rendered under a given test id, in document order. */
+/**
+ * The chain titles rendered under a given test id, in document order.
+ *
+ * Anchored on the row's own OPEN control (`<testId>-open`) rather than on a class string.
+ * W4 restructured the card — the row can no longer be a single `<button>`, because it now
+ * contains the Decide/Do/Verify/Learn indicator, and a button may not contain a list — so
+ * matching on presentational classes made this read the DOM's styling rather than its
+ * structure. The test id is the stable contract; the class names are not.
+ */
 function titlesFor(markup: string, testId: string): string[] {
-  return [...markup.matchAll(new RegExp(`data-testid="${testId}"[\\s\\S]*?<span class="block truncate text-sm[^"]*">([^<]*)<`, "g"))].map((m) => m[1]);
+  return [...markup.matchAll(new RegExp(`data-testid="${testId}-open"[^>]*>([^<]*)<`, "g"))].map((m) => m[1]);
 }
 
 // ── W2-P1-02: attention completeness scenarios ───────────────────────────────

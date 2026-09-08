@@ -628,10 +628,19 @@ test("P2-12 J2: the queue reports real stage progress and an honest empty state"
   // meaning stated in the section itself. The canonical semantics below are untouched.
   assert.match(populated, /In Progress/i);
   assert.match(populated, /after your decisions/i);
-  assert.match(populated, /Work completed — no expected outcome yet/i);
+  // UX-W4 says the same canonical fact in the PM's words. The claim under test is
+  // unchanged and is the one that matters: completed work with no Outcome must be reported
+  // as completed work with NO result, never as an achievement. The canonical phrasing
+  // ("Work completed — no expected outcome yet") is still produced by `describeBranch` and
+  // still rendered in the drawer's canonical chain; it simply no longer leads the card.
+  assert.match(populated, /work is complete/i);
+  assert.match(populated, /has not been recorded yet/i);
   assert.match(chainRows(harness.rendered.queuePopulated), /In progress/i);
   assert.doesNotMatch(populated, /Action authorized/i);
   assert.doesNotMatch(populated, /Outcome achieved/i);
+  // The phase indicator agrees: VERIFY is current, LEARN has not been reached.
+  assert.match(populated, /Verify: current step/);
+  assert.match(populated, /Learn: not started/);
   assert.match(text(harness.rendered.queueEmpty), /Nothing is in progress yet/i);
   assert.match(text(harness.rendered.queueEmpty), /Once you record a decision/i);
 });
@@ -845,6 +854,26 @@ test("P2-12 M7b: linked rows are fetched by exact persisted reference, not a wid
   // project-wide read is introduced, and nothing is joined by timestamp or title.
   assert.deepEqual(projection.linkedByIdQueries, [
     "decision_evidence_links:in:decision_record_id",
+    // UX-W4 extends the same discipline to the ROOT of the execution surface. The chain
+    // projection walked outward from the newest-30 Decision window, so a Decision older
+    // than that with work still running left the surface entirely and "In Progress"
+    // rendered empty while the work continued. These three reads ask the execution
+    // question directly — a non-terminal execution, a result not yet established, an
+    // unexpired Action — each ONE statement, hence one MVCC snapshot, bounded by a ceiling
+    // whose overflow is reported as UNPROVEN rather than silently truncated.
+    //
+    // The two `in:` filters here are on a fixed STATUS vocabulary, not on ids and not on a
+    // widened window: they are the indexed predicates that define "open work".
+    "internal_task_executions:in:status",
+    "canonical_task_outcomes:in:state",
+    // `canonical_task_outcomes.source_action_id` is nullable in the schema even though the
+    // RPC always sets it, so an outcome lacking it is resolved through its Task by exact
+    // id rather than assumed. This fixture's outcomes carry no `source_action_id`, which is
+    // what exercises the fallback.
+    "execution_tasks:in:id",
+    // Those Actions, and the Decisions they belong to — both by exact canonical id.
+    "material_action_proposals:in:id",
+    "operational_decision_records:in:id",
     "material_action_proposals:in:source_decision_id",
     "material_action_governance_evaluations:in:action_id",
     "execution_tasks:in:source_payload->>sourceActionId",
@@ -1178,10 +1207,14 @@ test("P2-12 N3: Observation quality is part of submission identity", () => {
 test("P2-12 N4: opening one drawer clears the others", () => {
   // `activeDrawer` resolves openChainId first, so any handler leaving it set would mask
   // the newest click and the drawer would look unresponsive.
-  assert.match(layout, /const selectDrawer = \(next: \{ chainId\?[\s\S]{0,320}setOpenChainId\(next\.chainId \?\? null\);\s*\n\s*setOpenAttentionId\(next\.attentionId \?\? null\);\s*\n\s*setDrawerContent\(next\.content \?\? null\);/);
+  // UX-W4 adds a FOURTH selector: the Recommendation just decided, which resolves to the
+  // chain the decision produced. It is a selector like the others, not a second source of
+  // truth kept in sync by an effect, so it must be cleared here too — otherwise a stale
+  // handoff would mask the next click exactly as a stale `openChainId` would.
+  assert.match(layout, /const selectDrawer = \(next: \{[\s\S]{0,420}setOpenChainId\(next\.chainId \?\? null\);\s*\n\s*setOpenAttentionId\(next\.attentionId \?\? null\);\s*\n\s*setDrawerContent\(next\.content \?\? null\);\s*\n\s*setFollowDecidedRecommendationId\(next\.followRecommendationId \?\? null\);/);
   // Every selection path goes through it — no handler sets these directly any more.
   const body = stripComments(layout).replace(/const selectDrawer[\s\S]*?\n  \};/, "");
-  for (const setter of ["setOpenChainId", "setOpenAttentionId", "setDrawerContent"]) {
+  for (const setter of ["setOpenChainId", "setOpenAttentionId", "setDrawerContent", "setFollowDecidedRecommendationId"]) {
     const direct = (body.match(new RegExp(`${setter}\\(`, "g")) ?? []).length;
     assert.equal(direct, 0, `${setter} must only be called inside selectDrawer`);
   }

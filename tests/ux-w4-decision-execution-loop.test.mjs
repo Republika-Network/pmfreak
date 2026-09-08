@@ -312,6 +312,9 @@ test("G1 — a viewer who is not the proposer is never offered a step the server
   assert.ok(!/^Start the work/i.test(journey.next ?? ""), "must not offer a refused command");
   assert.match(journey.next, /cannot be advanced by you/i);
   assert.equal(journey.owner.isYou, false);
+  // And the RENDERED card says the same thing — the refusal is not merely in the model.
+  assert.match(entry.queue.text, /cannot be advanced by you/i);
+  assert.ok(!/\bStart the work\b/.test(entry.queue.text), "the card must not offer a refused step");
 });
 
 test("G3 — eligibility is read from the projection, never re-derived from a role name", () => {
@@ -377,16 +380,32 @@ test("I4 — an unproven section withholds its count and its empty-state claim",
 
 test("L — an unresolvable linked record keeps the known facts and claims no completion", () => {
   const { entry, journey } = one("partialChainMissingObservation");
+
+  // P2-09 moves an Outcome off `expected` only through an Observation, so a resolved state
+  // with NO Observation is a data-integrity anomaly. The honest reading splits the two
+  // facts rather than discarding both: the database states the result, so the result is
+  // shown; nothing recorded the learning, so no learning is claimed.
+  assert.equal(journey.result, "The expected result was achieved.", "a persisted result is still a result");
+  assert.equal(journey.learning, null, "learning must never be invented from the result");
+
+  // The anomaly is named rather than hidden.
   assert.equal(journey.partial, true);
-  assert.ok(journey.partialReason);
-  // Not closed, not claimed as learned.
-  assert.notEqual(journey.closure, "loop_closed");
-  assert.equal(journey.result, null);
-  assert.equal(journey.learning, null);
-  // The known state is still shown, and the gap is named.
+  assert.match(journey.partialReason, /observation behind it cannot be resolved/i);
   assert.match(entry.queue.markup, /data-testid="cc-journey-partial"/);
-  // The In Progress grouping must agree with the journey rather than closing it.
-  assert.deepEqual(entry.progress.closed, [], "a partial chain must not be filed as closed");
+
+  // And the grouping agrees with the journey: the work has ended, so it is not listed as
+  // still under way. The earlier cut forced this back into "In Progress", which told the
+  // PM work was continuing when it had finished — a worse error than the one it prevented.
+  assert.deepEqual(entry.progress.inProgress, [], "finished work must not be shown as in progress");
+});
+
+test("L2 — a resolved result with its observation present claims no anomaly", () => {
+  // The control for L: same shape, Observation resolvable. Without this, L could pass
+  // against a journey that flagged every observed chain as partial.
+  const { journey } = one("outcomeAchievedObserved");
+  assert.equal(journey.partial, false);
+  assert.equal(journey.partialReason, null);
+  assert.ok(journey.learning, "an observed chain carries its learning");
 });
 
 // ── M / N. One tree, and phase without colour ────────────────────────────────
@@ -504,6 +523,12 @@ test("the post-decision handoff follows persisted state, and only terminal decis
   // The chain is opened from the REFRESHED payload, not from the submission.
   assert.match(layout, /followDecidedRecommendationId/);
   assert.match(layout, /TERMINAL_DECISION_STATUSES\.includes/);
-  // The effect resolves against derived chains rather than assuming a chain exists.
-  assert.match(layout, /executionChains\.find\(\(entry\) => entry\.recommendationId === followDecidedRecommendationId\)/);
+  // It is RESOLVED in `activeDrawer`, not copied into other state by an effect: the follow
+  // id is a selector like `openChainId`, and converting one piece of state into another
+  // after render is the cascading-render pattern React rejects.
+  assert.match(layout, /entry\.recommendationId === followDecidedRecommendationId/);
+  assert.ok(
+    !/useEffect\([\s\S]{0,400}setOpenChainId\(/.test(layout),
+    "the handoff must not setState inside an effect",
+  );
 });
