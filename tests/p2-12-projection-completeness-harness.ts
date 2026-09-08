@@ -17,6 +17,7 @@
  */
 
 import { getOperationalSummary } from "@/lib/operational-flow/operational-flow-service";
+import { computeGovernedExecutionRoot } from "./ux-w4-execution-root-membership-stub";
 
 type Row = Record<string, unknown>;
 
@@ -335,7 +336,16 @@ function makeClient() {
   return {
     client: {
       from: (table: string) => builder(table),
-      rpc: async (name: string) => (name === "get_operational_assurance_summary" ? { data: {}, error: null } : { data: null, error: null }),
+      rpc: async (name: string) => {
+        if (name === "get_operational_assurance_summary") return { data: {}, error: null };
+        // UX-W4 authoritative execution-root membership, answered the way the migration
+        // answers it — from ONE evaluation over the same table snapshot. The completion
+        // reads it drives are part of what this harness is proving is by exact reference.
+        if (name === "get_governed_execution_root") {
+          return { data: computeGovernedExecutionRoot(TABLES, WORKSPACE, PROJECT, new Date().toISOString()), error: null };
+        }
+        return { data: null, error: null };
+      },
     },
     queries,
   };

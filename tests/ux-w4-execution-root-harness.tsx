@@ -18,6 +18,25 @@
  *                   Outcome — the VERIFY case, which must not read as "no result".
  *   ceilingOverflow more active executions than the root ceiling, so membership is
  *                   UNPROVEN and the section must withhold its claims.
+ *   acceptedNoAction    W4-R1. An accepted Decision OUTSIDE the newest-30 window with no
+ *                   Material Action at all. `deriveDecisionJourney` calls it DO/open, so
+ *                   the root must reach it — there is no Execution, no Outcome and no
+ *                   Action for a work-shaped predicate to find.
+ *   completedNoOutcome  W4-R2. Work FINISHED (Task and Execution completed), no Outcome
+ *                   recorded yet, and the Action's authorisation already expired. The
+ *                   journey is VERIFY/open and every work-shaped predicate misses it.
+ *   membershipAbsent    W4-R4. An older database with no membership projection at all.
+ *                   The known chains are still read and still shown; completeness is not.
+ *   memberUnresolvable  W4-R5. The snapshot names a member the later load cannot resolve.
+ *   lateNonmember       W4-R6. A member is unresolvable AND a newer open Decision the
+ *                   snapshot never named is sitting in the window. Equal cardinality must
+ *                   not let the newcomer stand in for the member that went missing.
+ *   duplicateMember     A transport duplicate in the id list. Deduped by canonical id, so
+ *                   it can never pad the proof up to the count.
+ *
+ * The stub answers `get_governed_execution_root` from `computeGovernedExecutionRoot`, a
+ * transcription of the migration's predicate evaluated over ONE table snapshot — which is
+ * what makes these assertions about the real client rather than about a mock.
  *
  * Executed by `tests/ux-w4-decision-execution-loop.test.mjs` through tsx.
  */
@@ -28,6 +47,7 @@ import { buildExecutionChains } from "../src/modules/workspace/presentation/comm
 import { projectChainProgress } from "../src/modules/workspace/presentation/command-center/in-progress-read-model";
 import { deriveDecisionJourney } from "../src/modules/workspace/presentation/command-center/decision-journey";
 import { ExecutionQueue } from "../src/modules/workspace/presentation/command-center/execution-queue";
+import { computeGovernedExecutionRoot } from "./ux-w4-execution-root-membership-stub";
 
 type Row = Record<string, unknown>;
 
@@ -39,6 +59,8 @@ const AS_OF = "2027-01-01T00:00:00Z";
 const NOW = new Date(AS_OF);
 const OLD = "2026-01-01T00:00:00Z";
 const FUTURE = "2027-12-01T00:00:00Z";
+/** An authorisation that lapsed before the snapshot: `expires_at > asOf` cannot match it. */
+const EXPIRED = "2026-02-01T00:00:00Z";
 const NEWER = (index: number) => `2026-06-${String((index % 28) + 1).padStart(2, "0")}T00:00:00Z`;
 
 const scoped = (row: Row): Row => ({ workspace_id: WORKSPACE, project_id: PROJECT, ...row });
@@ -62,7 +84,8 @@ function workingChain(
   id: string,
   createdAt: string,
   executionStatus: string,
-  outcomeState: string | null
+  outcomeState: string | null,
+  options: { actionExpiresAt?: string } = {}
 ): Record<string, Row[]> {
   const rows: Record<string, Row[]> = {
     operational_decision_records: [
@@ -87,7 +110,7 @@ function workingChain(
         materiality: "ordinary",
         proposal: { actionType: "prepare_change_request", evidenceReferenceIds: [] },
         correlation_id: `corr-${id}`,
-        expires_at: FUTURE,
+        expires_at: options.actionExpiresAt ?? FUTURE,
         created_at: createdAt,
         persisted_at: createdAt,
       }),
@@ -162,6 +185,41 @@ function workingChain(
   return rows;
 }
 
+/**
+ * A work-bearing Decision with NOTHING beneath it.
+ *
+ * No Material Action, no Task, no Execution, no Outcome. `deriveDecisionJourney` reads this
+ * as DO/open — the contract permits an Action here and the PM has not requested one yet, so
+ * the real next step is theirs. There is no work-shaped row for a predicate over
+ * executions, outcomes or actions to find, which is precisely why a root defined by those
+ * three predicates cannot see it.
+ */
+function decisionWithoutAction(id: string, createdAt: string): Record<string, Row[]> {
+  return {
+    operational_decision_records: [
+      scoped({
+        id: `dec-${id}`,
+        decision_status: "accepted",
+        decided_by: ACTOR,
+        recommendation_id: `rec-${id}`,
+        rationale: `We accepted ${id} because the case was made.`,
+        governance_event_id: `gov-${id}`,
+        created_at: createdAt,
+      }),
+    ],
+    recommended_actions: [
+      scoped({
+        id: `rec-${id}`,
+        recommendation: `Recommendation ${id}`,
+        status: "accepted",
+        governance_event_id: `gov-${id}`,
+        created_at: createdAt,
+        updated_at: createdAt,
+      }),
+    ],
+  };
+}
+
 const EMPTY_TABLES = (): Record<string, Row[]> => ({
   recommended_actions: [],
   evidence_items: [],
@@ -205,6 +263,27 @@ function rootScenario(executionStatus: string, outcomeState: string | null): Rec
 const falseClearTables = rootScenario("running", null);
 const pendingResultTables = rootScenario("completed", "expected");
 
+/** W4-R1 — accepted Decision, no Action, outside the newest-30 Decision window. */
+const acceptedNoActionTables = (() => {
+  const filler = Array.from({ length: 30 }, (_, index) => barrenDecision(`dec-filler-${index}`, NEWER(index)));
+  return merge({ ...EMPTY_TABLES(), operational_decision_records: filler }, decisionWithoutAction("bare", OLD));
+})();
+
+/**
+ * W4-R2 — completed Execution, Outcome absent, authorisation expired, outside newest-30.
+ *
+ * Every predicate the old three-statement root asked misses this: the Execution is
+ * `completed` so it is not active, there is no Outcome so nothing is result-pending, and
+ * `expires_at` is in the past so the Action is not unexpired. The journey is VERIFY/open.
+ */
+const completedNoOutcomeTables = (() => {
+  const filler = Array.from({ length: 30 }, (_, index) => barrenDecision(`dec-filler-${index}`, NEWER(index)));
+  return merge(
+    { ...EMPTY_TABLES(), operational_decision_records: filler },
+    workingChain("verify", OLD, "completed", null, { actionExpiresAt: EXPIRED })
+  );
+})();
+
 /**
  * More active executions than the root ceiling.
  *
@@ -219,6 +298,16 @@ const overflowTables = (() => {
   }
   return tables;
 })();
+
+/**
+ * W4-R6 — a NEWER open Decision the snapshot never named.
+ *
+ * It is genuinely open and genuinely visible: it sits at the top of the newest-30 window.
+ * That is exactly what makes it dangerous. If completeness were decided by counting, one
+ * newcomer would silently balance one member that went missing and the read would call
+ * itself the snapshot while holding a different set.
+ */
+const lateNonmemberTables = merge(falseClearTables, workingChain("late", "2026-12-01T00:00:00Z", "running", null));
 
 let TABLES: Record<string, Row[]> = falseClearTables;
 
@@ -326,15 +415,34 @@ function makeClient() {
 
   return {
     from: (table: string) => builder(table),
-    rpc: async (name: string) =>
-      name === "get_operational_assurance_summary" ? { data: TABLES.__assurance?.[0] ?? {}, error: null } : { data: null, error: null },
+    rpc: async (name: string) => {
+      if (name === "get_operational_assurance_summary") {
+        return { data: TABLES.__assurance?.[0] ?? {}, error: null };
+      }
+      if (name === "get_governed_execution_root") {
+        // An OVERRIDE stands for a projection the database answered differently — absent on
+        // an older deployment, or naming a member this read cannot resolve. Otherwise the
+        // real predicate runs over the same snapshot every other read sees.
+        const override = EXECUTION_ROOT_OVERRIDE;
+        if (override !== undefined) return override;
+        return { data: computeGovernedExecutionRoot(TABLES, WORKSPACE, PROJECT, AS_OF), error: null };
+      }
+      return { data: null, error: null };
+    },
   };
 }
 
+/** Set per scenario to model a database that answers the membership RPC differently. */
+let EXECUTION_ROOT_OVERRIDE: { data: unknown; error: unknown } | undefined;
+
 const text = (markup: string): string => markup.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 
-async function scenario(tables: Record<string, Row[]>) {
+async function scenario(
+  tables: Record<string, Row[]>,
+  executionRootOverride?: { data: unknown; error: unknown }
+) {
   TABLES = tables;
+  EXECUTION_ROOT_OVERRIDE = executionRootOverride;
   const summary = await getOperationalSummary(makeClient() as never, WORKSPACE, PROJECT, ACTOR);
   const chains = buildExecutionChains(summary, NOW);
   const progress = projectChainProgress(chains);
@@ -352,12 +460,20 @@ async function scenario(tables: Record<string, Row[]>) {
   );
   return {
     rootComplete: summary.governedExecutionRootComplete ?? null,
+    /** What the single-statement projection named as authoritative membership. */
+    frozenMembershipIds: (
+      (await makeClient().rpc("get_governed_execution_root")).data as
+        | { openExecutionDecisionIds?: string[] }
+        | null
+    )?.openExecutionDecisionIds ?? null,
     /** Decisions the RECENT WINDOW carries. The whole point is that the working one is not here. */
     windowDecisionIds: (summary.decisions ?? []).map((row) => String(row.id)),
     /** Decisions the EXECUTION ROOT recovered, which the window could not reach. */
     rootDecisionIds: (summary.governedExecutionRootDecisions ?? []).map((row) => String(row.id)),
     chainDecisionIds: chains.map((chain) => chain.decisionId),
     inProgressDecisionIds: progress.inProgress.map((chain) => chain.decisionId),
+    notProgressingDecisionIds: progress.notProgressing.map((chain) => chain.decisionId),
+    closedDecisionIds: progress.closed.map((chain) => chain.decisionId),
     journeys: chains.map((chain) => {
       const journey = deriveDecisionJourney(chain, ACTOR);
       return { decisionId: journey.decisionId, phase: journey.phase, closure: journey.closure, state: journey.state, next: journey.next };
@@ -370,7 +486,52 @@ async function main() {
   const out = {
     falseClear: await scenario(falseClearTables),
     pendingResult: await scenario(pendingResultTables),
+    acceptedNoAction: await scenario(acceptedNoActionTables),
+    completedNoOutcome: await scenario(completedNoOutcomeTables),
     ceilingOverflow: await scenario(overflowTables),
+    // W4-R4 — a database that has not applied the membership migration. PostgREST answers
+    // an unknown function with an error, and the honest consequence is UNPROVEN.
+    membershipAbsent: await scenario(falseClearTables, {
+      data: null,
+      error: { code: "PGRST202", message: "Could not find the function public.get_governed_execution_root" },
+    }),
+    // W4-R5 — the snapshot names a member the later load cannot resolve.
+    memberUnresolvable: await scenario(falseClearTables, {
+      data: {
+        scope: "project",
+        workspaceId: WORKSPACE,
+        projectId: PROJECT,
+        asOf: AS_OF,
+        openExecutionDecisions: 1,
+        openExecutionDecisionIds: ["dec-vanished"],
+      },
+      error: null,
+    }),
+    // W4-R6 — that same missing member, with a newer open nonmember in the window.
+    lateNonmember: await scenario(lateNonmemberTables, {
+      data: {
+        scope: "project",
+        workspaceId: WORKSPACE,
+        projectId: PROJECT,
+        asOf: AS_OF,
+        openExecutionDecisions: 1,
+        openExecutionDecisionIds: ["dec-vanished"],
+      },
+      error: null,
+    }),
+    // A transport duplicate: two copies of one id against a count of two. Canonical-id
+    // dedupe collapses them to one member, which then disagrees with the count.
+    duplicateMember: await scenario(falseClearTables, {
+      data: {
+        scope: "project",
+        workspaceId: WORKSPACE,
+        projectId: PROJECT,
+        asOf: AS_OF,
+        openExecutionDecisions: 2,
+        openExecutionDecisionIds: ["dec-old", "dec-old"],
+      },
+      error: null,
+    }),
   };
   process.stdout.write(JSON.stringify(out, null, 2));
 }

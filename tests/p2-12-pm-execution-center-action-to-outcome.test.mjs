@@ -854,26 +854,24 @@ test("P2-12 M7b: linked rows are fetched by exact persisted reference, not a wid
   // project-wide read is introduced, and nothing is joined by timestamp or title.
   assert.deepEqual(projection.linkedByIdQueries, [
     "decision_evidence_links:in:decision_record_id",
-    // UX-W4 extends the same discipline to the ROOT of the execution surface. The chain
-    // projection walked outward from the newest-30 Decision window, so a Decision older
-    // than that with work still running left the surface entirely and "In Progress"
-    // rendered empty while the work continued. These three reads ask the execution
-    // question directly — a non-terminal execution, a result not yet established, an
-    // unexpired Action — each ONE statement, hence one MVCC snapshot, bounded by a ceiling
-    // whose overflow is reported as UNPROVEN rather than silently truncated.
-    //
-    // The two `in:` filters here are on a fixed STATUS vocabulary, not on ids and not on a
-    // widened window: they are the indexed predicates that define "open work".
-    "internal_task_executions:in:status",
-    "canonical_task_outcomes:in:state",
-    // `canonical_task_outcomes.source_action_id` is nullable in the schema even though the
-    // RPC always sets it, so an outcome lacking it is resolved through its Task by exact
-    // id rather than assumed. This fixture's outcomes carry no `source_action_id`, which is
-    // what exercises the fallback.
-    "execution_tasks:in:id",
-    // Those Actions, and the Decisions they belong to — both by exact canonical id.
-    "material_action_proposals:in:id",
-    "operational_decision_records:in:id",
+    /*
+     * UX-W4's execution ROOT no longer appears as reads at all.
+     *
+     * It used to be three windowed predicates here — a non-terminal execution, a result not
+     * yet established, an unexpired Action — whose union was treated as authoritative
+     * membership. Three statements are three MVCC snapshots, so a completion committing
+     * between two of them could empty all three for a chain that was open throughout; and
+     * those predicates never covered an accepted Decision with no Action, nor completed
+     * work whose Outcome is missing and whose authorisation has lapsed.
+     *
+     * Membership is now named by the database in ONE statement,
+     * `get_governed_execution_root`, which is an RPC and therefore not an `in:` filter.
+     * The frozen ids it returns are completed through the same exact-reference helper as
+     * everything else — `operational_decision_records:in:id` — but only for members the
+     * newest-30 window does not already carry. This fixture's open work is inside that
+     * window, so no completion read is needed and none is issued; the case where one IS
+     * needed is proven end to end in `tests/ux-w4-execution-root-harness.tsx`.
+     */
     "material_action_proposals:in:source_decision_id",
     "material_action_governance_evaluations:in:action_id",
     "execution_tasks:in:source_payload->>sourceActionId",
