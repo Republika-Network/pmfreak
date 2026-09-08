@@ -13,6 +13,7 @@ import type {
   LineageStepKind,
   LineageStepNode,
   LineageTransition,
+  GovernedAttentionContext,
   OperationalSummary,
   RecordOutcomeObservationInput,
 } from "./types";
@@ -1742,10 +1743,48 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
    * is assumed; the value is deliberately conservative.
    */
   const ID_FILTER_CHUNK = 50;
+  /**
+   * How many independent id chunks may be in flight at once.
+   *
+   * W3's attention root can legitimately exceed one page, and each lineage level then splits
+   * into a chunk per 50 ids. Run strictly one at a time, 501 roots become roughly 44
+   * consecutive round trips across the four levels before the Decision reads even begin —
+   * and the ceiling is 10,000 rows, where that is pathological. Run them all at once and a
+   * large project opens hundreds of simultaneous connections.
+   *
+   * Six is a deliberate middle: enough to collapse the waterfall, small enough to stay a
+   * polite client. It bounds concurrency WITHIN one level only; the levels themselves stay
+   * sequential because each discovers the ids the next one needs.
+   */
+  const CHUNK_CONCURRENCY = 6;
   /** Rows fetched per page. PostgREST applies its own max-rows cap, so a single unpaged
    *  read could silently return a truncated set — the exact false-absence F7 exists to
    *  prevent. Pages are drained explicitly until one comes back short. */
   const ROW_PAGE_SIZE = 500;
+
+  /**
+   * Runs `task` over `items` with at most `CHUNK_CONCURRENCY` in flight, preserving input
+   * order in the result.
+   *
+   * Order matters: callers flatten the result and downstream consumers re-sort, but a
+   * result whose order depended on completion timing would make the same data render
+   * differently run to run. The first rejection propagates — a failed chunk fails the whole
+   * read, because a partial set silently presented as complete is the defect this file
+   * exists to prevent.
+   */
+  const mapWithConcurrency = async <T, R>(items: T[], task: (item: T) => Promise<R>): Promise<R[]> => {
+    const results: R[] = new Array(items.length);
+    let next = 0;
+    const workers = Array.from({ length: Math.min(CHUNK_CONCURRENCY, items.length) }, async () => {
+      for (;;) {
+        const index = next++;
+        if (index >= items.length) return;
+        results[index] = await task(items[index]);
+      }
+    });
+    await Promise.all(workers);
+    return results;
+  };
 
   const linkedRows = async (
     table: string,
@@ -1756,13 +1795,22 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
     match?: readonly [string, string]
   ): Promise<SummaryRow[]> => {
     if (values.length === 0) return [];
-    const collected: SummaryRow[] = [];
+    const chunks: string[][] = [];
     for (let start = 0; start < values.length; start += ID_FILTER_CHUNK) {
-      const chunk = values.slice(start, start + ID_FILTER_CHUNK);
+      chunks.push(values.slice(start, start + ID_FILTER_CHUNK));
+    }
+    // Chunks are independent of one another; only the PAGES within a chunk are sequential,
+    // because the next offset belongs to that chunk. See `mapWithConcurrency`.
+    const perChunk = await mapWithConcurrency(chunks, async (chunk) => {
+      const collected: SummaryRow[] = [];
       for (let offset = 0; ; offset += ROW_PAGE_SIZE) {
         const scoped = client.from(table).select("*").eq("workspace_id", workspaceId).eq("project_id", projectId);
         const result = await (match ? scoped.eq(match[0], match[1]) : scoped)
           .in(column, chunk)
+          // A total order on the primary key, so a chunk larger than one page cannot lose
+          // or repeat a row at the boundary. Consumer-facing order is unaffected:
+          // `unionById` re-sorts every collection on its own column afterwards.
+          .order("id", { ascending: true })
           .range(offset, offset + ROW_PAGE_SIZE - 1);
         if (result.error) throw new Error(`load_operational_summary: ${result.error.message}`);
         const page = (result.data ?? []) as unknown as SummaryRow[];
@@ -1770,10 +1818,46 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
         // A short page is the last page. Every id filter is bounded, so this terminates.
         if (page.length < ROW_PAGE_SIZE) break;
       }
-    }
+      return collected;
+    });
     // Duplicates across chunks/pages are removed by canonical id in `unionById`, which also
     // restores the window's ordering after the union.
-    return collected;
+    return perChunk.flat();
+  };
+
+  /**
+   * Chunked, paged reader for a table that carries no workspace/project columns of its own.
+   *
+   * `decision_evidence_links` is the case: its tenancy comes from the Decision it points at
+   * and from RLS, exactly as the existing links query above relies on. Everything else —
+   * bounded id filters, explicit paging, no row-count assumption — is identical to
+   * `linkedRows`, so this cannot become the unpaged read that hides rows.
+   */
+  const linkedRowsByReference = async (table: string, column: string, values: string[]): Promise<SummaryRow[]> => {
+    if (values.length === 0) return [];
+    const chunks: string[][] = [];
+    for (let start = 0; start < values.length; start += ID_FILTER_CHUNK) {
+      chunks.push(values.slice(start, start + ID_FILTER_CHUNK));
+    }
+    const perChunk = await mapWithConcurrency(chunks, async (chunk) => {
+      const collected: SummaryRow[] = [];
+      for (let offset = 0; ; offset += ROW_PAGE_SIZE) {
+        const result = await client
+          .from(table)
+          .select("*")
+          .in(column, chunk)
+          // Same reason: `decision_evidence_links` has a uuid primary key, so this is a
+          // total order and the page boundary is stable.
+          .order("id", { ascending: true })
+          .range(offset, offset + ROW_PAGE_SIZE - 1);
+        if (result.error) throw new Error(`load_operational_summary: ${result.error.message}`);
+        const page = (result.data ?? []) as unknown as SummaryRow[];
+        collected.push(...page);
+        if (page.length < ROW_PAGE_SIZE) break;
+      }
+      return collected;
+    });
+    return perChunk.flat();
   };
 
   /**
@@ -1825,12 +1909,331 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
     observations.data as unknown as SummaryRow[] | null,
     await linkedRows("canonical_outcome_observations", "outcome_id", idsOf(allOutcomes))
   );
-  const governanceById = new Map((governance.data ?? []).map((row) => [row.id, row]));
-  const safeRecommendations = (recommendations.data ?? []).map((row) => {
-    const event = governanceById.get(row.governance_event_id) as Record<string, unknown> | undefined;
-    const evaluations = (["accepted", "rejected", "modified", "escalated", "needs_more_evidence"] as DecisionStatus[]).map((status) => [status, evaluateOperationalDecisionAuthority({ actorRole, authorityRequired: String(event?.authority_required ?? "baseline review"), decisionStatus: status })]);
-    return { ...row, actor_authority: Object.fromEntries(evaluations) };
+  /*
+   * Authoritative upstream lineage for the governed attention surface.
+   *
+   * The collections above are independently truncated windows, and Needs You was reading
+   * two things out of them that they cannot answer:
+   *
+   *   - whether a Recommendation's Evidence EXISTS. A Recommendation inside the newest-30
+   *     window may link Evidence older than the newest-20 evidence window, and the surface
+   *     then told the PM "the decision would be refused" — while
+   *     `record_operational_decision`, which resolves by exact id, would have accepted it.
+   *   - which authority the decision requires. `authority_required` was read from the
+   *     windowed governance map and fell back to "baseline review" when the linked event was
+   *     merely out of window, quietly changing which decisions the surface offered.
+   *
+   * Both are fixed the way F7 fixed the downstream chain: a bounded root set (the
+   * recommendation window, unchanged) completed by EXACT persisted reference through the
+   * same chunked, paged, workspace-scoped `linkedRows` helper. No timestamp or title
+   * matching, no unbounded read, no new endpoint.
+   *
+   * The result is a SEPARATE projection. Nothing here is unioned into `evidence`,
+   * `signals`, `risksIssues` or `governanceEvents` — those keep their recent-window
+   * meaning, which "What changed" and "PMFreak is monitoring" are built on.
+   */
+  /*
+   * The governed attention ROOT.
+   *
+   * `recommendations` above is a recent HISTORY window: `governance_event_id is not null`,
+   * newest 30, every status. Thirty newer accepted/rejected/modified Recommendations push an
+   * older still-`proposed` one out of it — and an attention queue rooted on that window
+   * would then render "You're clear." while a real governed decision waited. History and
+   * attention are different questions, so they get different reads.
+   *
+   * This one asks only the attention question: which governed Recommendations are open? It
+   * is workspace- and project-scoped, filtered to `status = 'proposed'`, and PAGED to
+   * completion rather than capped at a row count — an attention queue should be able to
+   * show every unresolved item. A safety bound exists so a pathological project cannot
+   * spin here, and crossing it is reported as incompleteness rather than silently truncating.
+   */
+  /*
+   * Membership is frozen by IDENTITY, not by a clock.
+   *
+   * Ordering and de-duplication made a single pass reproducible, but the pages still ran
+   * against a MOVING table: a Recommendation created, decided or reopened between page one
+   * and page three lands in a result assembled from several different instants.
+   *
+   * An earlier attempt froze that against timestamps — `status = 'proposed' AND
+   * created_at <= asOf AND updated_at <= asOf` — and proved completeness by comparing
+   * cardinality against the assurance count. That does not hold. `asOf` is `now()`, i.e.
+   * `transaction_timestamp()`: a wall-clock reading, NOT a token of MVCC visibility. A
+   * transaction that BEGINS before `asOf` stamps its rows with timestamps that predate
+   * `asOf` and may COMMIT after the assurance statement took its snapshot. Such a row was
+   * never counted, yet satisfies the predicate for every later read:
+   *
+   *     snapshot   = { A, C, D }   counted by the assurance statement
+   *     later read = { B, C, D }   B committed late; A closed late and left the predicate
+   *
+   * Same size, different set. Equal cardinality proves nothing about membership.
+   *
+   * So membership comes from the database, by canonical id, in the same statement that
+   * produced the count and the instant: `openRecommendationIds`. Those ids are the
+   * authoritative set. The paged read below is only a LOADER — anything it returns whose id
+   * is not a member is discarded before de-duplication, and completeness requires every
+   * member to have been loaded. Identity in, identity out.
+   *
+   * The timestamp clamp is retained on the loader for a different job: every mutation of
+   * `recommended_actions` bumps `updated_at` through the `recommended_actions_set_updated_at`
+   * BEFORE UPDATE trigger, so a member that changed after `asOf` drops out of the read and
+   * the answer becomes provably incomplete rather than quietly mixing a post-snapshot state
+   * into a set presented as the snapshot. That is the conservative direction.
+   */
+  const assuranceSnapshot = assuranceResult.data as OperationalSummary["assurance"];
+  const attentionSnapshotAt =
+    typeof assuranceSnapshot?.asOf === "string" && Number.isFinite(Date.parse(assuranceSnapshot.asOf))
+      ? assuranceSnapshot.asOf
+      : null;
+  /**
+   * The authoritative membership set, or `null` when the database did not name it.
+   *
+   * `null` is the honest state for a deployment that has not yet applied
+   * `20260908000000_p2_02_attention_membership_snapshot.sql`: the open items are still read
+   * and still shown, but nothing about them can be called complete.
+   */
+  const frozenAttentionMembershipIds = (() => {
+    const raw = (assuranceSnapshot as { openRecommendationIds?: unknown } | null)?.openRecommendationIds;
+    if (!Array.isArray(raw)) return null;
+    return [...new Set(raw.map((value) => String(value)).filter((value) => value.length > 0))];
+  })();
+  const frozenAttentionMembership = frozenAttentionMembershipIds === null ? null : new Set(frozenAttentionMembershipIds);
+
+  const ATTENTION_ROOT_MAX_PAGES = 20;
+  const collectedAttentionRootRows: SummaryRow[] = [];
+  let attentionRootDrained = false;
+  for (let page = 0; page < ATTENTION_ROOT_MAX_PAGES; page += 1) {
+    const offset = page * ROW_PAGE_SIZE;
+    const result = await client
+      .from("recommended_actions")
+      .select("*")
+      .eq("workspace_id", workspaceId)
+      .eq("project_id", projectId)
+      .not("governance_event_id", "is", null)
+      .eq("status", "proposed")
+      // The snapshot predicate. Without a trustworthy `asOf` the read is still performed —
+      // the PM sees every open item — but it can prove nothing, and `governedAttentionComplete`
+      // below stays false rather than claiming a completeness it cannot demonstrate.
+      .lte("created_at", attentionSnapshotAt ?? "9999-12-31T23:59:59.999Z")
+      .lte("updated_at", attentionSnapshotAt ?? "9999-12-31T23:59:59.999Z")
+      // TOTAL server-side order, applied BEFORE `range`. `created_at` alone is not unique,
+      // and a non-unique ORDER BY leaves tied rows free to land in a different sequence on
+      // each page request — which silently duplicates one row across a page boundary and
+      // skips another. Sorting after the fact cannot recover a row that was never returned,
+      // so the tie-break has to be here, on the primary key, where the database applies it.
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: true })
+      .range(offset, offset + ROW_PAGE_SIZE - 1);
+    if (result.error) throw new Error(`load_operational_summary: ${result.error.message}`);
+    const rows = (result.data ?? []) as unknown as SummaryRow[];
+    collectedAttentionRootRows.push(...rows);
+    // A short page is the last page.
+    if (rows.length < ROW_PAGE_SIZE) {
+      attentionRootDrained = true;
+      break;
+    }
+  }
+  /**
+   * Canonical Recommendations, not query rows.
+   *
+   * Rows are what a paged read returns; Recommendations are what the project has. Counting
+   * rows would let a duplicate delivered across a page boundary stand in for a distinct
+   * open item and make an incomplete set look complete.
+   */
+  const openGovernedRecommendations = (() => {
+    const byId = new Map<string, SummaryRow>();
+    for (const row of collectedAttentionRootRows) {
+      const id = String(row.id);
+      // A Recommendation the assurance statement did not name is not a member of the
+      // snapshot, however its timestamps read. This is the gate a late-committing insert
+      // cannot pass — the exact substitution that made cardinality equality meaningless.
+      if (frozenAttentionMembership !== null && !frozenAttentionMembership.has(id)) continue;
+      byId.set(id, row);
+    }
+    return [...byId.values()].sort((a, b) => {
+      const at = String(b.created_at ?? "").localeCompare(String(a.created_at ?? ""));
+      return at !== 0 ? at : String(a.id ?? "").localeCompare(String(b.id ?? ""));
+    });
+  })();
+
+  /**
+   * Project-wide open count, from the assurance RPC — the same aggregate the server already
+   * computes over `recommended_actions` with `status = 'proposed'`. Never counted from a
+   * presentation window, because counting a window is how this defect arose.
+   */
+  const assuranceSummary = assuranceSnapshot;
+  const governedAttentionTotal = Number(assuranceSummary?.openRecommendations ?? 0);
+  /**
+   * An explicit ceiling on how large an authoritative membership set this read will attempt.
+   *
+   * The database deliberately does not cap `openRecommendationIds` — a silent cap would
+   * truncate authoritative membership while still looking authoritative. The bound lives
+   * here instead, and crossing it makes completeness UNPROVEN rather than truncating a set
+   * that is then called complete. It matches what the loader below can actually drain.
+   */
+  const ATTENTION_MEMBERSHIP_CEILING = ATTENTION_ROOT_MAX_PAGES * ROW_PAGE_SIZE;
+  /** Members the read did not produce. Non-empty means the answer is not the snapshot. */
+  const loadedAttentionIds = new Set(openGovernedRecommendations.map((row) => String(row.id)));
+  const missingAttentionMembers =
+    frozenAttentionMembershipIds === null
+      ? null
+      : frozenAttentionMembershipIds.filter((id) => !loadedAttentionIds.has(id));
+  /**
+   * Completeness is PROVEN by IDENTITY. A request that succeeded says nothing about what it
+   * returned, and neither does a matching count: equal cardinality over a substituted set is
+   * exactly the defect this replaced. Every loaded row is a member (the filter above), so
+   * proving that no member is missing proves the loaded set IS the snapshot.
+   */
+  const governedAttentionComplete =
+    // No server instant to anchor the read means no proof, whatever the counts say.
+    attentionSnapshotAt !== null &&
+    // No named membership means membership was never frozen — absence of proof, not proof.
+    frozenAttentionMembershipIds !== null &&
+    missingAttentionMembers !== null &&
+    // The count and the ids come from ONE statement, so they must agree; disagreement means
+    // the projection is not the one this proof assumes and nothing may be claimed from it.
+    frozenAttentionMembershipIds.length === governedAttentionTotal &&
+    frozenAttentionMembershipIds.length <= ATTENTION_MEMBERSHIP_CEILING &&
+    attentionRootDrained &&
+    missingAttentionMembers.length === 0;
+  // `openGovernedRecommendations` is the DEDUPED, membership-filtered set, so the check
+  // above is over distinct canonical Recommendations that are all snapshot members. A page
+  // boundary that returned the same row twice collapses to one rather than padding a count,
+  // and the member it displaced is then reported missing.
+
+  /*
+   * Reconciliation lookup: the Recommendations the recent Decisions point at.
+   *
+   * An attention root can be older than every history window. Deciding it terminally drops
+   * it out of the open set, and it was never in the newest-30 Recommendation window — so
+   * the drawer the PM was just using would resolve to nothing at the exact moment their
+   * decision succeeded. Fetching by the `recommendation_id` the new Decision carries brings
+   * it back for LOOKUP only; queue membership is still decided by `selectPendingAttention`,
+   * so nothing decided re-enters Needs You.
+   */
+  const decisionRecommendationIds = [
+    ...new Set(((decisions.data ?? []) as unknown as SummaryRow[]).map((row) => String(row.recommendation_id ?? "")).filter(Boolean)),
+  ];
+  const reconciliationRecommendations = (
+    await linkedRows("recommended_actions", "id", decisionRecommendationIds)
+  ).filter((row) => row.governance_event_id !== null && row.governance_event_id !== undefined);
+
+  /*
+   * Decision history for the OPEN attention roots, by exact `recommendation_id`.
+   *
+   * `escalated` and `needs_more_evidence` write a real Decision and return the
+   * Recommendation to `proposed`, so an item that still needs the PM can legitimately carry
+   * previous judgment — and on an old root that Decision can be older than the newest-30
+   * Decision window. Reading history from the window alone silently drops it.
+   */
+  /*
+   * History is fetched for the open roots AND the reconciled ones.
+   *
+   * Rooting it on the open set alone lost history at exactly the moment it mattered most:
+   * an old Recommendation with a prior `escalated` Decision, terminally decided now, leaves
+   * the open set and survives only through reconciliation — and its earlier judgment, older
+   * than the Decision window, then had nothing fetching it. The drawer stayed open and the
+   * PM's own previous reasoning vanished from it.
+   */
+  const attentionDecisionHistoryRecommendationIds = [
+    ...new Set([
+      ...openGovernedRecommendations.map((row) => String(row.id)),
+      ...reconciliationRecommendations.map((row) => String(row.id)),
+    ]),
+  ];
+  const governedAttentionDecisions = await linkedRows(
+    "operational_decision_records",
+    "recommendation_id",
+    attentionDecisionHistoryRecommendationIds,
+  );
+  // Their frozen evidence snapshots, so the technical disclosure keeps its provenance.
+  // `decision_evidence_links` carries no tenant columns; its scope comes from these
+  // Decision ids, which are already workspace- and project-scoped, plus RLS.
+  const governedAttentionDecisionEvidenceLinks = await linkedRowsByReference(
+    "decision_evidence_links",
+    "decision_record_id",
+    [...new Set(governedAttentionDecisions.map((row) => String(row.id)))],
+  );
+
+  /*
+   * Lineage is completed for the attention roots AND for the history window.
+   *
+   * The roots are what Needs You is built from. The history window is still needed so a
+   * drawer left open on a Recommendation can reconcile once a Decision makes it terminal
+   * and it leaves the open set (P2-11) — without its context that drawer would lose its
+   * evidence and authority the moment the decision landed.
+   */
+  const rootRecommendations: SummaryRow[] = (() => {
+    const byId = new Map<string, SummaryRow>();
+    for (const row of openGovernedRecommendations) byId.set(String(row.id), row);
+    for (const row of reconciliationRecommendations) {
+      if (!byId.has(String(row.id))) byId.set(String(row.id), row);
+    }
+    for (const row of (recommendations.data ?? []) as unknown as SummaryRow[]) {
+      if (!byId.has(String(row.id))) byId.set(String(row.id), row);
+    }
+    return [...byId.values()];
+  })();
+  const linkedGovernanceById = new Map(
+    (await linkedRows("governance_events", "id", [
+      ...new Set(rootRecommendations.map((row) => String(row.governance_event_id ?? "")).filter(Boolean)),
+    ])).map((row) => [String(row.id), row]),
+  );
+  const linkedRiskById = new Map(
+    (await linkedRows("risk_issue_records", "id", [
+      ...new Set(rootRecommendations.map((row) => String(row.risk_issue_id ?? "")).filter(Boolean)),
+    ])).map((row) => [String(row.id), row]),
+  );
+  const linkedSignalById = new Map(
+    (await linkedRows("operational_signals", "id", [
+      ...new Set([...linkedRiskById.values()].map((row) => String(row.signal_id ?? "")).filter(Boolean)),
+    ])).map((row) => [String(row.id), row]),
+  );
+  const linkedAttentionEvidenceById = new Map(
+    (await linkedRows("evidence_items", "id", [
+      ...new Set([...linkedSignalById.values()].map((row) => String(row.evidence_item_id ?? "")).filter(Boolean)),
+    ])).map((row) => [String(row.id), row]),
+  );
+
+  const governedAttentionContexts: GovernedAttentionContext[] = rootRecommendations.map((row) => {
+    const riskId = String(row.risk_issue_id ?? "");
+    const candidate = linkedGovernanceById.get(String(row.governance_event_id ?? "")) ?? null;
+    // The RPC selects the Governance Event by id AND `related_entity_id = risk_issue_id`.
+    // An event that does not satisfy both is not the one the write would resolve, so it is
+    // not treated as present here either.
+    const governanceEvent =
+      candidate && String(candidate.related_entity_id ?? "") === riskId ? candidate : null;
+    const riskIssue = linkedRiskById.get(riskId) ?? null;
+    const signal = riskIssue ? linkedSignalById.get(String(riskIssue.signal_id ?? "")) ?? null : null;
+    const evidence = signal ? linkedAttentionEvidenceById.get(String(signal.evidence_item_id ?? "")) ?? null : null;
+    return {
+      recommendationId: String(row.id),
+      governanceEvent,
+      riskIssue,
+      signal,
+      evidence,
+      lineageComplete: Boolean(governanceEvent && riskIssue && signal && evidence),
+      authorityRequired: governanceEvent ? String(governanceEvent.authority_required ?? "") || null : null,
+    };
   });
+  const attentionContextByRecommendationId = new Map(
+    governedAttentionContexts.map((context) => [context.recommendationId, context]),
+  );
+
+  /** Server-evaluated per-status authority, from the EXACT linked Governance Event. */
+  const withActorAuthority = (row: SummaryRow) => {
+    // The exact linked Governance Event, resolved by id — never the windowed map. The
+    // "baseline review" fallback now represents a Governance Event that genuinely does not
+    // exist, which is the only thing it was ever meant to represent.
+    const authorityRequired =
+      attentionContextByRecommendationId.get(String(row.id))?.authorityRequired ?? "baseline review";
+    const evaluations = (["accepted", "rejected", "modified", "escalated", "needs_more_evidence"] as DecisionStatus[]).map((status) => [status, evaluateOperationalDecisionAuthority({ actorRole, authorityRequired, decisionStatus: status })]);
+    return { ...row, actor_authority: Object.fromEntries(evaluations) };
+  };
+  // The history window keeps its own contract and its own membership; only the authority
+  // projection is shared, so both collections speak about authority the same way.
+  const safeRecommendations = ((recommendations.data ?? []) as unknown as SummaryRow[]).map(withActorAuthority);
+  const safeGovernedAttentionRecommendations = openGovernedRecommendations.map(withActorAuthority);
+  const safeReconciliationRecommendations = reconciliationRecommendations.map(withActorAuthority);
 
   const lineages = await getCompleteLineageProjection(client, workspaceId, projectId);
 
@@ -1854,8 +2257,15 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
     observations: allObservations,
     tasks: allTasks,
     executions: allExecutions,
+    governedAttentionRecommendations: safeGovernedAttentionRecommendations,
+    governedAttentionReconciliationRecommendations: safeReconciliationRecommendations,
+    governedAttentionDecisions,
+    governedAttentionDecisionEvidenceLinks,
+    governedAttentionComplete,
+    governedAttentionTotal,
+    governedAttentionContexts,
     lineages,
-    assurance: assuranceResult.data as OperationalSummary["assurance"],
+    assurance: assuranceSummary,
     // `userId` is the requesting actor's own id. P2-06 refuses a Material Action whose
     // source Decision was recorded by a different actor, so the experience needs it to
     // avoid offering a control the server would always deny. It is never authority.

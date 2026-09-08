@@ -325,10 +325,22 @@ test("P2-12 H5: P2-12 introduced no migration and no new API route, and no LATER
   // signature change, and it carries its own acceptance in
   // tests/p2-14-intake-source-boundary.test.mjs and scripts/check-p2-14-db.mjs.
   //
+  // UX-W3 / CODEX-P2-02 ships exactly one: a forward-only `create or replace` of
+  // `get_operational_assurance_summary` that adds ONE key, `openRecommendationIds`,
+  // computed with exactly the predicates the existing `openRecommendations` count already
+  // uses and inside the SAME `select jsonb_build_object(...)` — so membership and the count
+  // come from one statement snapshot. `asOf` is `now()`, a wall-clock reading rather than a
+  // token of MVCC visibility, so timestamps could not decide snapshot membership and equal
+  // cardinality could not prove it. No schema, RLS, policy, trigger, data, signature,
+  // decision or authorization change; same `stable security invoker` and pinned
+  // `search_path`, with the PUBLIC revoke and `authenticated` grant re-issued. It carries
+  // its own acceptance in tests/ux-w3-needs-you-interaction-quality.test.mjs.
+  //
   // Exact full paths only: no wildcard, no timestamp prefix, no directory grant. Anything
   // not named here still fails this assertion, which is the protection P2-12 actually needs.
   const REVIEWED_LATER_MIGRATIONS = new Set([
     "supabase/migrations/20260907000000_p2_14_intake_source_classification_hardening.sql",
+    "supabase/migrations/20260908000000_p2_02_attention_membership_snapshot.sql",
   ]);
   const unreviewedMigrations = changed
     .filter((file) => file.startsWith("supabase/migrations/"))
@@ -839,9 +851,34 @@ test("P2-12 M7b: linked rows are fetched by exact persisted reference, not a wid
     "internal_task_executions:in:task_id",
     "canonical_task_outcomes:in:task_id",
     "canonical_outcome_observations:in:outcome_id",
+    // UX-W3 extends the same discipline UPSTREAM. The attention surface was reading
+    // "does this Recommendation's Evidence exist?" and "which authority does it need?" out
+    // of independently truncated windows, so an out-of-window row read as canonical
+    // absence — the exact defect this test exists to prevent, on the other side of the
+    // Decision. It is completed the same way: a bounded root set (the recommendation
+    // window) and exact-id reads through the same helper.
+    //
+    // The Recommendation the recent Decision points at, so a drawer opened on an old
+    // attention root still resolves after the Decision removes it from the open set.
+    "recommended_actions:in:id",
+    // Decision history for the attention roots is rooted on open UNION reconciled
+    // Recommendations (CODEX-P2-03), so a reconciled root's own history is fetched here —
+    // and its frozen evidence snapshots with it.
+    "operational_decision_records:in:recommendation_id",
+    "decision_evidence_links:in:decision_record_id",
+    // Only `governance_events` follows because this fixture's Recommendation carries no
+    // `risk_issue_id`, so the risk / signal / evidence id sets stay empty — `linkedRows`
+    // returning early on an empty id set is the bound working.
+    "governance_events:in:id",
     // The probe run that proves the windows alone would have dropped the chain.
     "decision_evidence_links:in:decision_record_id",
   ]);
+  // Every upstream completion is an exact-id read, never a widened window or a fuzzy join.
+  for (const table of ["governance_events", "risk_issue_records", "operational_signals", "evidence_items", "recommended_actions", "operational_decision_records"]) {
+    // The id column varies (`id`, or `recommendation_id` for the attention Decision read);
+    // what must hold is that every completion goes through the chunked/paged helper.
+    assert.match(service, new RegExp(`linkedRows\\(\\s*"${table}",\\s*"(id|recommendation_id)"`), `${table} is completed by exact reference`);
+  }
   // The by-id reads union with the windowed ones rather than replacing them, so no
   // existing surface loses a row it used to see.
   assert.match(service, /const unionById = \(orderColumn: string, \.\.\.groups/);

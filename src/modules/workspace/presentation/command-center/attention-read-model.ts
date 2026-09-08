@@ -134,7 +134,8 @@ export type AttentionEvidenceQuality = {
   /** `LIVE` or `DEMO_FIXTURE` straight from the persisted row — never inferred. */
   fixtureState: string | null;
   isFixture: boolean;
-  /** True when nothing supports the recommendation, so it cannot be safely evaluated. */
+  /** True when the canonical lineage the write requires is incomplete — mirrors
+   *  `governedLineageComplete` on the item, and is never a windowed read. */
   evidenceMissing: boolean;
 };
 
@@ -177,6 +178,10 @@ export type CanonicalAttentionItem = {
   severity: string | null;
   tone: StatusTone;
   signalType: string | null;
+  /** The detected signal's own persisted `summary` — a plain sentence written by the
+   *  deterministic detector, which reads to a PM far better than the recommendation text
+   *  alone. Null when the Recommendation has no linked signal. */
+  signalSummary: string | null;
   riskIssueType: string | null;
   riskIssueStatus: string | null;
   provenance: AttentionProvenance;
@@ -189,6 +194,16 @@ export type CanonicalAttentionItem = {
   /** Decisions already recorded against this Recommendation, newest first. */
   decisions: AttentionDecisionRecord[];
   terminalDecision: AttentionDecisionRecord | null;
+  /**
+   * Whether every canonical node `record_operational_decision` requires actually exists
+   * for this Recommendation — Governance Event, Risk/Issue, Signal and Evidence.
+   *
+   * Resolved server-side by exact persisted reference (`governedAttentionContexts`), so it
+   * is a statement about the database rather than about which rows a presentation window
+   * happened to include. When the write would be refused for lineage reasons, this is
+   * false and no decision may be offered however much authority the actor holds.
+   */
+  governedLineageComplete: boolean;
   /** `awaiting_decision` while the Recommendation is open; `decided` once terminally decided. */
   state: "awaiting_decision" | "decided";
 };
@@ -280,7 +295,37 @@ export function buildCanonicalAttention(summary: OperationalSummary | undefined)
   const signalById = new Map((summary.signals ?? []).map((row) => [String(row.id), row]));
   const riskById = new Map((summary.risksIssues ?? []).map((row) => [String(row.id), row]));
   const governanceById = new Map((summary.governanceEvents ?? []).map((row) => [String(row.id), row]));
-  const evidenceLinks = summary.evidenceLinks ?? [];
+  /**
+   * Frozen evidence snapshots available to attention items.
+   *
+   * The attention-specific links first, then the recent window, deduped by the pair that
+   * identifies a link — a Decision and the Evidence it froze. `summary.evidenceLinks` keeps
+   * its own contract; this only widens what a governed attention item can LOOK UP.
+   */
+  const evidenceLinks = (() => {
+    const byIdentity = new Map<string, AnyRecord>();
+    for (const link of [...(summary.governedAttentionDecisionEvidenceLinks ?? []), ...(summary.evidenceLinks ?? [])]) {
+      byIdentity.set(`${String(link.decision_record_id)}::${String(link.evidence_item_id)}`, link);
+    }
+    return [...byIdentity.values()];
+  })();
+
+  /**
+   * Decisions available to attention items.
+   *
+   * `summary.decisions` is the newest-30 project-wide window, and an open root's own
+   * `escalated` / `needs_more_evidence` history can be older than it — Project Memory and
+   * every other consumer keep that window exactly as it is, while a governed attention item
+   * resolves its history from the exact-by-recommendation projection unioned in. Deduped by
+   * canonical Decision id, so a Decision present in both is counted once.
+   */
+  const attentionDecisions = (() => {
+    const byId = new Map<string, AnyRecord>();
+    for (const row of [...(summary.governedAttentionDecisions ?? []), ...(summary.decisions ?? [])]) {
+      byId.set(String(row.id), row);
+    }
+    return [...byId.values()];
+  })();
 
   // Risk/Issue -> Signal is the only reliable direction back down the chain: governance events
   // reference the risk, and the risk references the signal that produced it.
@@ -290,29 +335,91 @@ export function buildCanonicalAttention(summary: OperationalSummary | undefined)
     if (signalId) riskBySignalId.set(signalId, risk);
   }
 
+  /**
+   * The server's exact-reference resolution of each Recommendation's upstream lineage.
+   *
+   * This is the authority for "does this node exist". The windowed collections below are a
+   * FALLBACK only, for payloads that predate the projection (older clients, fixtures): a
+   * row's absence from a truncated window has never been evidence that it is absent from
+   * the project, and must never again be read as such.
+   */
+  const attentionContextById = new Map(
+    (summary.governedAttentionContexts ?? []).map((context) => [context.recommendationId, context]),
+  );
+  /**
+   * The Recommendations this projection walks.
+   *
+   * `governedAttentionRecommendations` is the authoritative OPEN set, fetched for Needs You
+   * and paged rather than windowed. `summary.recommendations` is the recent history window,
+   * and it is unioned in — not as an attention source, but because a drawer left open on a
+   * Recommendation must still resolve after a Decision makes it terminal and drops it out
+   * of the open set (P2-11). Deduped by canonical id, so no item can appear twice.
+   *
+   * Without the projection (older payload, fixture) the history window is all there is, and
+   * the surface's own completeness reporting says the answer may be partial.
+   */
+  const attentionRoots = (() => {
+    const byId = new Map<string, AnyRecord>();
+    for (const row of summary.governedAttentionRecommendations ?? []) byId.set(String(row.id), row);
+    // Recommendations the recent Decisions point at. An old root that has just been decided
+    // has left the open set and was never in the history window, so this is the only thing
+    // that keeps its drawer resolvable at the moment the decision lands.
+    for (const row of summary.governedAttentionReconciliationRecommendations ?? []) {
+      if (!byId.has(String(row.id))) byId.set(String(row.id), row);
+    }
+    for (const row of summary.recommendations ?? []) {
+      if (!byId.has(String(row.id))) byId.set(String(row.id), row);
+    }
+    return [...byId.values()];
+  })();
+
   const items: CanonicalAttentionItem[] = [];
 
-  for (const recommendation of summary.recommendations ?? []) {
+  for (const recommendation of attentionRoots) {
     const recommendationId = String(recommendation.id);
-    const governance = str(recommendation.governance_event_id)
-      ? governanceById.get(String(recommendation.governance_event_id))
-      : undefined;
+    const context = attentionContextById.get(recommendationId);
+
+    // Exact linked rows where the server resolved them; the windows only fill in for a
+    // payload that carries no projection at all.
+    const governance =
+      (context?.governanceEvent as AnyRecord | null | undefined) ??
+      (context
+        ? undefined
+        : str(recommendation.governance_event_id)
+          ? governanceById.get(String(recommendation.governance_event_id))
+          : undefined);
 
     // Prefer the recommendation's own risk link; fall back to the governance event's related entity.
     const riskId = str(recommendation.risk_issue_id) ?? str(governance?.related_entity_id);
-    const risk = riskId ? riskById.get(riskId) : undefined;
+    const risk =
+      (context?.riskIssue as AnyRecord | null | undefined) ??
+      (context ? undefined : riskId ? riskById.get(riskId) : undefined);
     const signalId = str(risk?.signal_id);
-    const signal = signalId ? signalById.get(signalId) : undefined;
+    const signal =
+      (context?.signal as AnyRecord | null | undefined) ??
+      (context ? undefined : signalId ? signalById.get(signalId) : undefined);
     const evidenceId = str(signal?.evidence_item_id);
-    const evidence = evidenceId ? evidenceById.get(evidenceId) : undefined;
+    const evidence =
+      (context?.evidence as AnyRecord | null | undefined) ??
+      (context ? undefined : evidenceId ? evidenceById.get(evidenceId) : undefined);
 
-    const decisions = (summary.decisions ?? [])
+    /**
+     * Does the canonical lineage `record_operational_decision` requires actually exist?
+     *
+     * From the server's exact-id resolution when it is available. Without it, the honest
+     * answer is that this payload cannot tell — and the surface must not claim the write
+     * would be refused on the strength of a windowed read, so it assumes complete.
+     */
+    const lineageComplete = context ? context.lineageComplete : true;
+
+    const decisions = attentionDecisions
       .filter((row) => str(row.recommendation_id) === recommendationId)
       .map((row) => buildDecisionRecord(row, evidenceLinks))
       .sort((a, b) => String(b.recordedAt ?? "").localeCompare(String(a.recordedAt ?? "")));
     const terminalDecision = decisions.find((row) => row.terminal) ?? null;
 
-    const authorityRequired = str(governance?.authority_required) ?? "an authorized reviewer";
+    const authorityRequired =
+      (context?.authorityRequired ?? null) ?? str(governance?.authority_required) ?? "an authorized reviewer";
     const decisionOptions = buildDecisionOptions(recommendation, authorityRequired);
     const confidence = num(evidence?.confidence_score);
 
@@ -324,12 +431,14 @@ export function buildCanonicalAttention(summary: OperationalSummary | undefined)
       signalId: signalId ?? null,
       riskIssueId: riskId ?? null,
       evidenceIds: evidenceId ? [evidenceId] : [],
+      governedLineageComplete: lineageComplete,
       title: str(recommendation.recommendation) ?? "Review recommendation",
       recommendationStatus: String(recommendation.status ?? "proposed"),
       why: str(risk?.rationale) ?? str(signal?.rationale) ?? str(governance?.explanation) ?? "This needs a human decision before it proceeds.",
       severity: str(signal?.severity),
       tone: severityTone(signal?.severity),
       signalType: str(signal?.signal_type),
+      signalSummary: str(signal?.summary),
       riskIssueType: str(risk?.type),
       riskIssueStatus: str(risk?.status),
       provenance: {
@@ -356,7 +465,9 @@ export function buildCanonicalAttention(summary: OperationalSummary | undefined)
         staleAt: str(evidence?.stale_at),
         fixtureState: str(evidence?.fixture_state),
         isFixture: str(evidence?.fixture_state) === "DEMO_FIXTURE",
-        evidenceMissing: !evidence,
+        // Canonical absence, from the server's exact-reference resolution — never
+        // "this row was not in the newest-20 evidence window".
+        evidenceMissing: !lineageComplete,
       },
       governance: {
         governanceEventId: str(recommendation.governance_event_id),

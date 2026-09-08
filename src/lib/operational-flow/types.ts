@@ -56,6 +56,21 @@ export type OperationalAssuranceSummary = {
   decisionRequiredCount: number;
   violationsCount: number;
   openRecommendations: number;
+  /**
+   * Canonical ids of exactly the Recommendations `openRecommendations` counted, produced by
+   * the SAME statement — therefore the same snapshot.
+   *
+   * `asOf` is `now()`, a wall-clock reading, not a token of MVCC visibility: a transaction
+   * that began before `asOf` can commit after the assurance statement's snapshot, and its
+   * row then satisfies `created_at <= asOf AND updated_at <= asOf` for every later read
+   * while never having been counted. Timestamps therefore cannot decide membership, and
+   * cardinality cannot prove it. These ids can.
+   *
+   * Optional because a database that has not yet applied
+   * `20260908000000_p2_02_attention_membership_snapshot.sql` does not return it. Absence
+   * means membership is unfrozen, and completeness is then UNPROVEN rather than assumed.
+   */
+  openRecommendationIds?: string[];
   unresolvedRisksIssues: number;
   evidenceLinkedDecisionsCount: number;
   evidenceWithoutSignalCount: number;
@@ -196,6 +211,28 @@ export type AuditReconstructionItem = {
   relationship: "causation" | "correlation_only" | "unlinked";
 };
 
+/**
+ * One governed Recommendation's upstream canonical lineage, resolved by exact reference
+ * rather than read out of a presentation window.
+ *
+ * `lineageComplete` mirrors exactly what `record_operational_decision` requires before it
+ * evaluates authority: the Governance Event (matching this Recommendation's risk), the
+ * Risk/Issue, the Signal and the Evidence must all exist. It is a statement about the
+ * database, not about what a page happened to load.
+ */
+export type GovernedAttentionContext = {
+  recommendationId: string;
+  governanceEvent: Record<string, unknown> | null;
+  riskIssue: Record<string, unknown> | null;
+  signal: Record<string, unknown> | null;
+  evidence: Record<string, unknown> | null;
+  /** True when every node the canonical write requires exists. */
+  lineageComplete: boolean;
+  /** The exact linked Governance Event's `authority_required`. Null ONLY when that event
+   *  genuinely does not exist — never because it fell outside a window. */
+  authorityRequired: string | null;
+};
+
 export type OperationalSummary = {
   /**
    * The server's own clock reading when this summary was produced, ISO-8601.
@@ -238,6 +275,70 @@ export type OperationalSummary = {
   /** `internal_task_executions` rows (P2-08). A Task's execution history is a
    *  separate record from the Task itself and is never collapsed into it. */
   executions?: Array<Record<string, unknown>>;
+  /**
+   * Authoritative upstream lineage for each governed Recommendation in the bounded
+   * recommendation window — the ONE thing the windowed collections cannot answer.
+   *
+   * Every other collection above is an independently truncated presentation window, and
+   * absence from one is not absence from the project. `record_operational_decision`
+   * resolves Governance -> Risk -> Signal -> Evidence by exact persisted reference and
+   * refuses only when a node genuinely does not exist, so a surface that decides
+   * "the evidence is missing" from the newest-20 evidence window will tell a PM their
+   * decision would be refused when the server would happily accept it.
+   *
+   * This carries that resolution, completed by exact id. It is deliberately SEPARATE from
+   * `evidence`, `signals`, `risksIssues` and `governanceEvents`: those keep their
+   * recent-window meaning, which "What changed" and "PMFreak is monitoring" depend on, and
+   * nothing here is unioned into them.
+   */
+  /**
+   * The governed Recommendations that currently need human attention — every one whose
+   * `status` is `proposed`, fetched for Needs You specifically.
+   *
+   * DISTINCT from `recommendations` above, which is a recent HISTORY window across all
+   * statuses. Thirty newer accepted/rejected/modified Recommendations push an older
+   * still-open one out of that window, and an attention queue rooted on it would then show
+   * nothing and tell the PM they are clear while a real decision waited.
+   */
+  governedAttentionRecommendations?: Array<Record<string, unknown>>;
+  /**
+   * Whether the set above provably represents every open governed Recommendation in the
+   * project, checked against the assurance RPC's own project-wide count.
+   *
+   * A successful request is NOT completeness. This is false whenever fewer open
+   * Recommendations were loaded than the project actually has, and the surface must then
+   * never state a definitive total or tell the PM they are clear.
+   */
+  governedAttentionComplete?: boolean;
+  /** Project-wide count of open governed Recommendations, from `assurance.openRecommendations`
+   *  — never counted from a presentation window. */
+  governedAttentionTotal?: number;
+  /**
+   * Governed Recommendations referenced by the Decisions already in `decisions`, fetched by
+   * exact canonical id.
+   *
+   * Needed because the attention root reaches Recommendations older than every history
+   * window. Deciding one terminally removes it from the open set, and it was never in the
+   * newest-30 Recommendation window — so without this the drawer the PM just used would
+   * resolve to nothing at the moment their decision landed. This is a LOOKUP projection:
+   * `selectPendingAttention` still decides queue membership, so a decided Recommendation
+   * never re-enters Needs You.
+   */
+  governedAttentionReconciliationRecommendations?: Array<Record<string, unknown>>;
+  /**
+   * Decisions recorded against the OPEN attention roots, fetched by exact
+   * `recommendation_id`.
+   *
+   * `decisions` is the newest-30 project-wide window. `escalated` and
+   * `needs_more_evidence` write a real Decision and return the Recommendation to
+   * `proposed`, so an open item legitimately carries history — and that history can be
+   * older than the window. Reading it from the window alone loses it.
+   */
+  governedAttentionDecisions?: Array<Record<string, unknown>>;
+  /** Frozen evidence snapshots for `governedAttentionDecisions`, by exact
+   *  `decision_record_id`, so the technical disclosure keeps its provenance. */
+  governedAttentionDecisionEvidenceLinks?: Array<Record<string, unknown>>;
+  governedAttentionContexts?: GovernedAttentionContext[];
   lineages?: CompleteLineageProjection[];
   assurance: OperationalAssuranceSummary;
   actor: { role: string | null; userId?: string | null; canCreateEvidence: boolean };

@@ -198,7 +198,7 @@ const TABLES: Record<string, Row[]> = {
   ],
   decision_evidence_links: [{ decision_record_id: "dec-old", evidence_item_id: "ev-old" }],
   governance_events: [scoped({ id: "gov-old", authority_required: "baseline review", created_at: OLD })],
-  recommended_actions: [scoped({ id: "rec-old", recommendation: "Old recommendation", governance_event_id: "gov-old", created_at: OLD })],
+  recommended_actions: [scoped({ id: "rec-old", recommendation: "Old recommendation", governance_event_id: "gov-old", created_at: OLD, updated_at: OLD })],
   workspace_memberships: [{ workspace_id: WORKSPACE, user_id: ACTOR, role: "owner" }],
 };
 
@@ -209,6 +209,7 @@ type QueryBuilder = {
   select: (columns: string) => QueryBuilder;
   eq: (column: string, value: unknown) => QueryBuilder;
   in: (column: string, values: unknown[]) => QueryBuilder;
+  lte: (column: string, value: unknown) => QueryBuilder;
   not: (column: string, operator: string, value: unknown) => QueryBuilder;
   is: (column: string, value: unknown) => QueryBuilder;
   order: (column: string, options?: { ascending?: boolean }) => QueryBuilder;
@@ -232,7 +233,12 @@ function makeClient() {
     const ins: Array<[string, unknown[]]> = [];
     const notNull: string[] = [];
     const isNull: string[] = [];
-    let orderColumn: string | null = null;
+    const lte: Array<[string, unknown]> = [];
+    // Ordered clauses in CALL order, not a single column. A `.order(a).order(b)` chain is a
+    // lexicographic sort in PostgREST, and modelling only the last column would make this
+    // stub unable to see the very defect multi-column ordering exists to prevent: tied rows
+    // drifting across a page boundary.
+    const orderBy: Array<{ column: string; ascending: boolean }> = [];
     let limit: number | null = null;
     let rangeFrom: number | null = null;
     let rangeTo: number | null = null;
@@ -250,10 +256,24 @@ function makeClient() {
       let rows = [...(TABLES[table] ?? [])];
       for (const [column, value] of eqs) rows = rows.filter((row) => String(read(column, row)) === String(value));
       for (const [column, values] of ins) rows = rows.filter((row) => values.map(String).includes(String(read(column, row))));
+      for (const [column, value] of lte) {
+        rows = rows.filter((row) => {
+          const cell = read(column, row);
+          return cell !== null && cell !== undefined && String(cell) <= String(value);
+        });
+      }
       for (const column of notNull) rows = rows.filter((row) => read(column, row) !== null && read(column, row) !== undefined);
       for (const column of isNull) rows = rows.filter((row) => read(column, row) === null || read(column, row) === undefined);
-      if (orderColumn) {
-        rows.sort((a, b) => String(b[orderColumn!] ?? "").localeCompare(String(a[orderColumn!] ?? "")));
+      if (orderBy.length > 0) {
+        rows.sort((a, b) => {
+          for (const { column, ascending } of orderBy) {
+            const left = String(a[column] ?? "");
+            const right = String(b[column] ?? "");
+            const compared = ascending ? left.localeCompare(right) : right.localeCompare(left);
+            if (compared !== 0) return compared;
+          }
+          return 0;
+        });
       }
       if (limit !== null) rows = rows.slice(0, limit);
       // PostgREST applies range AFTER filter+order, exactly as the service assumes.
@@ -266,6 +286,7 @@ function makeClient() {
       select: () => chain,
       eq: (column: string, value: unknown) => { eqs.push([column, value]); filters.push(`eq:${column}`); return chain; },
       in: (column: string, values: unknown[]) => { ins.push([column, values]); filters.push(`in:${column}`); return chain; },
+      lte: (column: string, value: unknown) => { lte.push([column, value]); filters.push(`lte:${column}`); return chain; },
       is: (column: string, value: unknown) => {
         if (value !== null) throw new Error(`unsupported_stub_filter: is(${column}, ${String(value)})`);
         isNull.push(column);
@@ -281,7 +302,10 @@ function makeClient() {
         notNull.push(column);
         return chain;
       },
-      order: (column: string) => { orderColumn = column; return chain; },
+      order: (column: string, options?: { ascending?: boolean }) => {
+        orderBy.push({ column, ascending: options?.ascending !== false });
+        return chain;
+      },
       limit: (value: number) => { limit = value; return chain; },
       range: (from: number, to: number) => { rangeFrom = from; rangeTo = to; return chain; },
       maybeSingle: async () => { const result = resolve(); return { data: result.data[0] ?? null, error: null }; },
@@ -426,6 +450,7 @@ async function largeFanoutProof() {
     const eqs: Array<[string, unknown]> = [];
     let ins: [string, unknown[]] | null = null;
     let rangeFrom: number | null = null, rangeTo: number | null = null, limit: number | null = null;
+    const lteBounds: Array<[string, unknown]> = [];
     const read = (column: string, row: Row): unknown => {
       const arrow = column.split("->>");
       if (arrow.length === 1) return row[column];
@@ -434,6 +459,12 @@ async function largeFanoutProof() {
     const resolve = () => {
       let rows = [...(tables[table] ?? [])];
       for (const [c, v] of eqs) rows = rows.filter((r) => String(read(c, r)) === String(v));
+      for (const [c, v] of lteBounds) {
+        rows = rows.filter((r) => {
+          const cell = read(c, r);
+          return cell !== null && cell !== undefined && String(cell) <= String(v);
+        });
+      }
       if (ins) {
         requests.push({ table, idCount: ins[1].length });
         const set = new Set(ins[1].map(String));
@@ -447,6 +478,10 @@ async function largeFanoutProof() {
       select: () => chain,
       eq: (c: string, v: unknown) => { eqs.push([c, v]); return chain; },
       in: (c: string, v: unknown[]) => { ins = [c, v]; return chain; },
+      // The attention root freezes membership with `created_at`/`updated_at` bounds; this
+      // fan-out proof has no `recommended_actions` rows, so the filter changes nothing here
+      // — but the stub must model the call rather than crash on it.
+      lte: (c: string, v: unknown) => { lteBounds.push([c, v]); return chain; },
       is: () => chain,
       not: () => chain,
       order: () => chain,

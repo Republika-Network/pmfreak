@@ -25,6 +25,15 @@ export type AttentionSourceRead = {
   loading: boolean;
   /** Resolved with a failure. */
   failed: boolean;
+  /**
+   * Resolved successfully but KNOWN not to be the whole answer.
+   *
+   * A request finishing says nothing about whether it returned everything. The governed
+   * source proves its own completeness against the project-wide open count, and when that
+   * proof fails the surface must keep showing what it has while refusing to state a total
+   * or call the PM clear.
+   */
+  partial?: boolean;
 };
 
 export type AttentionCompleteness = {
@@ -32,6 +41,8 @@ export type AttentionCompleteness = {
   loading: boolean;
   /** Any source failed. A failure is never an empty success. */
   failed: boolean;
+  /** Any source resolved but returned less than it knows exists. */
+  partial: boolean;
   /**
    * Every source resolved successfully. ONLY when this is true may the surface state a
    * definitive count, or tell the PM there is nothing waiting on them.
@@ -44,10 +55,15 @@ export type AttentionCompleteness = {
 export function assessAttentionCompleteness(sources: AttentionSourceRead[]): AttentionCompleteness {
   const loading = sources.some((source) => source.loading);
   const failed = sources.some((source) => source.failed);
+  const partial = sources.some((source) => source.partial === true);
   return {
     loading,
     failed,
-    complete: !loading && !failed,
-    unresolved: sources.filter((source) => source.loading || source.failed).map((source) => source.label),
+    partial,
+    // A known-partial source is not a complete answer, however cleanly its request finished.
+    complete: !loading && !failed && !partial,
+    unresolved: sources
+      .filter((source) => source.loading || source.failed || source.partial === true)
+      .map((source) => source.label),
   };
 }

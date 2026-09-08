@@ -229,7 +229,13 @@ export function CommandCenterLayout({
 
   const needsYouReal = useMemo(() => deriveNeedsYou(flowData, handleDecide), [flowData]); // eslint-disable-line react-hooks/exhaustive-deps
   const governedAttentionAll = useMemo(() => deriveAllGovernedAttention(flowData, handleDecide), [flowData]); // eslint-disable-line react-hooks/exhaustive-deps
-  const raidNeedsYou = useMemo(() => deriveRaidNeedsYou(raidActions, handleRaidDecide), [raidActions]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The capability comes from the same server boundary the decision route enforces, so a
+  // read-only member sees these suggestions as Reviews rather than being offered a triage
+  // the server would refuse.
+  const raidNeedsYou = useMemo(
+    () => deriveRaidNeedsYou(raidActions?.actions, handleRaidDecide, raidActions?.canDecide === true),
+    [raidActions], // eslint-disable-line react-hooks/exhaustive-deps
+  );
   // P2-12: governed chains that continue past a recorded Decision, plus the canonical
   // evidence a PM may cite when recording an Observation.
   /** Pure: the later of the server's own reading for this payload and the last deadline
@@ -288,8 +294,25 @@ export function CommandCenterLayout({
    * The governed path and the RAID suggestion path stay separate business objects with
    * separate write paths — only the question "have we heard from everything?" is combined.
    */
+  /**
+   * The governed source proves its own completeness against the project-wide open count.
+   *
+   * The operational flow request finishing is not the same fact as "we have every governed
+   * item that needs you". `governedAttentionComplete` is the server's comparison of what it
+   * loaded against `assurance.openRecommendations`; when it is false there are open
+   * Recommendations this page has not got, and the surface must not state a total or say
+   * the PM is clear.
+   */
+  // Absence of proof is not proof. `governedAttentionComplete` is optional — an older or
+  // fixture payload carries no projection at all — so only an explicit `true` may authorise
+  // a definitive count or a clear state. Anything else is partial, never failed: the read
+  // succeeded, it simply cannot show its work.
+  const governedAttentionPartial = flowData !== undefined && flowData.governedAttentionComplete !== true;
+  const governedAttentionTotal = flowData?.governedAttentionTotal ?? null;
+  const governedShownCount = needsYouItems.filter((item) => item.kind === "governed_recommendation").length;
+
   const attention = assessAttentionCompleteness([
-    { label: "governed recommendations", loading: flowLoading, failed: Boolean(flowError) },
+    { label: "governed recommendations", loading: flowLoading, failed: Boolean(flowError), partial: governedAttentionPartial },
     { label: "suggested actions", loading: raidLoading, failed: Boolean(raidError) },
   ]);
   // Either attention read failing is an attention failure. It is reported as one rather
@@ -441,7 +464,10 @@ export function CommandCenterLayout({
       title: chain.title,
       why: chain.rationale ?? "A human decision was recorded for this recommendation.",
       evidence: leading?.action.evidenceReferenceIds ?? [],
+      // `boundary.statement` is the read model's factual conclusion about this chain, not
+      // advice — so it is labelled as state rather than as a recommendation.
       nextStep: chain.boundary.statement,
+      nextStepLabel: "Current state",
       badge: { tone: chain.status.tone, label: `Governed · ${chain.status.label}` },
       kindSummary: "The governed chain that follows your recorded decision.",
       chain: [
@@ -529,11 +555,24 @@ export function CommandCenterLayout({
             needsYouCount={needsYouCount}
             onSelectNeedsYou={handleNeedsYouSelect}
             attentionLoading={attention.loading}
+            attentionIncomplete={attention.partial}
             attentionErrorMessage={attentionErrorMessage}
             attentionIncompleteNote={
-              attention.loading && !attention.failed && needsYouItems.length > 0
-                ? `Still checking ${attention.unresolved.join(" and ")}.`
-                : null
+              // A known-partial governed read gets the server's own numbers, so the PM is
+              // told how much of the answer they are looking at rather than a vague caveat.
+              //
+              // "X of Y" is only said when X is genuinely fewer than Y. A partial answer can
+              // still hold Y items — a Recommendation outside the frozen snapshot is shown
+              // because it IS open, it simply is not the one the snapshot named — and
+              // phrasing that as "3 of 3" would claim exactly the coverage this read could
+              // not prove. That case gets the caveat instead of a number.
+              governedAttentionPartial && !attention.failed
+                ? governedAttentionTotal !== null && governedShownCount < governedAttentionTotal
+                  ? `Showing ${governedShownCount} of ${governedAttentionTotal} governed items needing review.`
+                  : "This list may not be every governed item needing review."
+                : attention.loading && !attention.failed && needsYouItems.length > 0
+                  ? `Still checking ${attention.unresolved.join(" and ")}.`
+                  : null
             }
             onRetryAttention={() => {
               void mutateFlow();

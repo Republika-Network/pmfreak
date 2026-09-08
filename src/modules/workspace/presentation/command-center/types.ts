@@ -106,7 +106,24 @@ export type DrawerContent = {
   title: string;
   why: string;
   evidence: string[];
+  /** What PMFreak proposes the PM do, in the source's own words. For a governed item this
+   *  is the canonical Recommendation text. Absent when the source has no separate
+   *  recommendation, and `nextStep` then carries it. */
+  recommendation?: string;
+  /** Procedural caveat that qualifies the recommendation — what recording a decision does
+   *  and does not do, what authority it needs. Rendered beneath the recommendation, never
+   *  as the recommendation. */
   nextStep: string;
+  /**
+   * Heading for `nextStep` when it stands alone.
+   *
+   * Not every drawer carries advice. A governed execution chain supplies
+   * `boundary.statement` here — "Internal work completed. The Outcome has no evidence-backed
+   * Observation yet" — which is a factual conclusion of the read model, not something
+   * PMFreak recommends. Labelling it as advice would turn a status into a suggestion, so
+   * such surfaces name their own heading and only a real recommendation gets the
+   * recommendation heading. */
+  nextStepLabel?: string;
   /** Real actions (e.g. on an agent card). No buttons are shown when omitted. */
   actions?: DrawerAction[];
   /** e.g. "Requires an authorized decision-maker for: ..." shown below the actions. */
@@ -148,6 +165,27 @@ export type NeedsYouItem = {
   kind?: "governed_recommendation" | "raid_suggestion";
   /** Present when this item is backed by a real operational-flow recommendation awaiting a decision. */
   recommendationId?: string;
+
+  /* ── Card presentation (UX-W3) ───────────────────────────────────────────────
+   * Every field below is projected from data the source already carries. None is
+   * generated, inferred from sentiment, or defaulted to a plausible-sounding value:
+   * where the source has nothing to say, the field is absent and the card omits that
+   * line rather than filling it in. `title` keeps its existing meaning for the drawer
+   * and every existing consumer. */
+
+  /** Card headline: what happened, in the PM's words. Falls back to `title` when the
+   *  source carries no separate subject. */
+  subject?: string;
+  /** Canonical severity of the underlying finding, e.g. "high". Absent when the source
+   *  records none — a card then shows no severity rather than an invented one. */
+  severity?: string | null;
+  /** One short PM-facing reason this needs judgment. */
+  whyItMatters?: string;
+  /** One compact line of supporting evidence. Never a hash, id or lineage internal. */
+  evidenceSummary?: string | null;
+  /** What PMFreak proposes the PM do. Absent when the source's recommendation is the
+   *  headline itself, so the card does not print the same sentence twice. */
+  recommendation?: string | null;
 };
 
 export type AgentActivity = "pulsing" | "shimmer" | "progress" | "idle";

@@ -223,18 +223,31 @@ export type RaidRecommendedAction = {
   created_at: string;
 };
 
-const raidActionsFetcher = async (url: string) => {
+/** The suggestions, plus whether this actor may actually decide them. */
+export type RaidRecommendedActionsRead = {
+  actions: RaidRecommendedAction[];
+  /** Server-evaluated project write capability — the same boundary the decision route
+   *  enforces. Absent capability means read-only, never "assume yes". */
+  canDecide: boolean;
+};
+
+const raidActionsFetcher = async (url: string): Promise<RaidRecommendedActionsRead> => {
   const response = await fetch(url, { cache: "no-store" });
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.error ?? "Unable to load recommended actions.");
-  return (payload.recommendedActions ?? []) as RaidRecommendedAction[];
+  return {
+    actions: (payload.recommendedActions ?? []) as RaidRecommendedAction[],
+    // Only an explicit `true` grants the controls. An older payload without the capability
+    // is treated as read-only: offering a write the server may refuse is the defect.
+    canDecide: payload.capabilities?.canDecide === true,
+  };
 };
 
 /** Proposed recommended actions materialized from RAID items extracted out of the
  *  project's real notes/documents — the triage queue for extracted intelligence. */
 export function useRaidRecommendedActions(projectId: string) {
   const endpoint = `/api/recommended-actions?projectId=${encodeURIComponent(projectId)}&status=proposed`;
-  return useSWR<RaidRecommendedAction[]>(projectId ? endpoint : null, raidActionsFetcher, {
+  return useSWR<RaidRecommendedActionsRead>(projectId ? endpoint : null, raidActionsFetcher, {
     refreshInterval: 30000,
     revalidateOnFocus: true,
   });
@@ -678,19 +691,39 @@ function toNeedsYouItem(
     ? null
     : `You can review this item, but your role cannot record a Decision on it. This governance rule requires: ${item.governance.authorityRequired}.`;
 
+  // Card presentation (UX-W3). The headline is the detected finding in the detector's own
+  // words when there is one, so the card leads with WHAT HAPPENED and states the canonical
+  // Recommendation separately as what PMFreak proposes. With no linked signal there is no
+  // separate subject, the Recommendation text stays the headline, and the recommendation
+  // line is dropped rather than printing the same sentence twice.
+  const subject = item.signalSummary ?? item.title;
+  const evidenceSummary = item.provenance.evidenceTitle ?? item.provenance.sourceReference ?? null;
+
   return {
     id: item.id,
     kind: "governed_recommendation",
     title: item.title,
     badge,
     recommendationId: item.recommendationId,
+    subject,
+    severity: item.severity,
+    whyItMatters: item.why,
+    evidenceSummary,
+    recommendation: subject === item.title ? null : item.title,
     drawer: {
-      title: item.title,
+      // The drawer opens on the same headline as the card the PM clicked — what happened —
+      // so the canonical Recommendation reads once, under "PMFreak recommends", instead of
+      // twice. `item.title` is unchanged and remains the Recommendation text for every
+      // other consumer.
+      title: subject,
       badge,
       kindSummary:
         "Governed Recommendation — system output produced by the evidence chain. It is a proposal, not a decision, and not an action.",
       why: item.why,
       evidence: evidenceLines.length ? evidenceLines : ["No linked evidence yet"],
+      // The canonical Recommendation text is what PMFreak recommends. `nextStep` below is
+      // the caveat that qualifies it, not the recommendation itself.
+      recommendation: item.title,
       nextStep: decided
         ? "A Decision is already recorded. Any governed Action is a separate, later step."
         : `Requires ${item.governance.authorityRequired}. Recording a Decision does not create an Action, Task or Outcome.`,
@@ -724,8 +757,12 @@ function toNeedsYouItem(
         })),
         anyAllowed: item.anyDecisionAllowed,
         readOnlyNote,
+        // Not a caution — a statement of what the server will do. `record_operational_decision`
+        // walks the governed lineage before it evaluates authority at all and raises
+        // `governed_lineage_incomplete` when the evidence row is absent, so the write is
+        // refused for this item regardless of who is asking.
         blockedReason: item.evidenceQuality.evidenceMissing
-          ? "This Decision cannot be safely evaluated because the supporting evidence is missing."
+          ? "PMFreak can't record a decision on this yet: the evidence behind it is missing, so the decision would be refused. Add the supporting project context first."
           : null,
         requiresRationale: true,
         onDecide: (status, rationale) => onDecide(item.recommendationId, status, rationale),
@@ -751,7 +788,11 @@ function toNeedsYouItem(
  *  extracted risk doesn't flood the queue. `onDecide` receives the action id. */
 export function deriveRaidNeedsYou(
   actions: RaidRecommendedAction[] | undefined,
-  onDecide: (actionId: string, status: DecisionStatus, reason: string) => Promise<void>
+  onDecide: (actionId: string, status: DecisionStatus, reason: string) => Promise<void>,
+  /** Server-evaluated project write capability. False means the actor may inspect these
+   *  suggestions but not triage them, which is a Review — not a Decision with controls the
+   *  write route would refuse. */
+  canDecide = true
 ): NeedsYouItem[] {
   if (!actions || actions.length === 0) return [];
   const bestPerRaidItem = new Map<string, RaidRecommendedAction>();
@@ -763,8 +804,14 @@ export function deriveRaidNeedsYou(
       bestPerRaidItem.set(key, action);
     }
   }
+  const raidDeniedExplanation = "Triaging a suggestion needs write access to this project.";
   return [...bestPerRaidItem.values()].map((action) => {
-    const impact = String(action.impact_level);
+    // `String(null)` is "null" and `String(undefined)` is "undefined" — both truthy strings
+    // that would render as a severity badge. The rule is frozen: no persisted severity means
+    // no badge, never an invented or stringified one.
+    const impact = typeof action.impact_level === "string" && action.impact_level.trim().length > 0
+      ? action.impact_level
+      : null;
     const tone: StatusTone = impact === "critical" || impact === "high" ? "danger" : "task";
     const summary = (action.evidence_summary ?? {}) as Record<string, unknown>;
     const raidTitle = typeof summary.raidTitle === "string" ? summary.raidTitle : null;
@@ -781,18 +828,50 @@ export function deriveRaidNeedsYou(
     // chain above: this is extracted intelligence in a bounded workflow, not a governed
     // Recommendation, and deciding it does NOT write an operational_decision_records row.
     const badge: ToneBadge = { tone, label: "Suggestion · extracted intelligence" };
+    /*
+     * Card presentation (UX-W3), corrected after review.
+     *
+     * `generate-recommended-actions.ts` is explicit about which field is which, and the
+     * first cut had them the wrong way round:
+     *
+     *   action.title              the PROPOSED ACTION — "Confirm dependency: ...",
+     *                             "Request approval: ...", "Create mitigation plan: ..."
+     *   evidenceSummary.raidTitle the RAID item that CAUSED it — the finding
+     *   recommendedOwner/Window   qualifiers OF the proposed action
+     *
+     * So the finding is the headline and `action.title` is what PMFreak recommends. Owner
+     * and timing qualify that recommendation; they are not the recommendation, and
+     * presenting them as one told a PM that "Suggested owner: Delivery lead" was the advice.
+     *
+     * With no `raidTitle` there is no separate finding to show. The action title stays the
+     * headline and the recommendation line is dropped rather than inventing a source issue.
+     */
+    const subject = raidTitle ?? action.title;
+    const recommendation = subject === action.title ? null : action.title;
+
     return {
       id: `raid-action-${action.id}`,
       kind: "raid_suggestion",
       title: action.title,
       badge,
+      subject,
+      // `impact_level` is this path's own persisted severity. It is NOT remapped onto the
+      // governed severity vocabulary — only rendered with the same visual weight, and only
+      // when the row actually carries one.
+      severity: impact,
+      whyItMatters: action.description,
+      evidenceSummary: raidCategory ? `Detected from your project notes · ${raidCategory}` : "Detected from your project notes",
+      recommendation,
       drawer: {
-        title: action.title,
+        // Opens on the same headline as the card the PM clicked.
+        title: subject,
         badge,
         kindSummary:
           "RAID-derived suggested action — extracted from your notes in a bounded workflow. It is not a governed Recommendation and carries no governance authority requirement.",
         why: action.description,
         evidence: evidenceLines.length ? evidenceLines : ["Extracted from the project's recorded notes."],
+        // The proposed action is the recommendation; owner and timing qualify it below.
+        recommendation: action.title,
         nextStep: nextStepParts.length ? nextStepParts.join(" ") : "Triage this suggested action.",
         sections: [
           {
@@ -800,7 +879,7 @@ export function deriveRaidNeedsYou(
             title: "Suggestion detail",
             rows: [
               { label: "Action type", value: String(labelize(action.recommended_action_type) ?? action.recommended_action_type) },
-              { label: "Impact", value: impact },
+              ...(impact ? [{ label: "Impact", value: impact }] : []),
               { label: "Extraction confidence", value: `${Math.round(Number(action.confidence_score) * 100)}%` },
               { label: "Suggested action ID", value: action.id },
               ...(action.raid_item_id ? [{ label: "RAID item ID", value: action.raid_item_id }] : []),
@@ -812,13 +891,17 @@ export function deriveRaidNeedsYou(
           subjectId: action.id,
           writePathLabel:
             "Triage only — updates this suggested action through /api/recommended-actions/decision. No canonical operational Decision record is created.",
+          // `allowed` mirrors the server's own verdict for this project. It was hardcoded
+          // true, which offered triage controls to a reader the decision route would refuse.
           controls: [
-            { status: "accepted", label: "Accept", effect: "Marks this suggested action as accepted for triage.", terminal: true, allowed: true, deniedExplanation: null },
-            { status: "rejected", label: "Reject", effect: "Dismisses this suggested action.", terminal: true, allowed: true, deniedExplanation: null },
-            { status: "deferred", label: "Defer", effect: "Snoozes this suggested action for a week.", terminal: false, allowed: true, deniedExplanation: null },
+            { status: "accepted", label: "Accept", effect: "Marks this suggested action as accepted for triage.", terminal: true, allowed: canDecide, deniedExplanation: canDecide ? null : raidDeniedExplanation },
+            { status: "rejected", label: "Reject", effect: "Dismisses this suggested action.", terminal: true, allowed: canDecide, deniedExplanation: canDecide ? null : raidDeniedExplanation },
+            { status: "deferred", label: "Defer", effect: "Snoozes this suggested action for a week.", terminal: false, allowed: canDecide, deniedExplanation: canDecide ? null : raidDeniedExplanation },
           ],
-          anyAllowed: true,
-          readOnlyNote: null,
+          anyAllowed: canDecide,
+          readOnlyNote: canDecide
+            ? null
+            : "You can review this suggestion, but your access to this project is read-only, so you cannot triage it.",
           blockedReason: null,
           requiresRationale: false,
           onDecide: (status, reason) => onDecide(action.id, status as DecisionStatus, reason),

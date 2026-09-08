@@ -47,6 +47,7 @@ export function CommandCenterCanvas({
   attentionLoading = false,
   attentionErrorMessage,
   attentionIncompleteNote = null,
+  attentionIncomplete = false,
   onRetryAttention,
   onAddNotes,
   monitoringNote,
@@ -89,8 +90,10 @@ export function CommandCenterCanvas({
   /** True while ANY attention source is still resolving (governed or RAID suggestions). */
   attentionLoading?: boolean;
   attentionErrorMessage: string | null;
-  /** Set when known items are shown but another attention source has not answered yet. */
+  /** Set when known items are shown but the answer is not yet whole. */
   attentionIncompleteNote?: string | null;
+  /** True when the attention answer is known to be partial even though nothing is loading. */
+  attentionIncomplete?: boolean;
   onRetryAttention?: () => void;
   onAddNotes?: () => void;
   monitoringNote?: string | null;
@@ -150,6 +153,7 @@ export function CommandCenterCanvas({
               loading={attentionLoading}
               errorMessage={attentionErrorMessage}
               incompleteNote={attentionIncompleteNote}
+              incomplete={attentionIncomplete}
               onRetry={onRetryAttention}
               onAddNotes={onAddNotes}
               emptyStateNote={monitoringNote}

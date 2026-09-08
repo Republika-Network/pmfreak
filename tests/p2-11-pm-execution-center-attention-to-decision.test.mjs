@@ -402,10 +402,27 @@ test("P2-11 M: focus moves into the drawer on open and returns to the trigger on
 });
 
 test("P2-11 M: provenance and decision sections use semantic headings", () => {
-  for (const heading of ["Why this matters", "How PMFreak got here", "Evidence", "Details", "Your decision"]) {
+  // UX-W3 put the judgment first and the record second: the drawer now leads with why,
+  // evidence, the recommendation and the decision controls, and everything canonical —
+  // "How PMFreak got here", provenance, evidence quality, governance, references — sits
+  // beneath one "Evidence & governance" heading, collapsed. Nothing was removed, so this
+  // still asserts that every one of those surfaces exists and is labelled; it now also
+  // asserts WHERE, which is the stronger statement.
+  for (const heading of ["Why this matters", "Evidence", "Evidence &amp; governance", "Your decision"]) {
     assert.match(harness.pendingDrawerMarkup, new RegExp(`<h3[^>]*>${heading}</h3>`));
   }
   assert.match(harness.pendingDrawerMarkup, /<section aria-labelledby=/);
+
+  // The canonical record is preserved, named, and reachable — each behind its own
+  // disclosure rather than in front of the decision.
+  const detailAt = harness.pendingDrawerMarkup.indexOf("Evidence &amp; governance");
+  assert.ok(detailAt > 0, "the canonical detail section must exist");
+  const detail = harness.pendingDrawerMarkup.slice(detailAt);
+  for (const disclosure of ["How PMFreak got here", "Provenance", "Evidence quality", "Governance", "Canonical references"]) {
+    assert.match(detail, new RegExp(`<summary[^>]*>${disclosure}</summary>`), `${disclosure} must remain available`);
+  }
+  // ...and it comes after the decision controls, not before them.
+  assert.ok(harness.pendingDrawerMarkup.indexOf("Your decision") < detailAt, "judgment precedes the audit record");
 });
 
 test("P2-11 M: queue and status updates are announced, and controls are keyboard reachable", () => {

@@ -30,6 +30,19 @@ function DisclosureSection({ section }: { section: DetailSection }) {
   );
 }
 
+/**
+ * A Decision already recorded against this item, in the primary surface.
+ *
+ * A non-terminal Decision — `escalated`, `needs_more_evidence` — deliberately leaves the
+ * Recommendation open, so an item still awaiting the PM can carry one of these. This card
+ * therefore renders in front of a live judgment, and it used to print the canonical
+ * Decision id, the raw actor id, the authority basis and the evidence snapshot digest
+ * there. That is the audit record, not the history a PM needs to decide.
+ *
+ * What stays: what was decided, whether it closed the item, why, and when. What moves to
+ * `Evidence & governance`: every identifier and every governance internal. Nothing is
+ * dropped — see `RecordedDecisionAudit`.
+ */
 function RecordedDecisionCard({ decision }: { decision: RecordedDecision }) {
   return (
     <div className="mt-2 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.06] p-3">
@@ -39,15 +52,38 @@ function RecordedDecisionCard({ decision }: { decision: RecordedDecision }) {
       </p>
       <RowList
         rows={[
-          { label: "Decision ID", value: decision.decisionId },
-          ...(decision.recordedAt ? [{ label: "Recorded at", value: decision.recordedAt }] : []),
-          ...(decision.decidedBy ? [{ label: "Decided by", value: decision.decidedBy }] : []),
-          ...(decision.authorityBasis ? [{ label: "Authority basis", value: decision.authorityBasis }] : []),
           ...(decision.rationale ? [{ label: "Rationale", value: decision.rationale }] : []),
-          ...(decision.evidenceSnapshot ? [{ label: "Evidence snapshot", value: decision.evidenceSnapshot }] : []),
+          ...(decision.recordedAt ? [{ label: "Recorded at", value: decision.recordedAt }] : []),
         ]}
       />
     </div>
+  );
+}
+
+/** The same Decisions, complete, behind the disclosure. Every field the read model
+ *  projects is here — the canonical record is preserved in full, just not in front of a
+ *  human trying to make the next judgment. */
+function RecordedDecisionAudit({ decisions }: { decisions: RecordedDecision[] }) {
+  if (decisions.length === 0) return null;
+  return (
+    <details className="mt-2 rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2" data-testid="cc-decision-record-details">
+      <summary className="cursor-pointer text-xs font-medium text-zinc-300">Decision record details</summary>
+      {decisions.map((decision) => (
+        <div key={decision.decisionId} className="mt-2">
+          <p className="text-[11px] font-medium text-zinc-400">{labelize(decision.decisionStatus)}</p>
+          <RowList
+            rows={[
+              { label: "Decision ID", value: decision.decisionId },
+              ...(decision.recordedAt ? [{ label: "Recorded at", value: decision.recordedAt }] : []),
+              ...(decision.decidedBy ? [{ label: "Decided by", value: decision.decidedBy }] : []),
+              ...(decision.authorityBasis ? [{ label: "Authority basis", value: decision.authorityBasis }] : []),
+              ...(decision.rationale ? [{ label: "Rationale", value: decision.rationale }] : []),
+              ...(decision.evidenceSnapshot ? [{ label: "Evidence snapshot", value: decision.evidenceSnapshot }] : []),
+            ]}
+          />
+        </div>
+      ))}
+    </details>
   );
 }
 
@@ -64,7 +100,22 @@ function DecisionSection({ panel, headingId }: { panel: DecisionPanel; headingId
   const [error, setError] = useState<string | null>(null);
   const rationaleId = useId();
 
-  const allowed = panel.controls.filter((control) => control.allowed);
+  /**
+   * A lineage-blocked item offers no decision to submit.
+   *
+   * `blockedReason` means the canonical write would be REFUSED — `record_operational_decision`
+   * validates the governed lineage before it looks at authority at all. Rendering Accept,
+   * Reject and a rationale box beneath a sentence saying the decision would be refused told
+   * the PM two contradictory things and invited them to send a request the server must
+   * reject.
+   *
+   * This is presentation ELIGIBILITY, not authority. `control.allowed` is untouched — the
+   * server's verdict is still exactly what it was, and the moment a refreshed summary reports
+   * the lineage complete the normal authority-derived controls return with no client
+   * override. The item stays fully inspectable meanwhile.
+   */
+  const submissionBlocked = Boolean(panel.blockedReason);
+  const allowed = submissionBlocked ? [] : panel.controls.filter((control) => control.allowed);
   const denied = panel.controls.filter((control) => !control.allowed);
   const terminalDecision = panel.decisions.find((decision) => decision.terminal) ?? null;
   const rationaleMissing = panel.requiresRationale && rationale.trim().length === 0;
@@ -90,7 +141,6 @@ function DecisionSection({ panel, headingId }: { panel: DecisionPanel; headingId
       <h3 id={headingId} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
         Your decision
       </h3>
-      <p className="mt-1.5 text-[11px] leading-relaxed text-zinc-500">{panel.writePathLabel}</p>
 
       {panel.decisions.length > 0 && (
         <div className="mt-3">
@@ -109,6 +159,13 @@ function DecisionSection({ panel, headingId }: { panel: DecisionPanel; headingId
       {terminalDecision ? (
         <p className="mt-3 text-xs text-zinc-400">
           This recommendation has been decided. No further decision can be recorded against it.
+        </p>
+      ) : submissionBlocked ? (
+        // Inspection continues; only submission is withheld. What the actor's role would
+        // otherwise permit is a governance detail and lives under the disclosure below.
+        <p className="mt-3 text-xs text-zinc-400" data-testid="cc-decision-blocked">
+          There is nothing to decide here yet. This item stays in your queue and becomes
+          decidable once the missing project context exists.
         </p>
       ) : (
         <>
@@ -240,13 +297,20 @@ export function DetailDrawer({ content, onClose }: { content: DrawerContent | nu
               </button>
             </div>
 
-            {content.badge && (
+            {/*
+              An attention item's badge names its SOURCE — "Governed · decision required",
+              "Suggestion · extracted intelligence". That distinction is a contract and is
+              preserved verbatim beneath `Evidence & governance`; it is simply not the first
+              thing a PM should read, because it answers a question about PMFreak's
+              architecture rather than about their project. Every other drawer type — agent
+              cards, governed execution chains — keeps its badge here, so this is gated on
+              the decision panel rather than applied to the component as a whole.
+            */}
+            {content.badge && !content.decisionPanel && (
               <div className="mt-2">
                 <StatusBadge tone={content.badge.tone}>{content.badge.label}</StatusBadge>
               </div>
             )}
-
-            {content.kindSummary && <p className="mt-2 text-[11px] leading-relaxed text-zinc-500">{content.kindSummary}</p>}
 
             <section aria-labelledby={`${headingId}-why`} className="mt-5">
               <h3 id={`${headingId}-why`} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
@@ -254,15 +318,6 @@ export function DetailDrawer({ content, onClose }: { content: DrawerContent | nu
               </h3>
               <p className="mt-1.5 text-sm leading-relaxed text-zinc-300">{content.why}</p>
             </section>
-
-            {content.chain && content.chain.length > 0 && (
-              <section aria-labelledby={`${headingId}-chain`} className="mt-5">
-                <h3 id={`${headingId}-chain`} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
-                  How PMFreak got here
-                </h3>
-                <RowList rows={content.chain} />
-              </section>
-            )}
 
             <section aria-labelledby={`${headingId}-evidence`} className="mt-5">
               <h3 id={`${headingId}-evidence`} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
@@ -277,26 +332,74 @@ export function DetailDrawer({ content, onClose }: { content: DrawerContent | nu
               </ul>
             </section>
 
-            {content.sections && content.sections.length > 0 && (
-              <section aria-labelledby={`${headingId}-detail`} className="mt-5">
-                <h3 id={`${headingId}-detail`} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
-                  Details
-                </h3>
-                {content.sections.map((section) => (
-                  <DisclosureSection key={section.id} section={section} />
-                ))}
-              </section>
-            )}
-
             <div className="mt-5 rounded-xl border border-sky-500/20 bg-sky-500/[0.06] p-3">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-sky-300">Suggested next step</p>
-              <p className="mt-1.5 text-sm leading-relaxed text-zinc-200">{content.nextStep}</p>
+              {/* "PMFreak recommends" is a claim that what follows is advice. It is used only
+                  when the read model actually derived a recommendation; a drawer carrying a
+                  factual state supplies its own neutral heading instead. */}
+              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-sky-300">
+                {content.recommendation ? "PMFreak recommends" : content.nextStepLabel ?? "PMFreak recommends"}
+              </p>
+              <p className="mt-1.5 text-sm leading-relaxed text-zinc-200">{content.recommendation ?? content.nextStep}</p>
+              {/* The caveat qualifies the recommendation; it is never presented AS the
+                  recommendation, which is what "Suggested next step" used to do here. */}
+              {content.recommendation && content.nextStep && content.nextStep !== content.recommendation && (
+                <p className="mt-2 text-[11px] leading-relaxed text-zinc-400">{content.nextStep}</p>
+              )}
             </div>
 
             {/* Keyed by subject so switching items remounts the form — a draft rationale can
                 never leak from one recommendation onto another. */}
             {content.decisionPanel && (
               <DecisionSection key={content.decisionPanel.subjectId} panel={content.decisionPanel} headingId={decisionHeadingId} />
+            )}
+
+            {/*
+              UX-W3 — progressive disclosure.
+
+              Everything below this point is the canonical record: how PMFreak got here, the
+              provenance of the evidence, its quality, the governance rule and authority, and
+              the canonical references. None of it is deleted, none of it is changed, and all
+              of it stays one click away. It simply no longer stands between a PM and their
+              judgment: it sits AFTER the decision controls, collapsed, for the reader who
+              wants to audit rather than decide.
+            */}
+            {((content.chain && content.chain.length > 0) || (content.sections && content.sections.length > 0)) && (
+              <section aria-labelledby={`${headingId}-detail`} className="mt-6 border-t border-white/10 pt-4">
+                <h3 id={`${headingId}-detail`} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                  Evidence &amp; governance
+                </h3>
+                {content.chain && content.chain.length > 0 && (
+                  <details className="mt-2 rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2">
+                    <summary className="cursor-pointer text-xs font-medium text-zinc-300">How PMFreak got here</summary>
+                    <RowList rows={content.chain} />
+                  </details>
+                )}
+                {(content.sections ?? []).map((section) => (
+                  <DisclosureSection key={section.id} section={section} />
+                ))}
+                {/* What kind of object this is, and exactly what a decision on it writes.
+                    Both are preserved verbatim — the two attention sources deliberately use
+                    different language here and that difference is a contract, not styling.
+                    They simply no longer sit above the judgment, where a table name in front
+                    of a PM is noise rather than provenance. */}
+                {content.decisionPanel && (
+                  <RecordedDecisionAudit decisions={content.decisionPanel.decisions} />
+                )}
+                {(content.kindSummary || content.decisionPanel?.writePathLabel || content.badge) && (
+                  <details className="mt-2 rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2">
+                    <summary className="cursor-pointer text-xs font-medium text-zinc-300">What this is, and what a decision records</summary>
+                    {content.decisionPanel && content.badge && (
+                      <p className="mt-2">
+                        <StatusBadge tone={content.badge.tone}>{content.badge.label}</StatusBadge>
+                      </p>
+                    )}
+                    {content.kindSummary && <p className="mt-2 text-[11px] leading-relaxed text-zinc-400">{content.kindSummary}</p>}
+                    {content.decisionPanel?.writePathLabel && (
+                      <p className="mt-2 text-[11px] leading-relaxed text-zinc-400">{content.decisionPanel.writePathLabel}</p>
+                    )}
+                  </details>
+                )}
+              </section>
             )}
 
             {/* P2-12: keyed by the canonical Decision so switching chains remounts the
