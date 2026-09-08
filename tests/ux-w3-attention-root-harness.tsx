@@ -104,7 +104,47 @@ const skewedTables = tablesFrom(
   40,
 );
 
+/**
+ * 501 genuinely-open governed Recommendations that cross a real page boundary, with the
+ * rows either side of it sharing an identical `created_at`.
+ *
+ * `ROW_PAGE_SIZE` is 500, so page 1 ends at index 499 and page 2 begins at 500. Every row
+ * from 480 to 519 carries the SAME timestamp, so `ORDER BY created_at DESC` alone leaves
+ * forty rows mutually tied across that boundary — free to come back in a different sequence
+ * per request, which duplicates one and drops another. Only a total order (created_at, id)
+ * makes the boundary stable.
+ *
+ * The ids are zero-padded so their lexicographic order is their numeric order, and the tied
+ * block is therefore checkable.
+ */
+const TIE_TIMESTAMP = "2026-05-05T05:05:05Z";
+const boundaryTables = tablesFrom(
+  Array.from({ length: 501 }, (_, index) =>
+    lineageFor(
+      `page-${String(index).padStart(4, "0")}`,
+      // The tied block spans the boundary; everything else is distinctly older, so the tied
+      // rows sort together in the middle of the set rather than at one end.
+      index >= 480 && index <= 519 ? TIE_TIMESTAMP : `2026-04-${String((index % 28) + 1).padStart(2, "0")}T00:00:00Z`,
+      "proposed",
+    ),
+  ),
+  501,
+);
+
 let TABLES: Record<string, Row[]> = falseClearTables;
+
+/**
+ * Models a database whose ORDER BY is NOT total.
+ *
+ * When set, the stub honours only the FIRST order clause and rotates rows that tie on it by
+ * one position per request — which is what a real engine is free to do when the sort key is
+ * not unique. Across a `range` boundary that returns one row twice and drops another. This
+ * injects the hazard; it does not fabricate the outcome, and the assertions read whatever
+ * the service then concludes.
+ */
+let UNSTABLE_TIE_ORDER = false;
+let unstableRequestCount = 0;
+let attentionRootRawRowsReturned = 0;
 
 /** Exactly the query-builder surface `getOperationalSummary` uses. Naming it keeps the
  *  stub honest: a method the service starts calling fails to type rather than silently
@@ -136,7 +176,11 @@ function makeClient() {
     const ins: Array<[string, unknown[]]> = [];
     const notNull: string[] = [];
     const isNull: string[] = [];
-    let orderColumn: string | null = null;
+    // Ordered clauses in CALL order, not a single column. A `.order(a).order(b)` chain is a
+    // lexicographic sort in PostgREST, and modelling only the last column would make this
+    // stub unable to see the very defect multi-column ordering exists to prevent: tied rows
+    // drifting across a page boundary.
+    const orderBy: Array<{ column: string; ascending: boolean }> = [];
     let limit: number | null = null;
     let rangeFrom: number | null = null;
     let rangeTo: number | null = null;
@@ -156,13 +200,43 @@ function makeClient() {
       for (const [column, values] of ins) rows = rows.filter((row) => values.map(String).includes(String(read(column, row))));
       for (const column of notNull) rows = rows.filter((row) => read(column, row) !== null && read(column, row) !== undefined);
       for (const column of isNull) rows = rows.filter((row) => read(column, row) === null || read(column, row) === undefined);
-      if (orderColumn) {
-        rows.sort((a, b) => String(b[orderColumn!] ?? "").localeCompare(String(a[orderColumn!] ?? "")));
+      if (orderBy.length > 0) {
+        const effective = UNSTABLE_TIE_ORDER ? orderBy.slice(0, 1) : orderBy;
+        rows.sort((a, b) => {
+          for (const { column, ascending } of effective) {
+            const left = String(a[column] ?? "");
+            const right = String(b[column] ?? "");
+            const compared = ascending ? left.localeCompare(right) : right.localeCompare(left);
+            if (compared !== 0) return compared;
+          }
+          return 0;
+        });
+        if (UNSTABLE_TIE_ORDER) {
+          // Rotate each tied block by one more position on every request, exactly as an
+          // engine may legally reorder rows a non-unique sort cannot separate.
+          const shift = ++unstableRequestCount;
+          const key = (row: Row) => String(row[effective[0].column] ?? "");
+          const rotated: Row[] = [];
+          for (let start = 0; start < rows.length; ) {
+            let end = start;
+            while (end < rows.length && key(rows[end]) === key(rows[start])) end += 1;
+            const block = rows.slice(start, end);
+            const offset = block.length > 1 ? shift % block.length : 0;
+            rotated.push(...block.slice(offset), ...block.slice(0, offset));
+            start = end;
+          }
+          rows = rotated;
+        }
       }
       if (limit !== null) rows = rows.slice(0, limit);
       // PostgREST applies range AFTER filter+order, exactly as the service assumes.
       if (rangeFrom !== null && rangeTo !== null) rows = rows.slice(rangeFrom, rangeTo + 1);
       queries.push({ table, filters: [...filters] });
+      // Raw rows delivered for the governed attention root query, before any de-duplication.
+      // The difference between this and the unique id count IS the page-boundary hazard.
+      if (table === "recommended_actions" && filters.includes("eq:status")) {
+        attentionRootRawRowsReturned += rows.length;
+      }
       return { data: rows, error: null };
     };
 
@@ -185,7 +259,10 @@ function makeClient() {
         notNull.push(column);
         return chain;
       },
-      order: (column: string) => { orderColumn = column; return chain; },
+      order: (column: string, options?: { ascending?: boolean }) => {
+        orderBy.push({ column, ascending: options?.ascending !== false });
+        return chain;
+      },
       limit: (value: number) => { limit = value; return chain; },
       range: (from: number, to: number) => { rangeFrom = from; rangeTo = to; return chain; },
       maybeSingle: async () => { const result = resolve(); return { data: result.data[0] ?? null, error: null }; },
@@ -213,6 +290,7 @@ const text = (markup: string): string => markup.replace(/<[^>]+>/g, " ").replace
 
 async function scenario(tables: Record<string, Row[]>) {
   TABLES = tables;
+  attentionRootRawRowsReturned = 0;
   const { client } = makeClient();
   const summary = await getOperationalSummary(client as never, WORKSPACE, PROJECT, ACTOR);
 
@@ -241,7 +319,19 @@ async function scenario(tables: Record<string, Row[]>) {
     />,
   );
 
+  const rootIds = (summary.governedAttentionRecommendations ?? []).map((row) => String(row.id));
   return {
+    rootIds,
+    attentionRootRawRowsReturned,
+    uniqueRootIds: new Set(rootIds).size,
+    duplicateRootIds: rootIds.length - new Set(rootIds).size,
+    // The ids either side of the page boundary, in the order the projection produced them.
+    boundaryOrder: rootIds.slice(0, 0).concat(
+      rootIds.filter((id) => {
+        const n = Number(id.replace("rec-page-", ""));
+        return Number.isFinite(n) && n >= 496 && n <= 503;
+      }),
+    ),
     // What the ordinary HISTORY window holds — the root the old implementation used.
     historicalWindowSize: summary.recommendations.length,
     historicalWindowPendingCount: summary.recommendations.filter((row) => String(row.status) === "proposed").length,
@@ -269,7 +359,25 @@ async function main() {
   const falseClear = await scenario(falseClearTables);
   const manyOpen = await scenario(manyOpenTables);
   const knownIncomplete = await scenario(skewedTables);
-  process.stdout.write(JSON.stringify({ falseClear, manyOpen, knownIncomplete }, null, 2));
+  const tieBoundary = await scenario(boundaryTables);
+  // The same 501 open rows, read from a database whose tie ordering is unstable.
+  UNSTABLE_TIE_ORDER = true;
+  unstableRequestCount = 0;
+  const unstableBoundary = await scenario(boundaryTables);
+  UNSTABLE_TIE_ORDER = false;
+  process.stdout.write(
+    JSON.stringify(
+      {
+        falseClear,
+        manyOpen,
+        knownIncomplete,
+        tieBoundary: { ...tieBoundary, queueMarkup: undefined, queueText: undefined },
+        unstableBoundary: { ...unstableBoundary, queueMarkup: undefined, rootIds: undefined, boundaryOrder: undefined },
+      },
+      null,
+      2,
+    ),
+  );
 }
 
 void main();

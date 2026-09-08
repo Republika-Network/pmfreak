@@ -996,3 +996,106 @@ test("W3-P1-06/07: no Recommendation or Decision is duplicated across projection
     );
   }
 });
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// W3-P1-08 — attention pagination must be deterministic
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// The root was paged with `ORDER BY created_at DESC` and sorted by (created_at, id) in JS
+// afterwards. That is not a stable page boundary: `created_at` is not unique, so tied rows
+// are free to come back in a different sequence per request — returning one row twice and
+// dropping another. A post-load sort cannot recover a row that was never returned, and
+// counting raw rows then made the missing one invisible, because the duplicate padded the
+// total back to the aggregate.
+
+test("W3-P1-08: the fixture really crosses a page boundary on tied timestamps", () => {
+  // 501 open Recommendations against a 500-row page, with the rows either side of the
+  // boundary sharing one timestamp. Without that the ordering defect cannot appear.
+  const s = roots.tieBoundary;
+  assert.equal(s.assuranceOpenRecommendations, 501);
+  assert.ok(s.attentionRootRawRowsReturned > 500, "more than one page was fetched");
+});
+
+test("W3-P1-08: a total server order keeps every canonical Recommendation exactly once", () => {
+  const s = roots.tieBoundary;
+  assert.equal(s.uniqueRootIds, 501);
+  assert.equal(s.duplicateRootIds, 0);
+  assert.equal(s.attentionRootLoaded, 501);
+  assert.equal(s.governedAttentionComplete, true);
+  assert.equal(s.needsYouCount, 501);
+  assert.equal(s.youreClearVisible, false);
+});
+
+test("W3-P1-08: the order across the boundary follows the frozen id tie-break", () => {
+  // Rows 496-500 tie on `created_at` and straddle the 499/500 page edge. They must appear
+  // in canonical id order, contiguously — which only holds if the tie-break was applied by
+  // the database before `range`, not by the client afterwards.
+  assert.deepEqual(roots.tieBoundary.boundaryOrder, [
+    "rec-page-0496",
+    "rec-page-0497",
+    "rec-page-0498",
+    "rec-page-0499",
+    "rec-page-0500",
+  ]);
+});
+
+test("W3-P1-08: the query carries the tie-break BEFORE range, not after the fact", () => {
+  const service = read("src/lib/operational-flow/operational-flow-service.ts");
+  const rootQuery = service.slice(service.indexOf('.eq("status", "proposed")'));
+  const ordered = rootQuery.slice(0, rootQuery.indexOf(".range("));
+  assert.match(ordered, /\.order\("created_at", \{ ascending: false \}\)/);
+  assert.match(ordered, /\.order\("id", \{ ascending: true \}\)/);
+  assert.ok(
+    ordered.indexOf('.order("created_at"') < ordered.indexOf('.order("id"'),
+    "created_at is the primary key of the sort, id the tie-break",
+  );
+});
+
+test("W3-P1-08: a duplicate delivered across an unstable boundary can never read as complete", () => {
+  // The same 501 rows, from a database whose tie ordering is NOT total: the stub honours
+  // only the first order clause and rotates tied rows per request, exactly as an engine may.
+  // One row comes back twice and another is dropped.
+  const s = roots.unstableBoundary;
+  assert.equal(s.attentionRootRawRowsReturned, 501, "the raw row count still equals the aggregate");
+  assert.equal(s.assuranceOpenRecommendations, 501);
+  // Counting rows would therefore have concluded 501 >= 501 and claimed a complete set.
+  // Counting canonical Recommendations does not.
+  assert.equal(s.uniqueRootIds, 500, "one distinct Recommendation was genuinely lost");
+  assert.equal(s.governedAttentionComplete, false);
+  // And the product says so rather than claiming the PM has everything.
+  assert.equal(s.youreClearVisible, false);
+  assert.equal(s.incompleteNote, "Showing 500 of 501 governed items needing review.");
+});
+
+test("W3-P1-08: completeness is computed from the deduped set, never from raw rows", () => {
+  const service = read("src/lib/operational-flow/operational-flow-service.ts");
+  // The collected rows are deduped by canonical id into `openGovernedRecommendations`...
+  assert.match(service, /const openGovernedRecommendations = \(\(\) => \{[\s\S]{0,400}for \(const row of collectedAttentionRootRows\) byId\.set\(String\(row\.id\), row\);/);
+  // ...and that is what the comparison counts.
+  assert.match(service, /attentionRootDrained && openGovernedRecommendations\.length >= governedAttentionTotal/);
+  // The raw array is never compared against the aggregate.
+  assert.doesNotMatch(service, /collectedAttentionRootRows\.length\s*>=/);
+});
+
+test("W3-P1-08: every attention paged read has a total server order", () => {
+  const service = read("src/lib/operational-flow/operational-flow-service.ts");
+  // Both exact-reference readers page by primary key, so a chunk larger than one page
+  // cannot lose or repeat a row at the boundary either.
+  const linked = service.slice(service.indexOf("const linkedRows = async"), service.indexOf("const linkedRowsByReference"));
+  assert.match(linked, /\.order\("id", \{ ascending: true \}\)[\s\S]{0,120}\.range\(offset/);
+  const byReference = service.slice(service.indexOf("const linkedRowsByReference = async"));
+  assert.match(byReference.slice(0, byReference.indexOf("};")), /\.order\("id", \{ ascending: true \}\)[\s\S]{0,120}\.range\(offset/);
+});
+
+test("W3-P1-08: no canonical object is duplicated in any scenario", () => {
+  for (const [name, scenario] of Object.entries(roots)) {
+    if (!scenario.rootIds) continue;
+    assert.equal(scenario.duplicateRootIds, 0, `${name}: no duplicated Recommendation`);
+    assert.equal(new Set(scenario.needsYouIds).size, scenario.needsYouIds.length, `${name}: no duplicated queue item`);
+  }
+  // Decisions and their evidence links dedupe by canonical identity too.
+  const attentionModel = read("src/modules/workspace/presentation/command-center/attention-read-model.ts");
+  assert.match(attentionModel, /byId\.set\(String\(row\.id\), row\);/);
+  assert.match(attentionModel, /byIdentity\.set\(`\$\{String\(link\.decision_record_id\)\}::\$\{String\(link\.evidence_item_id\)\}`, link\);/);
+});

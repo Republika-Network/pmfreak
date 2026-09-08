@@ -1764,6 +1764,10 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
         const scoped = client.from(table).select("*").eq("workspace_id", workspaceId).eq("project_id", projectId);
         const result = await (match ? scoped.eq(match[0], match[1]) : scoped)
           .in(column, chunk)
+          // A total order on the primary key, so a chunk larger than one page cannot lose
+          // or repeat a row at the boundary. Consumer-facing order is unaffected:
+          // `unionById` re-sorts every collection on its own column afterwards.
+          .order("id", { ascending: true })
           .range(offset, offset + ROW_PAGE_SIZE - 1);
         if (result.error) throw new Error(`load_operational_summary: ${result.error.message}`);
         const page = (result.data ?? []) as unknown as SummaryRow[];
@@ -1791,7 +1795,14 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
     for (let start = 0; start < values.length; start += ID_FILTER_CHUNK) {
       const chunk = values.slice(start, start + ID_FILTER_CHUNK);
       for (let offset = 0; ; offset += ROW_PAGE_SIZE) {
-        const result = await client.from(table).select("*").in(column, chunk).range(offset, offset + ROW_PAGE_SIZE - 1);
+        const result = await client
+          .from(table)
+          .select("*")
+          .in(column, chunk)
+          // Same reason: `decision_evidence_links` has a uuid primary key, so this is a
+          // total order and the page boundary is stable.
+          .order("id", { ascending: true })
+          .range(offset, offset + ROW_PAGE_SIZE - 1);
         if (result.error) throw new Error(`load_operational_summary: ${result.error.message}`);
         const page = (result.data ?? []) as unknown as SummaryRow[];
         collected.push(...page);
@@ -1889,7 +1900,7 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
    * spin here, and crossing it is reported as incompleteness rather than silently truncating.
    */
   const ATTENTION_ROOT_MAX_PAGES = 20;
-  const openGovernedRecommendations: SummaryRow[] = [];
+  const collectedAttentionRootRows: SummaryRow[] = [];
   let attentionRootDrained = false;
   for (let page = 0; page < ATTENTION_ROOT_MAX_PAGES; page += 1) {
     const offset = page * ROW_PAGE_SIZE;
@@ -1900,24 +1911,38 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
       .eq("project_id", projectId)
       .not("governance_event_id", "is", null)
       .eq("status", "proposed")
+      // TOTAL server-side order, applied BEFORE `range`. `created_at` alone is not unique,
+      // and a non-unique ORDER BY leaves tied rows free to land in a different sequence on
+      // each page request — which silently duplicates one row across a page boundary and
+      // skips another. Sorting after the fact cannot recover a row that was never returned,
+      // so the tie-break has to be here, on the primary key, where the database applies it.
       .order("created_at", { ascending: false })
+      .order("id", { ascending: true })
       .range(offset, offset + ROW_PAGE_SIZE - 1);
     if (result.error) throw new Error(`load_operational_summary: ${result.error.message}`);
     const rows = (result.data ?? []) as unknown as SummaryRow[];
-    openGovernedRecommendations.push(...rows);
+    collectedAttentionRootRows.push(...rows);
     // A short page is the last page.
     if (rows.length < ROW_PAGE_SIZE) {
       attentionRootDrained = true;
       break;
     }
   }
-  // Deterministic order, applied here rather than relying on a multi-column PostgREST sort:
-  // newest first, ties broken by canonical id, so the same open set always renders the same
-  // sequence regardless of how the pages came back.
-  openGovernedRecommendations.sort((a, b) => {
-    const at = String(b.created_at ?? "").localeCompare(String(a.created_at ?? ""));
-    return at !== 0 ? at : String(a.id ?? "").localeCompare(String(b.id ?? ""));
-  });
+  /**
+   * Canonical Recommendations, not query rows.
+   *
+   * Rows are what a paged read returns; Recommendations are what the project has. Counting
+   * rows would let a duplicate delivered across a page boundary stand in for a distinct
+   * open item and make an incomplete set look complete.
+   */
+  const openGovernedRecommendations = (() => {
+    const byId = new Map<string, SummaryRow>();
+    for (const row of collectedAttentionRootRows) byId.set(String(row.id), row);
+    return [...byId.values()].sort((a, b) => {
+      const at = String(b.created_at ?? "").localeCompare(String(a.created_at ?? ""));
+      return at !== 0 ? at : String(a.id ?? "").localeCompare(String(b.id ?? ""));
+    });
+  })();
 
   /**
    * Project-wide open count, from the assurance RPC — the same aggregate the server already
@@ -1935,6 +1960,9 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
    */
   const governedAttentionComplete =
     attentionRootDrained && openGovernedRecommendations.length >= governedAttentionTotal;
+  // `openGovernedRecommendations` is the DEDUPED set, so the comparison above counts
+  // distinct canonical Recommendations. A page boundary that returned the same row twice
+  // shrinks this count rather than padding it, and the answer is reported as incomplete.
 
   /*
    * Reconciliation lookup: the Recommendations the recent Decisions point at.

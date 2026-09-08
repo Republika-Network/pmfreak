@@ -178,7 +178,11 @@ function makeClient() {
     const ins: Array<[string, unknown[]]> = [];
     const notNull: string[] = [];
     const isNull: string[] = [];
-    let orderColumn: string | null = null;
+    // Ordered clauses in CALL order, not a single column. A `.order(a).order(b)` chain is a
+    // lexicographic sort in PostgREST, and modelling only the last column would make this
+    // stub unable to see the very defect multi-column ordering exists to prevent: tied rows
+    // drifting across a page boundary.
+    const orderBy: Array<{ column: string; ascending: boolean }> = [];
     let limit: number | null = null;
     let rangeFrom: number | null = null;
     let rangeTo: number | null = null;
@@ -198,8 +202,16 @@ function makeClient() {
       for (const [column, values] of ins) rows = rows.filter((row) => values.map(String).includes(String(read(column, row))));
       for (const column of notNull) rows = rows.filter((row) => read(column, row) !== null && read(column, row) !== undefined);
       for (const column of isNull) rows = rows.filter((row) => read(column, row) === null || read(column, row) === undefined);
-      if (orderColumn) {
-        rows.sort((a, b) => String(b[orderColumn!] ?? "").localeCompare(String(a[orderColumn!] ?? "")));
+      if (orderBy.length > 0) {
+        rows.sort((a, b) => {
+          for (const { column, ascending } of orderBy) {
+            const left = String(a[column] ?? "");
+            const right = String(b[column] ?? "");
+            const compared = ascending ? left.localeCompare(right) : right.localeCompare(left);
+            if (compared !== 0) return compared;
+          }
+          return 0;
+        });
       }
       if (limit !== null) rows = rows.slice(0, limit);
       // PostgREST applies range AFTER filter+order, exactly as the service assumes.
@@ -227,7 +239,10 @@ function makeClient() {
         notNull.push(column);
         return chain;
       },
-      order: (column: string) => { orderColumn = column; return chain; },
+      order: (column: string, options?: { ascending?: boolean }) => {
+        orderBy.push({ column, ascending: options?.ascending !== false });
+        return chain;
+      },
       limit: (value: number) => { limit = value; return chain; },
       range: (from: number, to: number) => { rangeFrom = from; rangeTo = to; return chain; },
       maybeSingle: async () => { const result = resolve(); return { data: result.data[0] ?? null, error: null }; },
