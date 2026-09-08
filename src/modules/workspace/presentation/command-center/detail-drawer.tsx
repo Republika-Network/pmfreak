@@ -70,6 +70,38 @@ function JourneySection({ journey, headingId }: { journey: DecisionJourney; head
           {journey.partialReason}
         </p>
       )}
+
+      {/*
+       * Several actions can follow ONE Decision — `source_decision_id` carries no unique
+       * constraint — and they can be in different places and have had different results.
+       * The summary above deliberately refuses to generalise across them, so this is where
+       * each is stated on its own. Rendered only when there is genuinely more than one, so
+       * the ordinary single-action case stays a single clear answer.
+       */}
+      {journey.branches.length > 1 && (
+        <div className="mt-3" data-testid="cc-drawer-journey-branches">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+            {journey.branches.length} actions follow this decision
+          </p>
+          <ul className="mt-1.5 space-y-1.5">
+            {journey.branches.map((branch) => (
+              <li
+                key={branch.branchId}
+                data-testid="cc-drawer-journey-branch"
+                data-branch-phase={branch.phase}
+                className="rounded-lg bg-white/[0.04] px-2.5 py-1.5"
+              >
+                <p className="text-xs text-zinc-300">{branch.state}</p>
+                {branch.result && <p className="mt-0.5 text-[11px] text-zinc-400">Result {branch.result}</p>}
+                {branch.learning && (
+                  <p className="mt-0.5 text-[11px] text-zinc-400">What we learned {branch.learning}</p>
+                )}
+                {branch.next && <p className="mt-0.5 text-[11px] text-zinc-300">Next {branch.next}</p>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </section>
   );
 }

@@ -108,6 +108,10 @@ export type BranchJourney = {
   /** Set when a linked canonical record this branch depends on could not be resolved. */
   partialReason: string | null;
   owner: JourneyOwner | null;
+  /** What the canonical Outcome says happened on THIS branch. Null until established. */
+  result: string | null;
+  /** This branch's Observation summary. Null until one exists. */
+  learning: string | null;
 };
 
 /**
@@ -173,8 +177,15 @@ function workFinished(branch: GovernedActionBranch): boolean {
   return branch.boundary.executionCompleted || branch.boundary.taskCompleted;
 }
 
-/** True once an evidence-backed Observation has established the result. */
-function resultEstablished(branch: GovernedActionBranch): boolean {
+/**
+ * True once an evidence-backed Observation has established the result.
+ *
+ * Exported because the "In Progress" grouping asks the same question. When it answered it
+ * differently — excluding only `achieved` — a chain observed as `not_achieved` was filed
+ * under the heading "In Progress" while this module called it LEARN, and one of the two was
+ * lying to the PM. One predicate, one answer.
+ */
+export function isResultEstablished(branch: GovernedActionBranch): boolean {
   const state = branch.boundary.outcomeState;
   if (state === null) return false;
   if (RESULT_PENDING_OUTCOME_STATES.includes(state)) return false;
@@ -187,7 +198,7 @@ function resultEstablished(branch: GovernedActionBranch): boolean {
 
 export function branchPhase(branch: GovernedActionBranch): JourneyPhase {
   if (!workFinished(branch)) return "do";
-  if (!resultEstablished(branch)) return "verify";
+  if (!isResultEstablished(branch)) return "verify";
   return "learn";
 }
 
@@ -234,7 +245,7 @@ function branchState(branch: GovernedActionBranch): string {
   if (!branch.boundary.outcomeExists) {
     return "The work is complete. What it was meant to achieve has not been recorded yet.";
   }
-  if (!resultEstablished(branch)) {
+  if (!isResultEstablished(branch)) {
     return "The work is complete. The result has not been established yet.";
   }
   return OUTCOME_RESULT_LABELS[String(branch.boundary.outcomeState)] ?? "The result has been recorded.";
@@ -263,6 +274,12 @@ function branchNext(branch: GovernedActionBranch): string | null {
 
   if (!workFinished(branch)) {
     const commands = branch.offeredCommands;
+    const status = branch.latestExecution?.status ?? null;
+    // `blocked` and `failed` are persisted statuses, and the canonical command that leaves
+    // them is still `start`/`retry`. Naming the state is what stops "Start the work" from
+    // reading as though nothing had gone wrong.
+    if (status === "blocked" && commands.includes("start")) return "Resolve the blocker, then resume the work.";
+    if (status === "failed" && commands.includes("retry")) return "Retry the work, or record that it failed.";
     if (commands.includes("start")) return "Start the work.";
     if (commands.includes("queue")) return "Queue the work to begin it.";
     if (commands.includes("retry")) return "Retry the work.";
@@ -271,7 +288,7 @@ function branchNext(branch: GovernedActionBranch): string | null {
   }
 
   if (!branch.boundary.outcomeExists) return "Record what this work was meant to achieve.";
-  if (!resultEstablished(branch)) return "Record what actually happened, with evidence.";
+  if (!isResultEstablished(branch)) return "Record what actually happened, with evidence.";
   return null;
 }
 
@@ -304,6 +321,10 @@ export function buildBranchJourney(branch: GovernedActionBranch, actorUserId: st
     next: branchNext(branch),
     partialReason: branchPartialReason(branch),
     owner: ownerOf(branch, actorUserId),
+    result: isResultEstablished(branch)
+      ? (OUTCOME_RESULT_LABELS[String(branch.boundary.outcomeState)] ?? null)
+      : null,
+    learning: isResultEstablished(branch) ? (branch.observations[0]?.summary ?? null) : null,
   };
 }
 
@@ -431,10 +452,21 @@ export function deriveDecisionJourney(
   const leadingChainBranch =
     chain.branches.find((branch) => branch.id === leading.branchId) ?? chain.branches[0];
 
-  const observed = chain.branches.filter(
-    (branch) => branch.observations.length > 0 && branch.boundary.outcomeState !== null
-  );
-  const resultBranch = observed[0] ?? null;
+  /*
+   * A chain-level result is only honest when it is UNAMBIGUOUS.
+   *
+   * The first cut reported the first observed branch's result at chain level, and a
+   * Decision with one achieved branch and one still running then read "Result: the expected
+   * result was achieved" while work continued underneath it. That is the multi-branch
+   * mistake in its most damaging form: not a wrong phase, a wrong outcome.
+   *
+   * So the chain speaks for a result only when the loop is closed AND exactly one branch
+   * carries one. Everything else keeps its result on the branch, where the drawer renders
+   * it per action and nothing is generalised across branches that did different things.
+   */
+  const observedBranches = branches.filter((branch) => branch.result !== null);
+  const resultBranch =
+    closure === "loop_closed" && observedBranches.length === 1 ? observedBranches[0] : null;
 
   const state =
     closure === "stopped"
@@ -450,11 +482,8 @@ export function deriveDecisionJourney(
     marks: marksFor(phase, closure),
     state,
     next: closure === "stopped" ? null : leading.next,
-    result:
-      resultBranch !== null
-        ? (OUTCOME_RESULT_LABELS[String(resultBranch.boundary.outcomeState)] ?? null)
-        : null,
-    learning: resultBranch?.observations[0]?.summary ?? null,
+    result: resultBranch?.result ?? null,
+    learning: resultBranch?.learning ?? null,
     owner: leading.owner ?? ownerOf(leadingChainBranch, actorUserId),
     partial,
     partialReason,

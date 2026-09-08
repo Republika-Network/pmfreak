@@ -3,6 +3,7 @@ import {
   UNOBSERVABLE_OUTCOME_STATES,
   type GovernedExecutionChain,
 } from "./execution-read-model";
+import { isResultEstablished } from "./decision-journey";
 
 /**
  * Which governed chains may honestly be shown as work in progress.
@@ -54,8 +55,23 @@ export type ChainProgressGroup = "in_progress" | "not_progressing" | "closed";
  * Everything here is a canonical fact about the branch. No parallel lifecycle is invented.
  */
 function isBranchProgressing(branch: GovernedExecutionChain["branches"][number]): boolean {
-  // Achieved is finished work, not work in flight.
-  if (branch.boundary.outcomeAchieved) return false;
+  /*
+   * W4: a RESULT — not only an achieved one — is finished work.
+   *
+   * This asked `boundary.outcomeAchieved`, which is true for exactly one canonical state.
+   * A branch observed as `not_achieved`, `partially_achieved`, `disputed` or `inconclusive`
+   * therefore stayed "progressing" and was listed under the heading "In Progress", even
+   * though its work had finished and its result had been recorded from live evidence. A
+   * negative result is a completed loop, not unfinished work, and filing it as progress
+   * both overstates activity and hides that the PM already has their answer.
+   *
+   * The inverse error was live at the same time: an Outcome carrying `achieved` whose
+   * Observation could not be resolved was excluded here as finished, while the journey
+   * derivation called it VERIFY and unproven. `isResultEstablished` requires the resolved
+   * state AND the Observation, so both surfaces now answer from one predicate and a chain
+   * cannot be closed here and open there.
+   */
+  if (isResultEstablished(branch)) return false;
   // Superseded is a dead end the contract defines no transition out of.
   if (branch.outcome !== null && UNOBSERVABLE_OUTCOME_STATES.includes(branch.outcome.state)) return false;
   return isBranchLive(branch);
@@ -97,8 +113,9 @@ export function classifyChainProgress(chain: GovernedExecutionChain): ChainProgr
   if (chain.branches.some(isBranchProgressing)) return "in_progress";
 
   // Nothing is moving. Now the terminal readings apply, in `describeChainStatus`'s order:
-  // achievement first, then supersession.
-  if (chain.branches.some((branch) => branch.boundary.outcomeAchieved)) return "closed";
+  // an established result first, then supersession. Same predicate as above, so a chain
+  // cannot be excluded from progress and then fail to be recognised as closed.
+  if (chain.branches.some(isResultEstablished)) return "closed";
   if (
     chain.branches.some(
       (branch) => branch.outcome !== null && UNOBSERVABLE_OUTCOME_STATES.includes(branch.outcome.state)
