@@ -55,6 +55,9 @@ export function CommandCenterCanvas({
   changes,
   chains,
   onSelectChain,
+  chainActorUserId = null,
+  chainsIncomplete = false,
+  chainsIncompleteNote = null,
 
   monitoring,
   monitoringActive,
@@ -101,6 +104,12 @@ export function CommandCenterCanvas({
   changes: ChangeItem[];
   chains: GovernedExecutionChain[];
   onSelectChain: (chain: GovernedExecutionChain) => void;
+  /** W4: the viewer's canonical actor id, so a work item can say whether it is theirs. */
+  chainActorUserId?: string | null;
+  /** W4: true when the governed execution root is NOT proven complete, so "In Progress"
+   *  withholds its count and its empty state rather than claiming the project is quiet. */
+  chainsIncomplete?: boolean;
+  chainsIncompleteNote?: string | null;
 
   monitoring: MonitoringSummary;
   monitoringActive: boolean;
@@ -172,7 +181,14 @@ export function CommandCenterCanvas({
 
           {/* 4 — in progress. Right rail on a wide screen, third section on a phone. */}
           <div className="min-w-0 self-start xl:col-start-2 xl:row-start-1">
-            <ExecutionQueue chains={chains} onSelect={onSelectChain} loading={activityLoading} />
+            <ExecutionQueue
+              chains={chains}
+              onSelect={onSelectChain}
+              loading={activityLoading}
+              actorUserId={chainActorUserId}
+              incomplete={chainsIncomplete}
+              incompleteNote={chainsIncompleteNote}
+            />
           </div>
 
           {/* 5 — monitoring, with the specialist roster collapsed beneath it. */}

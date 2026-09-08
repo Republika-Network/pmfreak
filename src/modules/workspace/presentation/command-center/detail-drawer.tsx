@@ -5,8 +5,74 @@ import type { DecisionPanel, DetailSection, DrawerContent, RecordedDecision } fr
 import { StatusBadge } from "./status-badge";
 import { CloseIcon } from "./icons";
 import { ExecutionChainPanel } from "./execution-chain-panel";
+import { JourneyTrack } from "./journey-track";
+import type { DecisionJourney } from "./decision-journey";
 
 const labelize = (value: string) => value.replaceAll("_", " ");
+
+/**
+ * UX-W4 — the human read of a governed chain, placed before the canonical one.
+ *
+ * Everything below is already rendered further down this drawer, in canonical vocabulary,
+ * behind `Evidence & governance`. Nothing is removed and nothing is renamed at the source.
+ * What changes is the ORDER: a PM opening a piece of work is asking where it is and what
+ * happens next, not for a Material Action UUID, so the answer to their question comes
+ * first and the architecture stays available underneath.
+ *
+ * Every line renders only when the canonical projection produced a value. There is no
+ * placeholder owner, no invented deadline and no synthesised learning.
+ */
+function JourneySection({ journey, headingId }: { journey: DecisionJourney; headingId: string }) {
+  return (
+    <section aria-labelledby={headingId} className="mt-4" data-testid="cc-drawer-journey">
+      <h3 id={headingId} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+        Where this stands
+      </h3>
+
+      <JourneyTrack journey={journey} className="mt-2" />
+
+      <p className="mt-2.5 text-sm leading-relaxed text-zinc-200" data-testid="cc-drawer-journey-state">
+        {journey.state}
+      </p>
+
+      {journey.next && (
+        <p className="mt-2 text-xs leading-relaxed text-zinc-300" data-testid="cc-drawer-journey-next">
+          <span className="text-zinc-500">Next </span>
+          {journey.next}
+        </p>
+      )}
+
+      {journey.owner && (
+        <p className="mt-1.5 text-xs text-zinc-400" data-testid="cc-drawer-journey-owner">
+          {journey.owner.isYou ? "Owned by you" : "Owned by another workspace member"}
+        </p>
+      )}
+
+      {/* The result is what the canonical Outcome says happened — never inferred from the
+          work having finished. Absent until an Observation established it. */}
+      {journey.result && (
+        <p className="mt-2.5 text-xs leading-relaxed text-zinc-300" data-testid="cc-drawer-journey-result">
+          <span className="text-zinc-500">Result </span>
+          {journey.result}
+        </p>
+      )}
+
+      {/* The Observation's own summary. Never derived from the Outcome text. */}
+      {journey.learning && (
+        <p className="mt-1.5 text-xs leading-relaxed text-zinc-300" data-testid="cc-drawer-journey-learning">
+          <span className="text-zinc-500">What we learned </span>
+          {journey.learning}
+        </p>
+      )}
+
+      {journey.partialReason && (
+        <p className="mt-2 text-xs leading-relaxed text-amber-300/80" data-testid="cc-drawer-journey-partial">
+          {journey.partialReason}
+        </p>
+      )}
+    </section>
+  );
+}
 
 function RowList({ rows }: { rows: { label: string; value: string }[] }) {
   return (
@@ -310,6 +376,10 @@ export function DetailDrawer({ content, onClose }: { content: DrawerContent | nu
               <div className="mt-2">
                 <StatusBadge tone={content.badge.tone}>{content.badge.label}</StatusBadge>
               </div>
+            )}
+
+            {content.journey && (
+              <JourneySection journey={content.journey} headingId={`${headingId}-journey`} />
             )}
 
             <section aria-labelledby={`${headingId}-why`} className="mt-5">
