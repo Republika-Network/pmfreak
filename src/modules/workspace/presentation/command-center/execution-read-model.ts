@@ -1162,7 +1162,30 @@ export function buildExecutionChains(
 
   const chains: GovernedExecutionChain[] = [];
 
-  for (const decision of summary.decisions ?? []) {
+  /*
+   * The chain ROOT: the recent Decision window PLUS every Decision the server proved still
+   * has open governed work.
+   *
+   * `summary.decisions` is a newest-30 history window. A Decision older than that with a
+   * Task still running is not "finished" — it is invisible, and a queue rooted on the
+   * window alone would report an empty "In Progress" while the work continued. W4 adds
+   * `governedExecutionRootDecisions`, resolved server-side from non-terminal executions,
+   * pending results and unexpired Actions.
+   *
+   * Deduped by canonical id, so a Decision present in both is projected once. Ordering
+   * follows the window first, which keeps the recent-activity reading stable and appends
+   * the older still-open chains behind it rather than reshuffling the surface.
+   */
+  const rootDecisions: AnyRecord[] = [];
+  const seenDecisionIds = new Set<string>();
+  for (const decision of [...(summary.decisions ?? []), ...(summary.governedExecutionRootDecisions ?? [])]) {
+    const id = str(decision.id);
+    if (!id || seenDecisionIds.has(id)) continue;
+    seenDecisionIds.add(id);
+    rootDecisions.push(decision);
+  }
+
+  for (const decision of rootDecisions) {
     const decisionId = String(decision.id);
     const decisionStatus = String(decision.decision_status);
     const terminal = ["accepted", "rejected", "modified"].includes(decisionStatus);

@@ -1882,10 +1882,139 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
   };
   const idsOf = (rows: SummaryRow[]): string[] => [...new Set(rows.map((row) => String(row.id)))];
 
+  /*
+   * UX-W4 — the governed EXECUTION root.
+   *
+   * Everything downstream of a Decision is already completed by exact canonical reference
+   * below, so for any chain that is projected, an absent Outcome or Observation is a real
+   * absence rather than a windowing artefact. That was the F7 fix and it still holds.
+   *
+   * What it does NOT fix is the ROOT. The chain projection walks outward from
+   * `decisions` — `operational_decision_records`, newest 30, project-wide. Thirty newer
+   * decisions push an older one out of that window, and every Action, Task, Execution and
+   * Outcome beneath it leaves the surface with it. "In Progress" would then render empty
+   * while work was genuinely running, which is the same false-clear W3 removed from Needs
+   * You, one surface along.
+   *
+   * So the execution surface gets its own root, asked as the execution question: which
+   * work is actually open? Three canonical predicates, each an indexed read:
+   *
+   *   - an execution in a non-terminal status               (work under way)
+   *   - an Outcome whose result is not yet established      (work done, result pending)
+   *   - an unexpired Action                                 (authorised, maybe not yet work)
+   *
+   * Each is ONE statement, and one statement is one MVCC snapshot. That is what makes the
+   * membership provable without a schema change: a read that returns fewer rows than its
+   * ceiling saw all of them at a single instant, with no window for a concurrent commit to
+   * hide in — the hole that made W3 reject cardinality-over-pages as proof. Asking for
+   * CEILING + 1 rows and getting them back is the overflow signal, and overflow is
+   * reported as UNPROVEN rather than silently truncated.
+   *
+   * The result is a SEPARATE projection. Nothing here is unioned into `decisions`, which
+   * keeps its recent-history meaning that "What changed" is built on.
+   */
+  const EXECUTION_ROOT_CEILING = 500;
+  const ACTIVE_EXECUTION_STATUSES = ["queued", "running", "blocked", "failed"];
+  const RESULT_PENDING_OUTCOME_STATES = ["expected", "observing"];
+  // The server's own reading, from the same statement that produced the assurance
+  // snapshot. `expires_at` is compared against a clock and the caller's is not
+  // authoritative — the same reason P2-06's window is anchored server-side.
+  const executionRootAsOf =
+    typeof (assuranceResult.data as { asOf?: unknown } | null)?.asOf === "string"
+      ? String((assuranceResult.data as { asOf: string }).asOf)
+      : new Date().toISOString();
+
+  const [activeExecutionRoots, pendingOutcomeRoots, openActionRoots] = await Promise.all([
+    client
+      .from("internal_task_executions")
+      .select("id,task_id,source_action_id")
+      .eq("workspace_id", workspaceId)
+      .eq("project_id", projectId)
+      .in("status", ACTIVE_EXECUTION_STATUSES)
+      // `id` is the primary key, so this is a TOTAL order and the ceiling cuts at a
+      // deterministic place rather than wherever the planner happened to stop.
+      .order("id", { ascending: true })
+      .limit(EXECUTION_ROOT_CEILING + 1),
+    client
+      .from("canonical_task_outcomes")
+      .select("id,task_id,source_action_id")
+      .eq("workspace_id", workspaceId)
+      .eq("project_id", projectId)
+      .in("state", RESULT_PENDING_OUTCOME_STATES)
+      .order("id", { ascending: true })
+      .limit(EXECUTION_ROOT_CEILING + 1),
+    client
+      .from("material_action_proposals")
+      .select("id,source_decision_id")
+      .eq("workspace_id", workspaceId)
+      .eq("project_id", projectId)
+      .gt("expires_at", executionRootAsOf)
+      .order("id", { ascending: true })
+      .limit(EXECUTION_ROOT_CEILING + 1),
+  ]);
+  for (const result of [activeExecutionRoots, pendingOutcomeRoots, openActionRoots]) {
+    if (result.error) throw new Error(`load_execution_root: ${result.error.message}`);
+  }
+  const activeExecutionRootRows = (activeExecutionRoots.data ?? []) as unknown as SummaryRow[];
+  const pendingOutcomeRootRows = (pendingOutcomeRoots.data ?? []) as unknown as SummaryRow[];
+  const openActionRootRows = (openActionRoots.data ?? []) as unknown as SummaryRow[];
+
+  /** True only when NO root read hit its ceiling. Any overflow makes the execution answer
+   *  unproven, and the surface must then withhold its count and its empty state. */
+  const executionRootWithinCeiling =
+    activeExecutionRootRows.length <= EXECUTION_ROOT_CEILING &&
+    pendingOutcomeRootRows.length <= EXECUTION_ROOT_CEILING &&
+    openActionRootRows.length <= EXECUTION_ROOT_CEILING;
+
+  const rootActionIds = new Set<string>();
+  const outcomeTaskIdsNeedingAction: string[] = [];
+  for (const row of activeExecutionRootRows) {
+    // `internal_task_executions.source_action_id` is NOT NULL in P2-08.
+    if (row.source_action_id) rootActionIds.add(String(row.source_action_id));
+  }
+  for (const row of pendingOutcomeRootRows) {
+    // `canonical_task_outcomes.source_action_id` is nullable in the schema even though the
+    // RPC always sets it from the completed execution. Resolve the exception through the
+    // Task rather than assuming, so an older or hand-seeded row is not dropped.
+    if (row.source_action_id) rootActionIds.add(String(row.source_action_id));
+    else if (row.task_id) outcomeTaskIdsNeedingAction.push(String(row.task_id));
+  }
+  for (const row of openActionRootRows) rootActionIds.add(String(row.id));
+
+  if (outcomeTaskIdsNeedingAction.length > 0) {
+    const rescuedTasks = await linkedRows("execution_tasks", "id", [...new Set(outcomeTaskIdsNeedingAction)]);
+    for (const task of rescuedTasks) {
+      const payload = task.source_payload as { source?: unknown; sourceActionId?: unknown } | null;
+      if (payload && String(payload.source) === "governed_action" && payload.sourceActionId) {
+        rootActionIds.add(String(payload.sourceActionId));
+      }
+    }
+  }
+
+  /** The Decisions those open Actions belong to, resolved by exact canonical reference. */
+  const executionRootActions =
+    rootActionIds.size > 0 ? await linkedRows("material_action_proposals", "id", [...rootActionIds]) : [];
+  const executionRootDecisionIds = new Set<string>();
+  for (const action of executionRootActions) {
+    if (action.source_decision_id) executionRootDecisionIds.add(String(action.source_decision_id));
+  }
+
+  /** Decisions the recent window already carries need no second read. */
+  const windowDecisionIds = new Set(decisionIds.map(String));
+  const missingRootDecisionIds = [...executionRootDecisionIds].filter((id) => !windowDecisionIds.has(id));
+  const governedExecutionRootDecisions =
+    missingRootDecisionIds.length > 0
+      ? await linkedRows("operational_decision_records", "id", missingRootDecisionIds)
+      : [];
+
+  /** Every Decision the chain projection must reach: the recent window PLUS every decision
+   *  with open governed work, however old. */
+  const chainRootDecisionIds = [...new Set([...decisionIds.map(String), ...executionRootDecisionIds])];
+
   const allMaterialActions = unionById(
     "persisted_at",
     materialActions.data as unknown as SummaryRow[] | null,
-    await linkedRows("material_action_proposals", "source_decision_id", decisionIds.map(String))
+    await linkedRows("material_action_proposals", "source_decision_id", chainRootDecisionIds)
   );
   const actionIds = idsOf(allMaterialActions);
   const [linkedEvaluations, linkedTasks] = await Promise.all([
@@ -2257,6 +2386,8 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
     observations: allObservations,
     tasks: allTasks,
     executions: allExecutions,
+    governedExecutionRootDecisions,
+    governedExecutionRootComplete: executionRootWithinCeiling,
     governedAttentionRecommendations: safeGovernedAttentionRecommendations,
     governedAttentionReconciliationRecommendations: safeReconciliationRecommendations,
     governedAttentionDecisions,

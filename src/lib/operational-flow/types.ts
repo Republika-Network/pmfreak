@@ -300,6 +300,29 @@ export type OperationalSummary = {
    * still-open one out of that window, and an attention queue rooted on it would then show
    * nothing and tell the PM they are clear while a real decision waited.
    */
+  /**
+   * Decisions with OPEN governed work that the recent `decisions` window does not reach.
+   *
+   * `decisions` is the newest-30 project-wide history window, and the execution chain
+   * projection walks outward from it. Thirty newer decisions push an older one out, taking
+   * every Action, Task, Execution and Outcome beneath it off the surface — so "In Progress"
+   * would render empty while work was genuinely running.
+   *
+   * This is the execution question asked directly: which work is open? It is resolved from
+   * non-terminal executions, results still pending, and unexpired Actions, each read in ONE
+   * statement so its membership is a single MVCC snapshot rather than a set assembled
+   * across instants. Deliberately SEPARATE from `decisions`, which keeps its
+   * recent-history meaning.
+   */
+  governedExecutionRootDecisions?: Array<Record<string, unknown>>;
+  /**
+   * Whether the execution root above provably holds every open governed chain.
+   *
+   * False when any root read hit its safety ceiling. The surface must then withhold both
+   * its count and the claim that nothing is in progress — a successful request is not
+   * completeness. Absent on a payload produced before W4.
+   */
+  governedExecutionRootComplete?: boolean;
   governedAttentionRecommendations?: Array<Record<string, unknown>>;
   /**
    * Whether the set above provably represents every open governed Recommendation in the
