@@ -325,10 +325,22 @@ test("P2-12 H5: P2-12 introduced no migration and no new API route, and no LATER
   // signature change, and it carries its own acceptance in
   // tests/p2-14-intake-source-boundary.test.mjs and scripts/check-p2-14-db.mjs.
   //
+  // UX-W3 / CODEX-P2-02 ships exactly one: a forward-only `create or replace` of
+  // `get_operational_assurance_summary` that adds ONE key, `openRecommendationIds`,
+  // computed with exactly the predicates the existing `openRecommendations` count already
+  // uses and inside the SAME `select jsonb_build_object(...)` — so membership and the count
+  // come from one statement snapshot. `asOf` is `now()`, a wall-clock reading rather than a
+  // token of MVCC visibility, so timestamps could not decide snapshot membership and equal
+  // cardinality could not prove it. No schema, RLS, policy, trigger, data, signature,
+  // decision or authorization change; same `stable security invoker` and pinned
+  // `search_path`, with the PUBLIC revoke and `authenticated` grant re-issued. It carries
+  // its own acceptance in tests/ux-w3-needs-you-interaction-quality.test.mjs.
+  //
   // Exact full paths only: no wildcard, no timestamp prefix, no directory grant. Anything
   // not named here still fails this assertion, which is the protection P2-12 actually needs.
   const REVIEWED_LATER_MIGRATIONS = new Set([
     "supabase/migrations/20260907000000_p2_14_intake_source_classification_hardening.sql",
+    "supabase/migrations/20260908000000_p2_02_attention_membership_snapshot.sql",
   ]);
   const unreviewedMigrations = changed
     .filter((file) => file.startsWith("supabase/migrations/"))
