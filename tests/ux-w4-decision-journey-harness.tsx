@@ -22,7 +22,10 @@ import {
   buildExecutionChains,
   type GovernedExecutionChain,
 } from "../src/modules/workspace/presentation/command-center/execution-read-model";
-import { projectChainProgress } from "../src/modules/workspace/presentation/command-center/in-progress-read-model";
+import {
+  classifyChainProgress,
+  projectChainProgress,
+} from "../src/modules/workspace/presentation/command-center/in-progress-read-model";
 import { deriveDecisionJourney } from "../src/modules/workspace/presentation/command-center/decision-journey";
 import { ExecutionQueue } from "../src/modules/workspace/presentation/command-center/execution-queue";
 import { computeGovernedExecutionRoot } from "./ux-w4-execution-root-membership-stub";
@@ -456,6 +459,170 @@ scenarios.push({
   }),
 });
 
+/*
+ * MULTI-BRANCH, MIXED TERMINAL AND OPEN — counterexample A.
+ *
+ * Branch A1 finished and was superseded: the contract defines no transition out of it.
+ * Branch A2's authorisation lapsed before any work was created, so it is open and not
+ * moving — the PM has to obtain a fresh authorisation before anything can continue.
+ *
+ * The Decision is therefore OPEN, and the whole chain is NOT progressing. "Closed" would
+ * tell a PM the decision was finished while one of its actions still needs them.
+ */
+scenarios.push({
+  key: "multiBranchSupersededPlusExpired",
+  note: "One superseded branch, one expired-authorisation branch — open, and not moving.",
+  summary: summaryOf({
+    decisions: [decisionRow("dec-mixsup", "accepted")],
+    recommendations: [recommendationRow("dec-mixsup", "Approve the scope change")],
+    materialActions: [
+      actionRow("act-mixsup-a", "dec-mixsup"),
+      // Authorisation lapsed before `NOW`, so `dispatchBlockReason` refuses new work.
+      actionRow("act-mixsup-b", "dec-mixsup", { expires_at: PAST }),
+    ],
+    materialActionEvaluations: [evaluationRow("act-mixsup-a"), evaluationRow("act-mixsup-b")],
+    // Only branch A ever became work. Branch B has no Task at all.
+    tasks: [taskRow("task-mixsup-a", "act-mixsup-a", "completed")],
+    executions: [executionRow("exec-mixsup-a", "task-mixsup-a", "act-mixsup-a", "completed")],
+    outcomes: [outcomeRow("out-mixsup-a", "task-mixsup-a", "act-mixsup-a", "superseded")],
+  }),
+});
+
+/*
+ * MULTI-BRANCH, MIXED TERMINAL AND OPEN — counterexample B.
+ *
+ * Branch A1 is genuinely terminal: completed, resolved Outcome, real Observation. Branch A2
+ * is the same lapsed-authorisation shape as above. One finished branch does not finish a
+ * Decision, and an observed result is no more entitled to close the chain than a superseded
+ * one is.
+ */
+scenarios.push({
+  key: "multiBranchObservedPlusExpired",
+  note: "One observed branch, one expired-authorisation branch — open, and not moving.",
+  summary: summaryOf({
+    decisions: [decisionRow("dec-mixobs", "accepted")],
+    recommendations: [recommendationRow("dec-mixobs", "Approve the scope change")],
+    materialActions: [
+      actionRow("act-mixobs-a", "dec-mixobs"),
+      actionRow("act-mixobs-b", "dec-mixobs", { expires_at: PAST }),
+    ],
+    materialActionEvaluations: [evaluationRow("act-mixobs-a"), evaluationRow("act-mixobs-b")],
+    tasks: [taskRow("task-mixobs-a", "act-mixobs-a", "completed")],
+    executions: [executionRow("exec-mixobs-a", "task-mixobs-a", "act-mixobs-a", "completed")],
+    outcomes: [outcomeRow("out-mixobs-a", "task-mixobs-a", "act-mixobs-a", "achieved")],
+    observations: [
+      observationRow("obs-mixobs-a", "out-mixobs-a", "task-mixobs-a", "achieved", "Branch A landed as expected."),
+    ],
+  }),
+});
+
+/*
+ * MULTI-BRANCH — a partial branch beside a superseded one.
+ *
+ * Branch A1's Outcome carries a resolved state whose Observation cannot be resolved, so the
+ * loop is unproven. Branch A2 is superseded. Neither is running; neither pair of them is a
+ * closed loop. The chain is open and not moving.
+ */
+scenarios.push({
+  key: "multiBranchPartialPlusSuperseded",
+  note: "Unproven result beside a superseded branch — still open, still not moving.",
+  summary: summaryOf({
+    decisions: [decisionRow("dec-mixpart", "accepted")],
+    recommendations: [recommendationRow("dec-mixpart", "Approve the scope change")],
+    materialActions: [actionRow("act-mixpart-a", "dec-mixpart"), actionRow("act-mixpart-b", "dec-mixpart")],
+    materialActionEvaluations: [evaluationRow("act-mixpart-a"), evaluationRow("act-mixpart-b")],
+    tasks: [
+      taskRow("task-mixpart-a", "act-mixpart-a", "completed"),
+      taskRow("task-mixpart-b", "act-mixpart-b", "completed"),
+    ],
+    executions: [
+      executionRow("exec-mixpart-a", "task-mixpart-a", "act-mixpart-a", "completed"),
+      executionRow("exec-mixpart-b", "task-mixpart-b", "act-mixpart-b", "completed"),
+    ],
+    outcomes: [
+      // Resolved, but no Observation row exists to prove what was learned.
+      outcomeRow("out-mixpart-a", "task-mixpart-a", "act-mixpart-a", "not_achieved"),
+      outcomeRow("out-mixpart-b", "task-mixpart-b", "act-mixpart-b", "superseded"),
+    ],
+    observations: [],
+  }),
+});
+
+/*
+ * MULTI-BRANCH — CONTROLS for the two counterexamples above.
+ *
+ * Every branch is terminal, by the two different routes. These must stay CLOSED, or the fix
+ * would simply be "never close a multi-branch chain", which is a different lie.
+ */
+scenarios.push({
+  key: "multiBranchAllSuperseded",
+  note: "Every branch superseded — genuinely terminal.",
+  summary: summaryOf({
+    decisions: [decisionRow("dec-allsup", "accepted")],
+    recommendations: [recommendationRow("dec-allsup", "Approve the scope change")],
+    materialActions: [actionRow("act-allsup-a", "dec-allsup"), actionRow("act-allsup-b", "dec-allsup")],
+    materialActionEvaluations: [evaluationRow("act-allsup-a"), evaluationRow("act-allsup-b")],
+    tasks: [
+      taskRow("task-allsup-a", "act-allsup-a", "completed"),
+      taskRow("task-allsup-b", "act-allsup-b", "completed"),
+    ],
+    executions: [
+      executionRow("exec-allsup-a", "task-allsup-a", "act-allsup-a", "completed"),
+      executionRow("exec-allsup-b", "task-allsup-b", "act-allsup-b", "completed"),
+    ],
+    outcomes: [
+      outcomeRow("out-allsup-a", "task-allsup-a", "act-allsup-a", "superseded"),
+      outcomeRow("out-allsup-b", "task-allsup-b", "act-allsup-b", "superseded"),
+    ],
+  }),
+});
+
+scenarios.push({
+  key: "multiBranchObservedPlusSuperseded",
+  note: "One observed branch, one superseded branch — every branch terminal, so closed.",
+  summary: summaryOf({
+    decisions: [decisionRow("dec-obssup", "accepted")],
+    recommendations: [recommendationRow("dec-obssup", "Approve the scope change")],
+    materialActions: [actionRow("act-obssup-a", "dec-obssup"), actionRow("act-obssup-b", "dec-obssup")],
+    materialActionEvaluations: [evaluationRow("act-obssup-a"), evaluationRow("act-obssup-b")],
+    tasks: [
+      taskRow("task-obssup-a", "act-obssup-a", "completed"),
+      taskRow("task-obssup-b", "act-obssup-b", "completed"),
+    ],
+    executions: [
+      executionRow("exec-obssup-a", "task-obssup-a", "act-obssup-a", "completed"),
+      executionRow("exec-obssup-b", "task-obssup-b", "act-obssup-b", "completed"),
+    ],
+    outcomes: [
+      outcomeRow("out-obssup-a", "task-obssup-a", "act-obssup-a", "achieved"),
+      outcomeRow("out-obssup-b", "task-obssup-b", "act-obssup-b", "superseded"),
+    ],
+    observations: [
+      observationRow("obs-obssup-a", "out-obssup-a", "task-obssup-a", "achieved", "Branch A landed as expected."),
+    ],
+  }),
+});
+
+scenarios.push({
+  key: "multiBranchRunningPlusSuperseded",
+  note: "One running branch beside a superseded one — genuinely in progress.",
+  summary: summaryOf({
+    decisions: [decisionRow("dec-runsup", "accepted")],
+    recommendations: [recommendationRow("dec-runsup", "Approve the scope change")],
+    materialActions: [actionRow("act-runsup-a", "dec-runsup"), actionRow("act-runsup-b", "dec-runsup")],
+    materialActionEvaluations: [evaluationRow("act-runsup-a"), evaluationRow("act-runsup-b")],
+    tasks: [
+      taskRow("task-runsup-a", "act-runsup-a", "completed"),
+      taskRow("task-runsup-b", "act-runsup-b", "in_progress"),
+    ],
+    executions: [
+      executionRow("exec-runsup-a", "task-runsup-a", "act-runsup-a", "completed"),
+      executionRow("exec-runsup-b", "task-runsup-b", "act-runsup-b", "running"),
+    ],
+    outcomes: [outcomeRow("out-runsup-a", "task-runsup-a", "act-runsup-a", "superseded")],
+  }),
+});
+
 /** A superseded Outcome: the contract defines no transition out of it. */
 scenarios.push({
   key: "outcomeSuperseded",
@@ -646,6 +813,20 @@ const results = scenarios.map((scenario) => {
     journeyOpenDecisionIds: journeys
       .filter((journey) => journey.closure === "open")
       .map((journey) => journey.decisionId),
+    /*
+     * The REAL classifier, run per chain rather than read back out of the three groups.
+     *
+     * `closure` and the grouping are two answers to overlapping questions about the same
+     * rows, so they are emitted side by side and asserted to agree. `progressing` is the
+     * whole-chain liveness the grouping decides on, which is what separates an open chain
+     * that is under way from an open chain that is waiting on the PM.
+     */
+    chainProgress: chains.map((chain, index) => ({
+      decisionId: chain.decisionId,
+      group: classifyChainProgress(chain),
+      closure: journeys[index].closure,
+      branchCount: chain.branches.length,
+    })),
     journeys: journeys.map((journey) => ({
       decisionId: journey.decisionId,
       phase: journey.phase,
@@ -668,6 +849,9 @@ const results = scenarios.map((scenario) => {
         next: branch.next,
         result: branch.result,
         learning: branch.learning,
+        // Whether the Observation that established the result can actually be resolved.
+        // A branch may know its result and still not have proven what was learned.
+        learningProven: branch.learningProven,
         owner: branch.owner,
         partialReason: branch.partialReason,
       })),

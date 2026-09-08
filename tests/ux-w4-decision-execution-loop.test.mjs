@@ -418,6 +418,163 @@ test("I4 — an unproven section withholds its count and its empty-state claim",
 // server-side membership predicate even when its Decision is older than every history
 // window — otherwise the surface silently loses a journey it would have called open.
 
+test("W4-R10 — one terminal branch cannot close a sibling that is still open", () => {
+  /*
+   * BLOCKER 05, counterexample A. A Decision fans out; branch A1 finished and was
+   * superseded, branch A2's authorisation lapsed before any work was created.
+   *
+   * Nothing is progressing, so the classifier reached its terminal readings — and those
+   * asked `some(superseded)`, which one branch satisfied on its own. The whole Decision was
+   * filed under "Closed" while `deriveDecisionJourney` said `open` and the server-side root
+   * named it as open work. "Closed" is a claim about the CHAIN, so it needs every branch.
+   */
+  const { entry, journey } = one("multiBranchSupersededPlusExpired");
+  assert.equal(journey.branches.length, 2, "the fixture must actually fan out");
+  assert.equal(journey.closure, "open");
+  assert.deepEqual(entry.serverOpenDecisionIds, [journey.decisionId], "the server names it open");
+
+  // One branch superseded, one branch open with no Task.
+  const stopped = journey.branches.filter((branch) => branch.stopped);
+  assert.equal(stopped.length, 1, "exactly one branch is canonically stopped");
+  const open = journey.branches.find((branch) => !branch.stopped);
+  assert.match(open.state, /expired/i, "the open branch is blocked on a lapsed authorisation");
+  assert.match(open.next, /fresh authorisation/i, "and its next move is the PM's");
+
+  assert.deepEqual(entry.progress.closed, [], "a chain with an open branch is not closed");
+  assert.deepEqual(entry.progress.inProgress, [], "and nothing is advancing on its own");
+  assert.deepEqual(entry.progress.notProgressing, [journey.decisionId]);
+});
+
+test("W4-R11 — an OBSERVED branch cannot close a sibling that is still open either", () => {
+  /*
+   * BLOCKER 05, counterexample B. Same shape, but branch A1 is terminal by the other route:
+   * completed, resolved Outcome, real Observation. The old `some(isResultEstablished)`
+   * closed the chain on it. An observed result is no more entitled to close a Decision than
+   * a superseded branch is.
+   */
+  const { entry, journey } = one("multiBranchObservedPlusExpired");
+  assert.equal(journey.branches.length, 2);
+  assert.equal(journey.closure, "open");
+  assert.deepEqual(entry.serverOpenDecisionIds, [journey.decisionId]);
+
+  // The finished branch really is finished — otherwise this would pass for the wrong reason.
+  const observed = journey.branches.find((branch) => branch.learningProven);
+  assert.ok(observed, "one branch must be genuinely learning-proven");
+  assert.notEqual(observed.result, null);
+  assert.equal(observed.learning, "Branch A landed as expected.");
+
+  assert.deepEqual(entry.progress.closed, []);
+  assert.deepEqual(entry.progress.inProgress, []);
+  assert.deepEqual(entry.progress.notProgressing, [journey.decisionId]);
+});
+
+test("W4-R12 — the whole-chain terminal rule, and the controls that keep it honest", () => {
+  /*
+   * `closed` requires EVERY branch to be terminal, by exactly two routes: learning-proven,
+   * or canonically stopped. Without these controls the fix above could simply be "never
+   * close a multi-branch chain", which is a different lie told to the same PM.
+   */
+  const expected = {
+    // Mixed terminal + open: open, and nothing is advancing.
+    multiBranchSupersededPlusExpired: "not_progressing",
+    multiBranchObservedPlusExpired: "not_progressing",
+    // A result whose Observation cannot be resolved is not terminal either.
+    multiBranchPartialPlusSuperseded: "not_progressing",
+    // Every branch terminal, by each route and by both at once.
+    multiBranchAllSuperseded: "closed",
+    multiBranchObservedPlusSuperseded: "closed",
+    multiBranchAllObserved: "closed",
+    // Liveness still wins over any terminal sibling.
+    multiBranchRunningPlusSuperseded: "in_progress",
+    multiBranchOneAchievedOneRunning: "in_progress",
+    // Single-branch behaviour is unchanged.
+    outcomeSuperseded: "closed",
+    outcomeAchievedObserved: "closed",
+    outcomeNotAchieved: "closed",
+    partialChainMissingObservation: "not_progressing",
+    rejectedNoAction: "closed",
+    acceptedNoActionYet: "not_progressing",
+  };
+  for (const [key, group] of Object.entries(expected)) {
+    const { entry } = one(key);
+    assert.equal(entry.chainProgress.length, 1, `${key} should produce exactly one chain`);
+    assert.equal(entry.chainProgress[0].group, group, `${key} must classify as ${group}`);
+  }
+
+  /*
+   * The rule is `every`, not `some`, and it is the ONLY route to "closed" for a Decision
+   * that can carry work.
+   *
+   * The behaviour above already fails if either terminal reading returns as a `some(...)`,
+   * but that would be a silent structural regression the scenarios only catch by luck of
+   * coverage. So the shape is pinned too: exactly one `some` over branches (liveness),
+   * exactly one `every` (terminal), and exactly two ways to reach "closed" — a Decision
+   * that cannot carry work at all, and a chain whose every branch has ended.
+   */
+  const source = read("src/modules/workspace/presentation/command-center/in-progress-read-model.ts");
+  assert.equal((source.match(/chain\.branches\.some\(/g) ?? []).length, 1, "one liveness check");
+  assert.match(source, /chain\.branches\.some\(isBranchProgressing\)/);
+  assert.equal((source.match(/chain\.branches\.every\(/g) ?? []).length, 1, "one terminal check");
+  assert.match(source, /chain\.branches\.every\(isBranchTerminal\)/);
+  assert.equal((source.match(/return "closed"/g) ?? []).length, 2, "exactly two routes to closed");
+});
+
+test("the progress grouping cannot disagree with journey closure", () => {
+  /*
+   * The second half of the architecture proof.
+   *
+   * The first half pins the SERVER's open set to the derivation's open set. This pins the
+   * GROUPING to the same derivation, so all three descriptions of a chain — what the
+   * database offers as open work, what the journey calls the chain, and which heading the
+   * PM reads it under — cannot drift apart:
+   *
+   *     closure open   + something progressing  -> in_progress
+   *     closure open   + nothing progressing    -> not_progressing
+   *     closure closed (loop_closed / stopped / no_action_expected) -> closed
+   *
+   * Run over the real derivation and the real classifier across the whole fixture matrix,
+   * not asserted about the source.
+   */
+  const TERMINAL_CLOSURES = ["loop_closed", "stopped", "no_action_expected"];
+  let openChains = 0;
+  let terminalChains = 0;
+  let mixedMultiBranch = 0;
+
+  for (const entry of harness.results) {
+    for (const chain of entry.chainProgress) {
+      if (TERMINAL_CLOSURES.includes(chain.closure)) {
+        terminalChains += 1;
+        assert.equal(
+          chain.group,
+          "closed",
+          `${entry.key}/${chain.decisionId}: closure ${chain.closure} must group as closed`,
+        );
+        continue;
+      }
+      assert.equal(chain.closure, "open", `${entry.key}: unexpected closure ${chain.closure}`);
+      openChains += 1;
+      // An open chain is never closed, whatever else is true of it.
+      assert.notEqual(
+        chain.group,
+        "closed",
+        `${entry.key}/${chain.decisionId}: an OPEN journey must never be grouped as closed`,
+      );
+      // ...and which of the two open groups it lands in is decided by liveness alone.
+      const progressing = entry.progress.inProgress.includes(chain.decisionId);
+      assert.equal(chain.group, progressing ? "in_progress" : "not_progressing");
+      if (chain.branchCount > 1 && !progressing) mixedMultiBranch += 1;
+    }
+  }
+
+  // The matrix must actually contain both sides, or the equalities above are vacuous.
+  assert.ok(openChains >= 12, "the fixture set must exercise many open chains");
+  assert.ok(terminalChains >= 6, "the fixture set must exercise many terminal chains");
+  assert.ok(
+    mixedMultiBranch >= 2,
+    "the fixture set must include multi-branch chains that are open and not progressing",
+  );
+});
+
 test("the authoritative root and the presentation model describe the SAME universe", () => {
   /*
    * The architecture audit, as an assertion rather than a claim.
