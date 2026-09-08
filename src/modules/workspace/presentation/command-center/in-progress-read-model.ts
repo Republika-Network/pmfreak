@@ -3,7 +3,7 @@ import {
   UNOBSERVABLE_OUTCOME_STATES,
   type GovernedExecutionChain,
 } from "./execution-read-model";
-import { isResultEstablished } from "./decision-journey";
+import { isLearningProven, isResultEstablished } from "./decision-journey";
 
 /**
  * Which governed chains may honestly be shown as work in progress.
@@ -33,6 +33,9 @@ import { isResultEstablished } from "./decision-journey";
  *   - Not authorized to proceed — the governance verdict is `requires_approval`, `denied`,
  *     `degraded` or `revoked`. Calling that progress would tell a PM the thing governance
  *     just stopped is happening.
+ *   - Result recorded, Observation unresolvable — the work finished and the database
+ *     states the result, but the Observation that established it cannot be resolved, so
+ *     nothing proves what was learned. Neither running nor closed.
  *
  * None of these is closed either — they are all still open loops — so they are neither
  * counted as progress nor buried with the terminal chains.
@@ -65,11 +68,13 @@ function isBranchProgressing(branch: GovernedExecutionChain["branches"][number])
    * negative result is a completed loop, not unfinished work, and filing it as progress
    * both overstates activity and hides that the PM already has their answer.
    *
-   * The inverse error was live at the same time: an Outcome carrying `achieved` whose
-   * Observation could not be resolved was excluded here as finished, while the journey
-   * derivation called it VERIFY and unproven. `isResultEstablished` requires the resolved
-   * state AND the Observation, so both surfaces now answer from one predicate and a chain
-   * cannot be closed here and open there.
+   * An Outcome carrying a resolved state whose Observation cannot be resolved is NOT
+   * running work either: the database states the result, and calling it "in progress" would
+   * tell a PM work was continuing after it had ended. `isResultEstablished` is therefore
+   * the right predicate here, and it deliberately does not require the Observation row.
+   * Whether the LOOP closed is a different question, asked once below with
+   * `isLearningProven` — the same predicate `deriveDecisionJourney` uses, so the two
+   * surfaces cannot call one chain closed and open.
    */
   if (isResultEstablished(branch)) return false;
   // Superseded is a dead end the contract defines no transition out of.
@@ -98,9 +103,12 @@ function isBranchProgressing(branch: GovernedExecutionChain["branches"][number])
  *   1. A rejected Decision stops the chain regardless of anything beneath it — there is no
  *      branch it could legitimately have.
  *   2. No Action requested: a Decision is not work.
- *   3. ANY branch still progressing: the chain is progressing. This is the fix.
- *   4. Nothing progressing, and something achieved or superseded: terminal.
- *   5. Otherwise: expired, stale, or refused by governance — open, but not moving.
+ *   3. ANY branch still progressing: the chain is progressing.
+ *   4. Nothing progressing, but a result whose Observation cannot be resolved: the work has
+ *      ended and nothing proves what was learned. Unresolved, so not yet terminal — and it
+ *      is checked BEFORE step 5 so one such branch keeps the whole chain out of "Closed".
+ *   5. Nothing progressing, and something observed or superseded: terminal.
+ *   6. Otherwise: expired, stale, or refused by governance — open, but not moving.
  */
 export function classifyChainProgress(chain: GovernedExecutionChain): ChainProgressGroup {
   // Terminal: the canonical Decision stops here.
@@ -112,9 +120,27 @@ export function classifyChainProgress(chain: GovernedExecutionChain): ChainProgr
   // Whole-chain liveness, decided BEFORE any terminal reading.
   if (chain.branches.some(isBranchProgressing)) return "in_progress";
 
-  // Nothing is moving. Now the terminal readings apply, in `describeChainStatus`'s order:
-  // an established result first, then supersession. Same predicate as above, so a chain
-  // cannot be excluded from progress and then fail to be recognised as closed.
+  /*
+   * Nothing is moving — but "not moving" is not yet "closed".
+   *
+   * P2-09 moves an Outcome off `expected` only through an Observation, so a resolved state
+   * whose Observation cannot be resolved is a branch that knows its result and cannot show
+   * what was learned from it. Filing that under "Closed" told the PM the loop had been
+   * closed while `deriveDecisionJourney` was reporting the chain as partial with no
+   * learning — the two surfaces contradicting each other over the same rows.
+   *
+   * It does not belong under "In Progress" either: the work has ended and putting it back
+   * there would say it is still running. "Not progressing" is exactly what it is —
+   * decided, no longer advancing on its own, and the row says why. Checked BEFORE the
+   * terminal readings so one unresolved branch keeps the whole chain out of "Closed".
+   */
+  if (chain.branches.some((branch) => isResultEstablished(branch) && !isLearningProven(branch))) {
+    return "not_progressing";
+  }
+
+  // Now the terminal readings apply, in `describeChainStatus`'s order: an established
+  // result first, then supersession. Same predicates as above, so a chain cannot be
+  // excluded from progress and then fail to be recognised as closed.
   if (chain.branches.some(isResultEstablished)) return "closed";
   if (
     chain.branches.some(

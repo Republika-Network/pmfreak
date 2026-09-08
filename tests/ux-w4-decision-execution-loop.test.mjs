@@ -21,7 +21,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import {
   JOURNEY_PHASES,
@@ -47,6 +47,9 @@ const runHarness = (file) =>
 const harness = runHarness("tests/ux-w4-decision-journey-harness.tsx");
 /** The real `getOperationalSummary` against a faithful Data API stub. */
 const roots = runHarness("tests/ux-w4-execution-root-harness.tsx");
+/** The same real service, read across a canonical transition through a per-table snapshot
+ *  assignment — one legal interleaving of independent statements around one commit. */
+const mvcc = runHarness("tests/ux-w4-execution-root-mvcc-harness.tsx");
 
 const byKey = Object.fromEntries(harness.results.map((entry) => [entry.key, entry]));
 const one = (key) => {
@@ -300,6 +303,38 @@ test("F2 — a superseded Outcome is stopped, and is not blamed on authorisation
   assert.deepEqual([...UNOBSERVABLE_OUTCOME_STATES], ["superseded"]);
 });
 
+test("W4-R9 — a stopped journey implies no future progress, and claims no success", () => {
+  const { entry, journey } = one("outcomeSuperseded");
+  assert.equal(journey.closure, "stopped");
+  assert.equal(journey.next, null);
+
+  // A phase the contract forecloses must not read as pending. `marksFor` used to fall
+  // through to the ordinary case here, so the indicator said "Verify: current step,
+  // Learn: not started" on a journey with no next step at all.
+  for (const phase of JOURNEY_PHASES) {
+    assert.notEqual(journey.marks[phase], "current", `${phase} cannot be current on a stopped journey`);
+    assert.notEqual(journey.marks[phase], "upcoming", `${phase} cannot be upcoming on a stopped journey`);
+  }
+
+  // Nor may it be dressed up as success: the work was superseded, so the phase it stopped
+  // in and everything after it is `not_expected`, while the phases that really happened
+  // stay `complete`. DECIDE is complete because a Decision is what made any of this exist.
+  assert.equal(journey.marks.decide, "complete");
+  assert.equal(journey.marks.do, "complete", "the work did finish before it was superseded");
+  assert.equal(journey.marks.verify, "not_expected");
+  assert.equal(journey.marks.learn, "not_expected");
+  assert.equal(journey.result, null, "a superseded branch established no result");
+  assert.equal(journey.learning, null);
+
+  // The screen reader hears the same thing the styling shows.
+  assert.match(entry.queue.text, /Verify: not expected/);
+  assert.match(entry.queue.text, /Learn: not expected/);
+  assert.ok(!/Verify: current step/.test(entry.queue.text));
+  assert.ok(!/Learn: not started/.test(entry.queue.text));
+  assert.ok(!/Learn: done/.test(entry.queue.text), "a stopped journey never closed its loop");
+  assert.ok(!/aria-current="step"/.test(entry.queue.markup), "nothing is the current step");
+});
+
 // ── G. Authorization ─────────────────────────────────────────────────────────
 
 test("G1 — a viewer who is not the proposer is never offered a step the server would refuse", () => {
@@ -376,6 +411,216 @@ test("I4 — an unproven section withholds its count and its empty-state claim",
   assert.match(unprovenEmpty.text, /cannot confirm/i);
 });
 
+// ── O. The authoritative execution root ──────────────────────────────────────
+//
+// The root and the presentation model must describe the SAME universe. Every canonical
+// state `deriveDecisionJourney` calls `closure === "open"` must be discoverable by the
+// server-side membership predicate even when its Decision is older than every history
+// window — otherwise the surface silently loses a journey it would have called open.
+
+test("the authoritative root and the presentation model describe the SAME universe", () => {
+  /*
+   * The architecture audit, as an assertion rather than a claim.
+   *
+   * `deriveDecisionJourney` decides `closure === "open"` from canonical rows. The server
+   * decides membership of the execution root from the same rows, in SQL. If the two ever
+   * disagree, a journey the surface calls open is one the root does not offer it — and the
+   * Decision vanishes the moment it falls out of every recent-history window. That is
+   * exactly how an accepted Decision with no Action, and completed work with no Outcome,
+   * were both lost.
+   *
+   * So every canonical scenario in the fixture set is checked BOTH ways, and the two sets
+   * must be equal. A new open state added to the derivation without a matching predicate
+   * in the migration fails here rather than in production.
+   */
+  let openStatesCovered = 0;
+  for (const entry of harness.results) {
+    assert.deepEqual(
+      [...entry.serverOpenDecisionIds].sort(),
+      [...entry.journeyOpenDecisionIds].sort(),
+      `${entry.key}: the server root and the journey model disagree about what is open`,
+    );
+    if (entry.journeyOpenDecisionIds.length > 0) openStatesCovered += 1;
+  }
+  // The fixture set must actually contain open journeys, or the equality above is vacuous.
+  assert.ok(openStatesCovered >= 10, "the scenario set must exercise many open journeys");
+
+  // And it must contain the CLOSED ones too, or "everything is open" would also pass.
+  const closedKeys = ["rejectedNoAction", "outcomeAchievedObserved", "outcomeSuperseded", "multiBranchAllObserved"];
+  for (const key of closedKeys) {
+    const entry = harness.results.find((candidate) => candidate.key === key);
+    assert.deepEqual(entry.serverOpenDecisionIds, [], `${key} must not be named as open work`);
+    assert.deepEqual(entry.journeyOpenDecisionIds, [], `${key} must not be named as open work`);
+  }
+
+  /*
+   * The one journey that is deliberately NOT part of the recurring In Progress root, stated
+   * explicitly: a journey the contract forecloses or has closed is unreachable from the
+   * root by design, and stays reachable through `decisions` — the newest-30 recent-history
+   * window — and through the drawer the post-decision handoff opens. That distinction is
+   * what keeps "In Progress" a truthful heading without losing anything.
+   */
+  const superseded = harness.results.find((entry) => entry.key === "outcomeSuperseded");
+  assert.equal(superseded.chainCount, 1, "a stopped chain is still projected and reachable");
+  assert.deepEqual(superseded.progress.closed, ["dec-super"]);
+});
+
+test("W4-R1 — an accepted decision with NO action, outside the window, is still reachable", () => {
+  const scenario = roots.acceptedNoAction;
+  // The fixture is only discriminating if the window really cannot reach it.
+  assert.equal(scenario.windowDecisionIds.length, 30);
+  assert.ok(!scenario.windowDecisionIds.includes("dec-bare"), "fixture is inside the window");
+
+  // Nothing beneath it is work-shaped: no Action, no Task, no Execution, no Outcome. The
+  // three-predicate root saw literally nothing here and the Decision disappeared.
+  assert.deepEqual(scenario.frozenMembershipIds, ["dec-bare"]);
+  assert.ok(scenario.rootDecisionIds.includes("dec-bare"));
+  assert.ok(scenario.chainDecisionIds.includes("dec-bare"));
+
+  const journey = scenario.journeys.find((entry) => entry.decisionId === "dec-bare");
+  assert.equal(journey.phase, "do");
+  assert.equal(journey.closure, "open");
+  assert.match(journey.next, /Request the action/i);
+
+  // A decision is not work, so it is not counted as progress — but it is on the surface,
+  // un-collapsed, because requesting the first Action is the PM's move.
+  assert.ok(scenario.notProgressingDecisionIds.includes("dec-bare"));
+  assert.match(scenario.queue.text, /No action has been requested from it yet/i);
+  assert.equal(scenario.rootComplete, true);
+});
+
+test("W4-R2 — completed work with no Outcome and a lapsed authorisation is still reachable", () => {
+  const scenario = roots.completedNoOutcome;
+  assert.ok(!scenario.windowDecisionIds.includes("dec-verify"), "fixture is inside the window");
+
+  // Every predicate of the discarded root misses this: the Execution is `completed`, no
+  // Outcome exists, and `expires_at` is in the past.
+  assert.deepEqual(scenario.frozenMembershipIds, ["dec-verify"]);
+  assert.ok(scenario.rootDecisionIds.includes("dec-verify"));
+
+  const journey = scenario.journeys.find((entry) => entry.decisionId === "dec-verify");
+  assert.equal(journey.phase, "verify");
+  assert.equal(journey.closure, "open");
+  assert.match(journey.state, /has not been recorded yet/i);
+  assert.equal(scenario.rootComplete, true);
+});
+
+test("W4-R3 — a transition committing between two statements cannot empty the root", () => {
+  const { interleaved, interleavedLateSnapshot, consistent } = mvcc;
+
+  // The Decision is outside the history window, so the root is the only way to it.
+  assert.ok(!interleaved.windowDecisionIds.includes("dec-mvcc"));
+
+  // The DISCARDED proof, evaluated over the same interleave: pending Outcomes read before
+  // the completion commits, active Executions after it, the Action already expired. All
+  // three come back empty, and every one is far below its ceiling — so the old code would
+  // have reported this answer COMPLETE while having lost the chain entirely.
+  assert.deepEqual(interleaved.legacyThreeStatementRoot.decisionIds, []);
+  assert.equal(interleaved.legacyThreeStatementRoot.withinCeiling, true);
+
+  // And it is the INTERLEAVE, not the fixture: read from one world the same three
+  // predicates find it. Without this the test above would pass on unreachable data.
+  assert.deepEqual(consistent.legacyThreeStatementRoot.decisionIds, ["dec-mvcc"]);
+
+  // One statement is one snapshot, and the Decision is open on BOTH sides of the commit,
+  // so the membership names it whichever instant the projection was taken at.
+  for (const scenario of [interleaved, interleavedLateSnapshot, consistent]) {
+    assert.deepEqual(scenario.frozenMembershipIds, ["dec-mvcc"]);
+    assert.equal(scenario.recovered, true, "the journey must survive the interleave");
+    assert.equal(scenario.journey.closure, "open");
+    assert.equal(scenario.rootComplete, true);
+  }
+});
+
+test("W4-R4 — no membership projection means UNPROVEN, never complete", () => {
+  // A database that has not applied the W4 migration. PostgREST answers an unknown function
+  // with an error, and the read must degrade to "we cannot confirm" — not to a failed page,
+  // and under no circumstances to "complete".
+  const scenario = roots.membershipAbsent;
+  assert.equal(scenario.rootComplete, false);
+  assert.match(scenario.queue.text, /may not be complete/i);
+  // The window is still read and still rendered: what is withheld is the CLAIM.
+  assert.equal(scenario.windowDecisionIds.length, 30);
+  assert.ok(scenario.chainDecisionIds.length > 0, "known chains must still be shown");
+});
+
+test("W4-R5 — a frozen member that cannot be resolved makes the answer incomplete", () => {
+  const scenario = roots.memberUnresolvable;
+  assert.equal(scenario.rootComplete, false);
+  assert.deepEqual(scenario.rootDecisionIds, [], "an unresolvable member cannot be invented");
+  assert.match(scenario.queue.text, /may not be complete/i);
+});
+
+test("W4-R6 — a late nonmember cannot substitute for a missing frozen member", () => {
+  const scenario = roots.lateNonmember;
+  // The snapshot named one member; a DIFFERENT open Decision, newer than the projection,
+  // is sitting at the top of the window. Cardinality would balance. Identity does not.
+  assert.equal(scenario.rootComplete, false);
+  assert.ok(
+    !scenario.rootDecisionIds.includes("dec-late"),
+    "a Decision the snapshot never named must not enter the authoritative root",
+  );
+  assert.deepEqual(scenario.rootDecisionIds, []);
+});
+
+test("a transport duplicate is deduped by canonical id and never pads the proof", () => {
+  const scenario = roots.duplicateMember;
+  // Two copies of one id against a count of two. Deduping collapses them to one member,
+  // which then disagrees with the count the same statement produced — so nothing is proven.
+  assert.equal(scenario.rootComplete, false);
+  assert.deepEqual(scenario.rootDecisionIds, ["dec-old"], "one canonical id, listed once");
+});
+
+test("the membership projection is one statement, security invoker, and pins its search_path", () => {
+  const migration = read(
+    "supabase/migrations/20260909000000_ux_w4_governed_execution_root_membership.sql",
+  );
+  assert.match(migration, /create or replace function public\.get_governed_execution_root\(p_workspace_id uuid, p_project_id uuid\)/);
+  assert.match(migration, /stable security invoker set search_path = public/);
+  // Authorization is the existing check, not a reimplementation of it.
+  assert.match(migration, /if not public\.can_access_operational_project\(p_workspace_id, p_project_id\) then/);
+  assert.ok(!/role\s*=\s*'(owner|admin|manager|sponsor)'/.test(migration), "no role-name authority");
+  /*
+   * ONE statement, and one scan inside it: `count(*)` and `jsonb_agg(...)` are aggregates
+   * over the SAME derived table, so the count and the membership cannot come from
+   * different snapshots — or from different predicates.
+   */
+  assert.equal((migration.match(/\binto result\b/g) ?? []).length, 1, "exactly one statement");
+  assert.match(migration, /'openExecutionDecisions', count\(\*\)/);
+  assert.match(migration, /coalesce\(jsonb_agg\(open_journeys\.id order by/);
+  assert.match(migration, /\) as open_journeys;/);
+  assert.match(migration, /'openExecutionDecisionIds'/);
+  assert.match(migration, /'openExecutionDecisions'/);
+  // The id set is NOT capped in SQL; the ceiling belongs to the consumer, where exceeding
+  // it means UNPROVEN rather than a truncated set presented as authoritative.
+  assert.ok(
+    !/jsonb_agg[\s\S]{0,200}limit\s+\d/.test(migration),
+    "a silent SQL cap would truncate authoritative membership",
+  );
+  // Read-only projection, forward-only, no policy or write semantics.
+  for (const forbidden of [/\binsert\s+into\b/i, /\bupdate\s+public\./i, /\bdelete\s+from\b/i, /\bdrop\s+/i, /create\s+policy/i, /alter\s+policy/i]) {
+    assert.ok(!forbidden.test(migration), `migration must not ${forbidden}`);
+  }
+  assert.match(migration, /revoke all on function public\.get_governed_execution_root\(uuid, uuid\) from public;/);
+  assert.match(migration, /grant execute on function public\.get_governed_execution_root\(uuid, uuid\) to authenticated;/);
+});
+
+test("the root is asked as ONE statement, and its absence is never fatal", () => {
+  const source = read("src/lib/operational-flow/operational-flow-service.ts");
+  // Exactly one membership call, and the three discarded root reads are gone.
+  assert.equal((source.match(/client\.rpc\("get_governed_execution_root"/g) ?? []).length, 1);
+  assert.ok(!source.includes("EXECUTION_ROOT_CEILING"), "the three-statement root must be gone");
+  assert.ok(!source.includes("activeExecutionRoots"), "the three-statement root must be gone");
+  assert.ok(!source.includes("pendingOutcomeRoots"), "the three-statement root must be gone");
+  assert.ok(!source.includes("openActionRoots"), "the three-statement root must be gone");
+  // The membership RPC must NOT be in the list of reads that throw: an older database has
+  // to degrade to UNPROVEN rather than failing the whole page.
+  assert.ok(
+    !/executionRootResult\.error\)\s*throw/.test(source),
+    "an absent projection must be UNPROVEN, not fatal",
+  );
+});
+
 // ── L. Partial chains ────────────────────────────────────────────────────────
 
 test("L — an unresolvable linked record keeps the known facts and claims no completion", () => {
@@ -397,6 +642,48 @@ test("L — an unresolvable linked record keeps the known facts and claims no co
   // still under way. The earlier cut forced this back into "In Progress", which told the
   // PM work was continuing when it had finished — a worse error than the one it prevented.
   assert.deepEqual(entry.progress.inProgress, [], "finished work must not be shown as in progress");
+});
+
+test("W4-R7 — a result without its observation is unresolved, and is never called loop_closed", () => {
+  const { entry, journey } = one("partialChainMissingObservation");
+
+  // The truthful reading of these rows, field by field:
+  //   result known · work not running · learning NOT proven · chain NOT complete
+  assert.notEqual(journey.result, null, "the database states the result");
+  assert.equal(journey.learning, null, "nothing recorded what was learned");
+  assert.equal(journey.partial, true);
+
+  // The contradiction this fixes: the journey used to report `loop_closed` with every
+  // phase complete while `learning` was null and `partial` was true — four fields, and one
+  // of them disagreeing with the other three.
+  assert.notEqual(journey.closure, "loop_closed", "an unproven loop is not a closed one");
+  assert.notEqual(journey.marks.learn, "complete", "LEARN cannot be done with nothing learned");
+
+  // And a screen reader must not hear the claim either.
+  assert.ok(
+    !/Learn: done/.test(entry.queue.text),
+    'the loop indicator must not announce "Learn: done" over a missing observation',
+  );
+
+  // Neither running nor closed. Finished work does NOT go back under "In Progress", and an
+  // unproven loop does not get filed away as terminal.
+  assert.deepEqual(entry.progress.inProgress, []);
+  assert.deepEqual(entry.progress.closed, []);
+  assert.deepEqual(entry.progress.notProgressing, [journey.decisionId]);
+});
+
+test("W4-R8 — control: a resolved Outcome WITH its Observation still closes the loop", () => {
+  // Without this the fix above could have been "never close any loop", which would be a
+  // different lie told to the same PM.
+  const { entry, journey } = one("outcomeAchievedObserved");
+  assert.equal(journey.closure, "loop_closed");
+  assert.equal(journey.marks.learn, "complete");
+  assert.equal(journey.learning, "Queue contention was the real bottleneck.");
+  assert.notEqual(journey.result, null);
+  assert.equal(journey.partial, false);
+  assert.match(entry.queue.text, /Learn: done/);
+  assert.deepEqual(entry.progress.closed, [journey.decisionId]);
+  assert.deepEqual(entry.progress.notProgressing, []);
 });
 
 test("L2 — a resolved result with its observation present claims no anomaly", () => {
@@ -487,15 +774,36 @@ test("PMFreak never claims to recommend or expect anything the model does not ho
 
 // ── Scope boundaries ─────────────────────────────────────────────────────────
 
-test("W4 introduces no migration, no endpoint and no dependency", () => {
+test("W4 introduces no endpoint and no dependency, and exactly one read-only migration", () => {
   const journey = read("src/modules/workspace/presentation/command-center/decision-journey.ts");
   // The derivation is pure: no fetch, no client, no clock of its own.
   for (const term of ["fetch(", "createClient", "Date.now(", "new Date("]) {
     assert.ok(!journey.includes(term), `the derivation must stay pure, found: ${term}`);
   }
-  // No new dependency, and no migration added by this wave.
+  // No new dependency.
   const pkg = JSON.parse(read("package.json"));
   assert.ok(!Object.keys(pkg.dependencies ?? {}).some((name) => /state-machine|xstate|timeline/i.test(name)));
+
+  /*
+   * W4 originally shipped with no migration at all, and that was the wrong constraint to
+   * hold: authoritative membership cannot be assembled from independent statements. So
+   * remediation adds ONE forward-only, read-only projection — and exactly one.
+   *
+   * Pinned by CONTENT rather than by a git range, so the assertion holds in a checkout
+   * with no remote and cannot be satisfied by a second file quietly redefining the same
+   * function later in the ordering.
+   */
+  const migrationDir = "supabase/migrations";
+  const declaring = readdirSync(migrationDir)
+    .filter((name) => name.endsWith(".sql"))
+    .filter((name) => read(`${migrationDir}/${name}`).includes("function public.get_governed_execution_root"));
+  assert.deepEqual(declaring, ["20260909000000_ux_w4_governed_execution_root_membership.sql"]);
+
+  // No new endpoint: the surface is still fed by the existing operational-flow route, and
+  // the membership projection is reached through the data client like every other read.
+  const service = read("src/lib/operational-flow/operational-flow-service.ts");
+  assert.match(service, /client\.rpc\("get_governed_execution_root"/);
+  assert.ok(!service.includes("/api/"), "the service must not reach a new endpoint");
 });
 
 test("the human phase is never persisted or sent to a write path", () => {

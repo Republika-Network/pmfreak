@@ -25,6 +25,7 @@ import {
 import { projectChainProgress } from "../src/modules/workspace/presentation/command-center/in-progress-read-model";
 import { deriveDecisionJourney } from "../src/modules/workspace/presentation/command-center/decision-journey";
 import { ExecutionQueue } from "../src/modules/workspace/presentation/command-center/execution-queue";
+import { computeGovernedExecutionRoot } from "./ux-w4-execution-root-membership-stub";
 import { DetailDrawer } from "../src/modules/workspace/presentation/command-center/detail-drawer";
 import type { DrawerContent } from "../src/modules/workspace/presentation/command-center/types";
 
@@ -599,6 +600,30 @@ function drawerFor(chain: GovernedExecutionChain, actorUserId: string | null): D
   };
 }
 
+/**
+ * The SERVER-side membership predicate, evaluated over the same rows this scenario holds.
+ *
+ * The authoritative execution root and the presentation model must describe ONE universe.
+ * If the server's notion of "open" is narrower than `deriveDecisionJourney`'s, a journey
+ * the surface would call open is one the root never offers it — and the Decision silently
+ * disappears once it falls out of every recent-history window. This projects the migration
+ * predicate over each fixture so the two can be compared scenario by scenario.
+ */
+function membershipFor(summary: (typeof scenarios)[number]["summary"]): string[] {
+  return computeGovernedExecutionRoot(
+    {
+      operational_decision_records: (summary.decisions ?? []) as Row[],
+      material_action_proposals: (summary.materialActions ?? []) as Row[],
+      execution_tasks: (summary.tasks ?? []) as Row[],
+      canonical_task_outcomes: (summary.outcomes ?? []) as Row[],
+      canonical_outcome_observations: (summary.observations ?? []) as Row[],
+    },
+    WORKSPACE,
+    PROJECT,
+    NOW.toISOString()
+  ).openExecutionDecisionIds;
+}
+
 const results = scenarios.map((scenario) => {
   const actorUserId = scenario.summary.actor?.userId ?? null;
   const chains = buildExecutionChains(scenario.summary, NOW);
@@ -615,6 +640,12 @@ const results = scenarios.map((scenario) => {
     key: scenario.key,
     note: scenario.note,
     chainCount: chains.length,
+    /** What the server-side membership predicate names as OPEN for these same rows. */
+    serverOpenDecisionIds: membershipFor(scenario.summary),
+    /** What the presentation model calls open for these same rows. */
+    journeyOpenDecisionIds: journeys
+      .filter((journey) => journey.closure === "open")
+      .map((journey) => journey.decisionId),
     journeys: journeys.map((journey) => ({
       decisionId: journey.decisionId,
       phase: journey.phase,

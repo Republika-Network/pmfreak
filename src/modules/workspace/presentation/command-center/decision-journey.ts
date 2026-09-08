@@ -47,10 +47,18 @@ import {
  * has been established.
  *
  * The consequence is that in this model the Observation both establishes the result and
- * records the learning: there is no representable state of "we know the result but learned
- * nothing". Manufacturing one would mean synthesising learning from Outcome text, which is
- * exactly what must not happen. LEARN is therefore reached when an Observation exists, and
- * it carries the Observation's own summary, state and data-quality qualifiers.
+ * records the learning. Learning is never synthesised from Outcome text, which is exactly
+ * what must not happen — so the two halves are read separately:
+ *
+ *   `isResultEstablished`  a RESOLVED Outcome state is the result, and the database saying
+ *                          so is enough. LEARN is reached here.
+ *   `isLearningProven`     ...and the Observation that moved it must also be resolvable
+ *                          before the loop may be called CLOSED.
+ *
+ * Between them sits one real state: result known, learning unproven. It is an anomaly
+ * rather than a step — P2-09 admits no other way off `expected` — so it is reported as
+ * partial, kept out of "In Progress" because the work has ended, and kept out of "Closed"
+ * because nothing recorded what was learned.
  */
 
 /** The human loop. Ordered: each phase is strictly later than the one before it. */
@@ -112,6 +120,9 @@ export type BranchJourney = {
   result: string | null;
   /** This branch's Observation summary. Null until one exists. */
   learning: string | null;
+  /** True when the Observation that established the result is actually resolvable. A
+   *  branch may know its result and still not have proven what was learned from it. */
+  learningProven: boolean;
 };
 
 /**
@@ -206,6 +217,28 @@ export function isResultEstablished(branch: GovernedActionBranch): boolean {
    * nothing recorded it.
    */
   return true;
+}
+
+/**
+ * True once the Observation that establishes the result can actually be resolved.
+ *
+ * `isResultEstablished` deliberately believes a resolved Outcome state on its own, because
+ * treating finished work as "result unknown" flips it back into "In Progress" and tells a
+ * PM work is running when it has ended. That is right for the RESULT and wrong for the
+ * LOOP: P2-09 moves an Outcome off `expected` only through
+ * `record_canonical_outcome_observation`, so when that Observation cannot be resolved the
+ * honest state is
+ *
+ *     result known · work not running · learning NOT proven · chain NOT complete
+ *
+ * and the surface previously collapsed it into "loop closed, Learn: done" while `learning`
+ * was null and `partial` was true — three of its own fields contradicting the fourth.
+ *
+ * Exported because the "In Progress" grouping asks the same question, and one predicate is
+ * the only way the two surfaces cannot disagree.
+ */
+export function isLearningProven(branch: GovernedActionBranch): boolean {
+  return isResultEstablished(branch) && branch.boundary.observationCount > 0;
 }
 
 export function branchPhase(branch: GovernedActionBranch): JourneyPhase {
@@ -341,6 +374,7 @@ export function buildBranchJourney(branch: GovernedActionBranch, actorUserId: st
       : null,
     // Present only when an Observation actually recorded it. Never derived from the result.
     learning: branch.observations[0]?.summary ?? null,
+    learningProven: isLearningProven(branch),
   };
 }
 
@@ -379,6 +413,29 @@ function marksFor(phase: JourneyPhase, closure: JourneyClosure): Record<JourneyP
   }
   if (closure === "loop_closed") {
     return { decide: "complete", do: "complete", verify: "complete", learn: "complete" };
+  }
+  /*
+   * A STOPPED journey. Every branch reached a state the contract defines no exit from — a
+   * superseded Outcome — so `next` is null and nothing will move again.
+   *
+   * This fell through to the ordinary branch below, which marked the phase it stopped in as
+   * `current` and everything after it as `upcoming`. The loop indicator then read
+   * "Verify: current step, Learn: not started" on a journey with no next step at all,
+   * promising future progress the contract forecloses. Marking them `complete` would be the
+   * opposite lie: superseded work was not successful and its loop was never closed.
+   *
+   * So the phases that actually happened stay `complete`, and the phase it stopped in —
+   * along with everything after it — is `not_expected`, which is what "will not happen"
+   * already means everywhere else in this module.
+   */
+  if (closure === "stopped") {
+    const stoppedAt = JOURNEY_PHASES.indexOf(phase);
+    const stoppedMarks = {} as Record<JourneyPhase, JourneyPhaseMark>;
+    for (const [index, key] of JOURNEY_PHASES.entries()) {
+      stoppedMarks[key] = index < stoppedAt ? "complete" : "not_expected";
+    }
+    stoppedMarks.decide = "complete";
+    return stoppedMarks;
   }
   const current = JOURNEY_PHASES.indexOf(phase);
   const marks = {} as Record<JourneyPhase, JourneyPhaseMark>;
@@ -454,10 +511,29 @@ export function deriveDecisionJourney(
   const live = branches.filter((branch) => !branch.stopped);
   const phase = rollUpPhase(branches);
 
+  /*
+   * Have all the live branches finished and had their results established?
+   *
+   * This is the "nothing is running any more" question, and it is NOT the same question as
+   * "the loop is closed". It gates the chain-level result below, so a Decision that knows
+   * its result still reports it even when the Observation behind it cannot be resolved.
+   */
+  const resultsSettled = live.length > 0 && live.every((branch) => branch.phase === "learn");
+
+  /*
+   * The loop is CLOSED only when every live branch was actually observed.
+   *
+   * `phase === "learn"` was the old test, and it is satisfied by a resolved Outcome alone.
+   * A chain whose Observation could not be resolved therefore came out as `loop_closed`
+   * with `marks.learn = "complete"` — "Learn: done" — while `learning` was null and
+   * `partial` was true. The result is known; what was learned from it is not, and that is
+   * an unresolved loop, not a closed one. It stays `open`, which the progress model files
+   * under "Not progressing" rather than putting finished work back under "In Progress".
+   */
   const closure: JourneyClosure =
     live.length === 0
       ? "stopped"
-      : live.every((branch) => branch.phase === "learn")
+      : live.every((branch) => branch.learningProven)
         ? "loop_closed"
         : "open";
 
@@ -476,13 +552,17 @@ export function deriveDecisionJourney(
    * result was achieved" while work continued underneath it. That is the multi-branch
    * mistake in its most damaging form: not a wrong phase, a wrong outcome.
    *
-   * So the chain speaks for a result only when the loop is closed AND exactly one branch
-   * carries one. Everything else keeps its result on the branch, where the drawer renders
-   * it per action and nothing is generalised across branches that did different things.
+   * So the chain speaks for a result only when every live branch has SETTLED — work
+   * finished, result established — AND exactly one branch carries one. Everything else
+   * keeps its result on the branch, where the drawer renders it per action and nothing is
+   * generalised across branches that did different things.
+   *
+   * The gate is `resultsSettled` rather than `closure === "loop_closed"` on purpose: a
+   * chain whose Observation cannot be resolved is no longer closed, and withholding its
+   * result too would discard a persisted canonical fact to punish a missing one.
    */
   const observedBranches = branches.filter((branch) => branch.result !== null);
-  const resultBranch =
-    closure === "loop_closed" && observedBranches.length === 1 ? observedBranches[0] : null;
+  const resultBranch = resultsSettled && observedBranches.length === 1 ? observedBranches[0] : null;
 
   const state =
     closure === "stopped"
