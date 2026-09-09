@@ -31,18 +31,20 @@
 // ============================================================================
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { STOCK_MANAGED_OBJECT_PROFILES, MANAGED_OBJECT_SERIALIZER_REVISION } from "./fixtures/managed-object-profiles.mjs";
 import { STOCK_EXTENSION_PROFILES } from "./fixtures/extension-profiles.mjs";
 import { STOCK_AUTHORIZATION_PROFILES, authorizationStateLines } from "./fixtures/authorization-profiles.mjs";
+import { parseIdentityArguments } from "./check-security-definer-hardening.mjs";
 
 const ROOT = process.cwd();
 const MIGRATIONS_DIR = path.join(ROOT, "supabase/migrations");
 const ROLES_FILE = path.join(ROOT, "supabase/roles.sql");
 const REPORT_DIR = path.join(ROOT, ".fresh-db-migration-logs");
+const GRANT_MATRIX_FILE = path.join(ROOT, "supabase/security/security-definer-grant-matrix.json");
 
 const KNOWN_PRODUCTION_HOST_FRAGMENTS = ["prod", "production", "pilot"];
 
@@ -3404,6 +3406,183 @@ function runSchemaSmoke(dbUrl) {
   return { ok: true, tableCount: Number(tableCount), tablesWithoutRls: Number(tablesWithoutRls) };
 }
 
+
+// ─── SECURITY DEFINER effective-grant certification ─────────────────────────
+//
+// The companion to scripts/check-security-definer-hardening.mjs. That script
+// reconstructs the INTENDED effective ACL by replaying migration source; this
+// one reads the ACL the database ACTUALLY ended up with after a fresh apply
+// and diffs it against the same declarative matrix
+// (supabase/security/security-definer-grant-matrix.json).
+//
+// This pairing is the control that was missing when Gate 3 first certified.
+// The static review at the time asserted that the migrations, applied in order
+// to an empty database, "would not leave any SECURITY DEFINER function
+// reachable by anon/PUBLIC by accident". Nothing ever compared that claim to a
+// real post-apply catalog, and it was false: on Supabase, ALTER DEFAULT
+// PRIVILEGES gives anon and authenticated their own EXECUTE entries, so
+// `revoke ... from public` left 26 functions anon-executable. Source-side
+// modelling alone cannot close that gap — only catalog state can.
+//
+// Functions are addressed by IDENTITY SIGNATURE
+// (pg_get_function_identity_arguments), never by bare name, so overloads are
+// certified independently.
+//
+// PUBLIC is read from the ACL itself via aclexplode(), where grantee = 0 is
+// the PUBLIC pseudo-role; `has_function_privilege` cannot express PUBLIC
+// because it is not a role in pg_roles. The three named principals use
+// has_function_privilege so that inherited privilege counts as reachable —
+// that is the question the Security Advisor answers, and the one that matters.
+// coalesce(proacl, acldefault('f', proowner)) is required because proacl is
+// NULL for a function whose privileges were never touched, which means "the
+// defaults apply", not "no privileges".
+
+// psql renders a `::text`-cast boolean as "true"/"false", while `-t -A` on a
+// native boolean column renders "t"/"f". Accept both, and REFUSE anything else:
+// a silent coercion to false here would report "privilege denied" for a
+// privilege that is actually granted, which is the exact direction of error
+// this certification exists to catch.
+function pgBool(value) {
+  const v = (value ?? "").trim().toLowerCase();
+  if (v === "t" || v === "true") return true;
+  if (v === "f" || v === "false") return false;
+  throw new Error(`unparseable boolean from psql: ${JSON.stringify(value)}`);
+}
+
+function certifySecurityDefinerGrants(dbUrl) {
+  let matrix;
+  try {
+    matrix = JSON.parse(readFileSync(GRANT_MATRIX_FILE, "utf8"));
+  } catch (error) {
+    return { ok: false, problems: [`cannot read ${path.relative(ROOT, GRANT_MATRIX_FILE)}: ${error.message}`] };
+  }
+
+  // Supabase's client roles may not exist on a plain local Postgres. All three
+  // must be present or this certification cannot be performed at all.
+  //
+  // FAIL CLOSED. An uncertifiable target is a FAILED certification, never a
+  // skipped one: this is a blocking Gate-3 security gate, and a run that could
+  // not read the privilege state must not be able to produce a zero exit. The
+  // two ways to get this wrong are both rejected here — treating an absent role
+  // as a denied privilege (which would report a reassuring "anon: 0" for a
+  // database where anon simply does not exist), and skipping with success
+  // (which would let an unverified target pass the gate by silence).
+  const rolesProbe = sh("psql", ["-v", "ON_ERROR_STOP=1", "-t", "-A", "-F", "|", dbUrl, "-c",
+    "select coalesce(to_regrole('anon')::text, '<missing>'), coalesce(to_regrole('authenticated')::text, '<missing>'), coalesce(to_regrole('service_role')::text, '<missing>');"]);
+  if (rolesProbe.status !== 0) {
+    return { ok: false, problems: [`psql role probe failed, so the effective-grant state could not be read: ${(rolesProbe.stderr || "").trim()}`] };
+  }
+  const probed = rolesProbe.stdout.trim().split("|").map((v) => v.trim());
+  const required = ["anon", "authenticated", "service_role"];
+  const missing = required.filter((_, i) => probed[i] === "<missing>" || probed[i] === "");
+  if (missing.length > 0 || probed.length !== required.length) {
+    return {
+      ok: false,
+      problems: [
+        `target is not Supabase-shaped: required roles anon/authenticated/service_role are not all present (missing: ${missing.length > 0 ? missing.join(", ") : "unreadable role probe output"}). ` +
+        "The SECURITY DEFINER effective-grant matrix cannot be certified against this target. This is a FAILURE, not a skip: a missing role is an uncertifiable target, never a denied privilege.",
+      ],
+    };
+  }
+
+  const query = `
+    select
+      p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')' as signature,
+      p.prosecdef::text,
+      coalesce((select opt from unnest(coalesce(p.proconfig, '{}'::text[])) opt
+                where opt like 'search\\_path=%' escape '\\' limit 1), '') as search_path_opt,
+      (exists (
+        select 1 from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+        where a.grantee = 0 and a.privilege_type = 'EXECUTE'
+      ))::text as public_x,
+      has_function_privilege('anon', p.oid, 'execute')::text as anon_x,
+      has_function_privilege('authenticated', p.oid, 'execute')::text as authenticated_x,
+      has_function_privilege('service_role', p.oid, 'execute')::text as service_role_x,
+      (p.prorettype = 'pg_catalog.trigger'::regtype)::text as is_trigger
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.prosecdef
+    order by 1;
+  `;
+  const result = sh("psql", ["-v", "ON_ERROR_STOP=1", "-t", "-A", "-F", "|", dbUrl, "-c", query]);
+  if (result.status !== 0) {
+    return { ok: false, problems: [`psql (security definer ACL) failed: ${(result.stderr || "").trim()}`] };
+  }
+
+  const live = new Map();
+  const problems = [];
+  try {
+  for (const line of result.stdout.split("\n").map((l) => l.trim()).filter(Boolean)) {
+    const [signature, prosecdef, searchPathOpt, publicX, anonX, authX, svcX, isTrigger] = line.split("|");
+    // `pg_get_function_identity_arguments` emits PARAMETER NAMES alongside
+    // types ("p_workspace_id uuid, p_project_id uuid") and PostgreSQL's verbose
+    // type spellings ("timestamp with time zone"). Run it through the SAME
+    // normaliser the source-side checker uses, so both sides of the diff speak
+    // one vocabulary and a signature can never mismatch on spelling alone.
+    const open = signature.indexOf("(");
+    const rawArgs = open >= 0 ? signature.slice(open + 1, signature.lastIndexOf(")")) : "";
+    const { args, error } = parseIdentityArguments(rawArgs);
+    if (error) {
+      problems.push(`${signature}: cannot normalise catalog identity arguments — ${error}`);
+      continue;
+    }
+    const canonical = `public.${signature.slice(0, open)}(${args})`;
+    live.set(canonical, {
+      signature: canonical,
+      prosecdef: pgBool(prosecdef),
+      searchPath: searchPathOpt ? searchPathOpt.slice("search_path=".length) : null,
+      acl: {
+        public: pgBool(publicX),
+        anon: pgBool(anonX),
+        authenticated: pgBool(authX),
+        service_role: pgBool(svcX),
+      },
+      isTrigger: pgBool(isTrigger),
+    });
+  }
+
+  } catch (error) {
+    return { ok: false, problems: [`cannot read catalog privilege state: ${error.message}`] };
+  }
+
+  const declared = new Map(matrix.functions.map((f) => [f.signature, f]));
+
+  for (const [signature, fn] of live) {
+    const spec = declared.get(signature);
+    if (!spec) {
+      problems.push(`${signature}: SECURITY DEFINER function exists in the applied database but is absent from the grant matrix`);
+      continue;
+    }
+    for (const principal of ["public", "anon", "authenticated", "service_role"]) {
+      if (fn.acl[principal] !== Boolean(spec[principal])) {
+        problems.push(
+          `${signature}: ${principal} EXECUTE is ${fn.acl[principal] ? "GRANTED" : "DENIED"} in the applied database but the matrix declares ${spec[principal] ? "ALLOW" : "DENY"}`
+        );
+      }
+    }
+    if (fn.searchPath === null || fn.searchPath === undefined) {
+      problems.push(`${signature}: SECURITY DEFINER without a pinned search_path in pg_proc.proconfig`);
+    }
+    if (fn.isTrigger !== Boolean(spec.trigger_only)) {
+      problems.push(`${signature}: applied database reports trigger=${fn.isTrigger} but the matrix declares trigger_only=${Boolean(spec.trigger_only)}`);
+    }
+  }
+  for (const [signature] of declared) {
+    if (!live.has(signature)) {
+      problems.push(`${signature}: declared in the grant matrix but is not a SECURITY DEFINER function in the applied database`);
+    }
+  }
+
+  const counts = {
+    total: live.size,
+    public: [...live.values()].filter((f) => f.acl.public).length,
+    anon: [...live.values()].filter((f) => f.acl.anon).length,
+    authenticated: [...live.values()].filter((f) => f.acl.authenticated).length,
+    service_role: [...live.values()].filter((f) => f.acl.service_role).length,
+  };
+  return { ok: problems.length === 0, problems, counts };
+}
+
 // ─── Report ─────────────────────────────────────────────────────────────────
 
 function printAndWriteReport(lines) {
@@ -3488,6 +3667,19 @@ function main() {
       console.log(`  Tables without RLS enabled: ${smoke.tablesWithoutRls}`);
     } else {
       console.error(formatFailure(smoke.failure));
+      process.exitCode = 1;
+    }
+
+    // No SKIPPED state: certifySecurityDefinerGrants fails closed, so every
+    // outcome is PASS or FAIL and a FAIL always sets a non-zero exit code.
+    const grants = certifySecurityDefinerGrants(process.env.FRESH_DB_URL);
+    results.push(["SECURITY DEFINER grants", grants.ok ? "PASS" : "FAIL"]);
+    if (grants.counts) {
+      console.log(`  SECURITY DEFINER functions: ${grants.counts.total}`);
+      console.log(`  executable by PUBLIC: ${grants.counts.public}  anon: ${grants.counts.anon}  authenticated: ${grants.counts.authenticated}  service_role: ${grants.counts.service_role}`);
+    }
+    if (!grants.ok) {
+      (grants.problems ?? []).forEach((p) => console.error(`  - ${p}`));
       process.exitCode = 1;
     }
   } else {
@@ -3590,5 +3782,6 @@ export {
   HOSTED_ALLOWED_MIGRATION_VALIDATION_REF,
   HOSTED_DENIED_ACTIVE_PMFREAK_REF,
   loadMigrationFiles,
+  certifySecurityDefinerGrants,
   main,
 };
