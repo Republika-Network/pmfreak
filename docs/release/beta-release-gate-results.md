@@ -20,7 +20,7 @@ migrations, 144→146 total).
 | `npm run build` | PASS — production build |
 | `npm run check:db-contract` | PASS |
 | `npm run check:fresh-db-migrations` (verify-only) | PASS — 146 migration files, 0 duplicate timestamps, correct ordering |
-| `npm run check:security-definer-hardening` (new) | PASS — 18 SECURITY DEFINER functions, all pinned `search_path`, all explicit PUBLIC-execute-revoked (2 corrective migrations landed this session) |
+| `npm run check:security-definer-hardening` (new) | PASS — 18 SECURITY DEFINER functions, all pinned `search_path`, all explicit PUBLIC-execute-revoked (2 corrective migrations landed this session)<br>**SUPERSEDED (Gate 3).** This row records a PASS from the original lexical checker, which could not prove anything about `anon`. On Supabase `REVOKE ... FROM PUBLIC` does not revoke `anon`, and a live advisor run later found 26 SECURITY DEFINER functions anon-executable. The checker has been rewritten as an ordered effective-state reconstruction and the inventory is now 30 functions — see [`hosted-grants-report.md`](./hosted-grants-report.md). |
 | `npm run check:governance` (after `npm run build:aoc`) | PASS |
 | `npm run check:dependency-security` | CONDITIONAL (exit 2, 0 unexpected — unchanged from Perilla 13) |
 | `npm run check:beta-release` | **CONDITIONAL GO** — all blocking gates PASS (now includes the SECURITY DEFINER hardening gate), dependency-security CONDITIONAL as expected |
