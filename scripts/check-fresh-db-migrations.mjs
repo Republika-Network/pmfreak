@@ -55,7 +55,7 @@ const KNOWN_PRODUCTION_HOST_FRAGMENTS = ["prod", "production", "pilot"];
 // and the production-fragment heuristic does not fire on either real ref (neither
 // contains "prod", "production" or "pilot") — so name- and URL-shaped signals
 // cannot be relied on here. The destructive hosted fresh-apply is therefore pinned
-// to ONE explicitly designated disposable project and denied against the live one.
+// to explicitly designated disposable projects and denied against EVERY live one.
 const HOSTED_ALLOWED_MIGRATION_VALIDATION_REF = "ecwkldflddnmdwusatuh"; // pmfreak-migration-validation
 
 // Version-controlled allowlist of disposable validation projects. Rotation happens by
@@ -64,7 +64,31 @@ const HOSTED_ALLOWED_MIGRATION_VALIDATION_REF = "ecwkldflddnmdwusatuh"; // pmfre
 // NECESSARY BUT NOT SUFFICIENT. Being allowlisted is likewise not sufficient for a fresh
 // apply: the target must additionally prove application-object emptiness.
 const HOSTED_ALLOWED_VALIDATION_REFS = Object.freeze([HOSTED_ALLOWED_MIGRATION_VALIDATION_REF]);
-const HOSTED_DENIED_ACTIVE_PMFREAK_REF = "refvllnadfzjkxlpidrr"; // PMFreak (ACTIVE_HEALTHY) — never a target
+// Version-controlled DENYLIST of LIVE PMFreak projects. The destructive hosted
+// fresh-apply must never target ANY of these, regardless of a matching ref handshake
+// or an explicit destructive confirmation. This list is APPEND-ONLY: a ref is added
+// when a new live project appears and is never removed or swapped, because a
+// decommissioned project that still exists is still a project a typo can reach.
+//
+//   refvllnadfzjkxlpidrr — PMFreak, the older/legacy live project (ACTIVE_HEALTHY).
+//                          Never a fresh-apply target. Retained on this list even
+//                          though it is no longer the canonical project.
+//   yvyrkihxardfqsffgoae — pmfreak-production, the canonical CURRENT production
+//                          project and the hosted target of Gate 2 and Gate 3.
+//                          Never a fresh-apply target.
+//
+// The disposable counterpart — ecwkldflddnmdwusatuh (pmfreak-migration-validation) —
+// is the ALLOWLISTED fresh-apply target above and must never appear on this list.
+const HOSTED_DENIED_LEGACY_PMFREAK_REF = "refvllnadfzjkxlpidrr";
+const HOSTED_DENIED_PRODUCTION_PMFREAK_REF = "yvyrkihxardfqsffgoae";
+const HOSTED_DENIED_PMFREAK_REFS = Object.freeze([
+  HOSTED_DENIED_LEGACY_PMFREAK_REF,
+  HOSTED_DENIED_PRODUCTION_PMFREAK_REF,
+]);
+const HOSTED_DENIED_PMFREAK_REF_LABELS = Object.freeze({
+  [HOSTED_DENIED_LEGACY_PMFREAK_REF]: "PMFreak, the legacy/live project",
+  [HOSTED_DENIED_PRODUCTION_PMFREAK_REF]: "pmfreak-production, the canonical production project",
+});
 
 function redact(value) {
   if (!value) return "(unset)";
@@ -229,12 +253,17 @@ function safetyGuard(mode) {
       return fail(`FRESH_DB_EXPECTED_PROJECT_REF (${expected}) does not match SUPABASE_PROJECT_REF (${redact(actual)}). Refusing to run.`);
     }
 
-    // Explicit denial of the live project, checked BEFORE the allowlist so the
+    // Explicit denial of EVERY live project, checked BEFORE the allowlist so the
     // refusal names the real hazard rather than a generic "not the target" message.
-    if (actual === HOSTED_DENIED_ACTIVE_PMFREAK_REF || expected === HOSTED_DENIED_ACTIVE_PMFREAK_REF) {
+    // Both supplied refs are tested against the whole denylist: the handshake above
+    // proves they are equal, but a future change to that ordering must not open a
+    // path where only one of the two is screened.
+    const deniedRef = HOSTED_DENIED_PMFREAK_REFS.find((ref) => ref === actual || ref === expected);
+    if (deniedRef) {
       return fail(
-        "Refusing to run: the target is the ACTIVE PMFreak project. The destructive hosted fresh-apply " +
-          "must never run against it, regardless of matching refs or explicit confirmation.",
+        `Refusing to run: the target is a LIVE PMFreak project (${HOSTED_DENIED_PMFREAK_REF_LABELS[deniedRef]}). ` +
+          "The destructive hosted fresh-apply must never run against any denylisted live project, regardless of " +
+          "matching refs or explicit confirmation.",
       );
     }
 
@@ -255,7 +284,7 @@ function safetyGuard(mode) {
     // PRE-APPLY emptiness precondition enforced in classifyHostedTarget(), which every
     // ref must satisfy including the originally designated one.
     //
-    // Nothing else is relaxed: the active-project denial above still runs FIRST and is
+    // Nothing else is relaxed: the live-project denylist above still runs FIRST and is
     // absolute, the two-variable ref handshake is still mandatory, the production-like
     // host check still applies, ALLOW_DESTRUCTIVE_FRESH_DB_TEST is still required, and
     // no target is ever inferred — both refs must be supplied explicitly and match.
@@ -3792,7 +3821,10 @@ export {
   formatFailure,
   KNOWN_PRODUCTION_HOST_FRAGMENTS,
   HOSTED_ALLOWED_MIGRATION_VALIDATION_REF,
-  HOSTED_DENIED_ACTIVE_PMFREAK_REF,
+  HOSTED_DENIED_PMFREAK_REFS,
+  HOSTED_DENIED_PMFREAK_REF_LABELS,
+  HOSTED_DENIED_LEGACY_PMFREAK_REF,
+  HOSTED_DENIED_PRODUCTION_PMFREAK_REF,
   loadMigrationFiles,
   certifySecurityDefinerGrants,
   main,

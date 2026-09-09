@@ -1,5 +1,54 @@
 # Beta Release Gate Results — Perillas 11–13B
 
+## Gate 3 closure (2026-09-09) — hosted SECURITY DEFINER grant verification
+
+**GATE_3=PASS. Gate 3 CLOSED — live verified.**
+
+The SECURITY DEFINER grant defect recorded as SUPERSEDED in the Perilla 13B
+table below is now remediated and verified against the canonical hosted project
+`yvyrkihxardfqsffgoae` (`pmfreak-production`) — the same target as Gate 2, and neither the
+legacy live project `refvllnadfzjkxlpidrr` nor the disposable validation project
+`ecwkldflddnmdwusatuh`.
+Migration `20260910000000_security_definer_effective_grant_hardening.sql` was
+applied through the reviewed `source migration → tests → review → fresh/local
+certification → reviewed apply` path, and an independent direct read-only
+catalog verification was run afterwards.
+
+| Assertion | Matrix | Live-observed |
+| --- | --- | --- |
+| Migration head | `20260910000000` | `20260910000000` |
+| `SECURITY_DEFINER_TOTAL` | 30 | 30 |
+| `PUBLIC_EXECUTABLE` | 0 | 0 |
+| `ANON_EXECUTABLE` | 0 | 0 |
+| `AUTHENTICATED_EXECUTABLE` | 23 | 23 |
+| `SERVICE_ROLE_EXECUTABLE` | 30 | 30 |
+| Unpinned SECURITY DEFINER `search_path` | 0 | 0 |
+
+Repository certification layers, all read-only and re-runnable:
+
+| Layer | Result |
+| --- | --- |
+| `npm run check:security-definer-hardening` | PASS — 30/30 reconstructed effective ACLs match the matrix; all 30 pin `search_path` |
+| `node --test tests/security-definer-hardening.test.mjs` | PASS — 46/46 |
+| `npm run check:fresh-db-migrations` (no `FRESH_DB_URL`) | PASS static; fresh-apply SKIPPED |
+
+Full evidence: [`hosted-grants-report.md`](./hosted-grants-report.md).
+
+**Scope limits — what this closure does NOT cover:**
+
+* The 43 mutable-`search_path` Security Advisor warnings are **SECURITY INVOKER**
+  findings, disjoint from the 30 SECURITY DEFINER functions above
+  (`CRITICAL=0`, `HARDEN_RECOMMENDED=8`, `ACCEPTABLE_WITH_RATIONALE=35`). They
+  remain separate, non-blocking follow-up work.
+* Gate 3 covers hosted **grants** only. The other hosted-only evidence listed in
+  RR-MIGRATE's scope note in
+  [`residual-risk-register.md`](./residual-risk-register.md) — hosted RLS
+  coverage, tenant isolation, the full role matrix, generated-types drift and
+  existing-DB compatibility — is unaffected by this closure.
+* The dated Perilla sections below are point-in-time records and are **not**
+  rewritten by this update. `residual-risk-register.md` remains the canonical
+  current-state record.
+
 ## Perilla 13B update (2026-07-11) — hosted Supabase validation prep (RR-MIGRATE remains OPEN)
 
 Executed on branch `claude/supabase-migration-validation-2kugdm` (based on
@@ -20,7 +69,7 @@ migrations, 144→146 total).
 | `npm run build` | PASS — production build |
 | `npm run check:db-contract` | PASS |
 | `npm run check:fresh-db-migrations` (verify-only) | PASS — 146 migration files, 0 duplicate timestamps, correct ordering |
-| `npm run check:security-definer-hardening` (new) | PASS — 18 SECURITY DEFINER functions, all pinned `search_path`, all explicit PUBLIC-execute-revoked (2 corrective migrations landed this session)<br>**SUPERSEDED (Gate 3).** This row records a PASS from the original lexical checker, which could not prove anything about `anon`. On Supabase `REVOKE ... FROM PUBLIC` does not revoke `anon`, and a live advisor run later found 26 SECURITY DEFINER functions anon-executable. The checker has been rewritten as an ordered effective-state reconstruction and the inventory is now 30 functions — see [`hosted-grants-report.md`](./hosted-grants-report.md). |
+| `npm run check:security-definer-hardening` (new) | PASS — 18 SECURITY DEFINER functions, all pinned `search_path`, all explicit PUBLIC-execute-revoked (2 corrective migrations landed this session)<br>**SUPERSEDED (Gate 3).** This row records a PASS from the original lexical checker, which could not prove anything about `anon`. On Supabase `REVOKE ... FROM PUBLIC` does not revoke `anon`, and a live advisor run later found 26 SECURITY DEFINER functions anon-executable. The checker has been rewritten as an ordered effective-state reconstruction and the inventory is now 30 functions — see [`hosted-grants-report.md`](./hosted-grants-report.md).<br>**RESOLVED — Gate 3 CLOSED (2026-09-09).** Migration `20260910000000` was applied and live-verified on the canonical hosted project: anon-executable 0, authenticated-executable 23, service_role-executable 30, unpinned SECURITY DEFINER `search_path` 0. See "Gate 3 closure (2026-09-09)" at the top of this document. |
 | `npm run check:governance` (after `npm run build:aoc`) | PASS |
 | `npm run check:dependency-security` | CONDITIONAL (exit 2, 0 unexpected — unchanged from Perilla 13) |
 | `npm run check:beta-release` | **CONDITIONAL GO** — all blocking gates PASS (now includes the SECURITY DEFINER hardening gate), dependency-security CONDITIONAL as expected |

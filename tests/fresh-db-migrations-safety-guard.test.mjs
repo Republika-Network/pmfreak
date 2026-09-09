@@ -78,7 +78,9 @@ import {
   formatFailure,
   KNOWN_PRODUCTION_HOST_FRAGMENTS,
   HOSTED_ALLOWED_MIGRATION_VALIDATION_REF,
-  HOSTED_DENIED_ACTIVE_PMFREAK_REF,
+  HOSTED_DENIED_PMFREAK_REFS,
+  HOSTED_DENIED_LEGACY_PMFREAK_REF,
+  HOSTED_DENIED_PRODUCTION_PMFREAK_REF,
 } from "../scripts/check-fresh-db-migrations.mjs";
 
 const ROOT = process.cwd();
@@ -547,18 +549,56 @@ test("main-module detection resolves paths instead of building a file:// string"
 
 // ─── Hosted target identity: denylist + single-project allowlist ──────────
 
-test("hosted mode refuses the ACTIVE PMFreak project ref even with matching refs and destructive confirmation", () => {
-  const result = run({
-    PATH: process.env.PATH,
-    ALLOW_DESTRUCTIVE_FRESH_DB_TEST: "true",
-    SUPABASE_DB_URL: `postgresql://postgres:pw@db.${HOSTED_DENIED_ACTIVE_PMFREAK_REF}.supabase.co:5432/postgres`,
-    SUPABASE_ACCESS_TOKEN: "sbp_test_token_not_real",
-    SUPABASE_PROJECT_REF: HOSTED_DENIED_ACTIVE_PMFREAK_REF,
-    FRESH_DB_EXPECTED_PROJECT_REF: HOSTED_DENIED_ACTIVE_PMFREAK_REF,
+for (const deniedRef of HOSTED_DENIED_PMFREAK_REFS) {
+  test(`hosted mode refuses denylisted LIVE project ${deniedRef} even with matching refs and destructive confirmation`, () => {
+    const result = run({
+      PATH: process.env.PATH,
+      ALLOW_DESTRUCTIVE_FRESH_DB_TEST: "true",
+      SUPABASE_DB_URL: `postgresql://postgres:pw@db.${deniedRef}.supabase.co:5432/postgres`,
+      SUPABASE_ACCESS_TOKEN: "sbp_test_token_not_real",
+      SUPABASE_PROJECT_REF: deniedRef,
+      FRESH_DB_EXPECTED_PROJECT_REF: deniedRef,
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stdout + result.stderr, /LIVE PMFreak project/);
+    assert.doesNotMatch(result.stdout + result.stderr, /sbp_test_token_not_real/);
   });
-  assert.equal(result.status, 1);
-  assert.match(result.stdout + result.stderr, /ACTIVE PMFreak project/);
-  assert.doesNotMatch(result.stdout + result.stderr, /sbp_test_token_not_real/);
+}
+
+test("the canonical production project is denylisted BY NAME, not merely absent from the allowlist", () => {
+  // Regression control for the real defect this list was widened to fix: the denylist
+  // named only the legacy project, so pmfreak-production fell through to the generic
+  // "not allowlisted" branch instead of the explicit live-project refusal.
+  assert.ok(HOSTED_DENIED_PMFREAK_REFS.includes(HOSTED_DENIED_LEGACY_PMFREAK_REF));
+  assert.ok(HOSTED_DENIED_PMFREAK_REFS.includes(HOSTED_DENIED_PRODUCTION_PMFREAK_REF));
+  assert.equal(HOSTED_DENIED_PMFREAK_REFS.length, 2, "changing the denylist must be a deliberate, reviewed edit");
+  assert.notEqual(HOSTED_DENIED_LEGACY_PMFREAK_REF, HOSTED_DENIED_PRODUCTION_PMFREAK_REF);
+});
+
+test("a denylisted live ref is refused when it appears in EITHER ref slot", () => {
+  // The handshake proves the two refs are equal today. This asserts the denial does
+  // not silently depend on that ordering.
+  const saved = { ...process.env };
+  const savedExit = process.exitCode;
+  try {
+    for (const [projectRef, expectedRef] of [
+      [HOSTED_DENIED_PRODUCTION_PMFREAK_REF, HOSTED_ALLOWED_MIGRATION_VALIDATION_REF],
+      [HOSTED_ALLOWED_MIGRATION_VALIDATION_REF, HOSTED_DENIED_PRODUCTION_PMFREAK_REF],
+    ]) {
+      Object.assign(process.env, {
+        ALLOW_DESTRUCTIVE_FRESH_DB_TEST: "true",
+        SUPABASE_DB_URL: "postgresql://user:pass@db.abcxyz.supabase.co:5432/postgres",
+        SUPABASE_ACCESS_TOKEN: "sbp_test_token_not_real",
+        SUPABASE_PROJECT_REF: projectRef,
+        FRESH_DB_EXPECTED_PROJECT_REF: expectedRef,
+      });
+      assert.equal(safetyGuard("hosted"), false, `${projectRef}/${expectedRef} must be refused`);
+    }
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    Object.assign(process.env, saved);
+    process.exitCode = savedExit;
+  }
 });
 
 test("hosted mode REFUSES a matching-but-unallowlisted ref, in-process and offline", () => {
@@ -584,10 +624,12 @@ test("hosted mode REFUSES a matching-but-unallowlisted ref, in-process and offli
   }
 });
 
-test("the allowlist is version-controlled source, and the active project is never in it", () => {
+test("the allowlist is version-controlled source, and no LIVE project is ever in it", () => {
   assert.ok(Array.isArray(HOSTED_ALLOWED_VALIDATION_REFS) && HOSTED_ALLOWED_VALIDATION_REFS.length > 0);
   assert.ok(HOSTED_ALLOWED_VALIDATION_REFS.includes(HOSTED_ALLOWED_MIGRATION_VALIDATION_REF));
-  assert.ok(!HOSTED_ALLOWED_VALIDATION_REFS.includes(HOSTED_DENIED_ACTIVE_PMFREAK_REF), "the ACTIVE project must never be allowlisted");
+  for (const deniedRef of HOSTED_DENIED_PMFREAK_REFS) {
+    assert.ok(!HOSTED_ALLOWED_VALIDATION_REFS.includes(deniedRef), `${deniedRef} is LIVE and must never be allowlisted`);
+  }
 });
 
 // ─── Parser fail-closed: a regression must never read as "fresh" ──────────
@@ -714,10 +756,12 @@ test("hosted mode precheck accepts the designated migration-validation ref (guar
   }
 });
 
-test("the two hosted refs are distinct and neither is empty", () => {
-  assert.equal(HOSTED_ALLOWED_MIGRATION_VALIDATION_REF, "ecwkldflddnmdwusatuh");
-  assert.equal(HOSTED_DENIED_ACTIVE_PMFREAK_REF, "refvllnadfzjkxlpidrr");
-  assert.notEqual(HOSTED_ALLOWED_MIGRATION_VALIDATION_REF, HOSTED_DENIED_ACTIVE_PMFREAK_REF);
+test("the three hosted refs are pinned, distinct, and correctly classified", () => {
+  assert.equal(HOSTED_ALLOWED_MIGRATION_VALIDATION_REF, "ecwkldflddnmdwusatuh"); // pmfreak-migration-validation (disposable)
+  assert.equal(HOSTED_DENIED_LEGACY_PMFREAK_REF, "refvllnadfzjkxlpidrr"); // PMFreak (legacy/live)
+  assert.equal(HOSTED_DENIED_PRODUCTION_PMFREAK_REF, "yvyrkihxardfqsffgoae"); // pmfreak-production (canonical)
+  const all = [HOSTED_ALLOWED_MIGRATION_VALIDATION_REF, ...HOSTED_DENIED_PMFREAK_REFS];
+  assert.equal(new Set(all).size, all.length, "allowlist and denylist must be disjoint and internally unique");
 });
 
 // ─── Windows npx invocation (harness portability) ─────────────────────────
@@ -964,16 +1008,18 @@ test("5. expected-ref mismatch still fails after the rotation change", () => {
   assert.match(r.stdout + r.stderr, /does not match/i, "a ref-handshake mismatch must still refuse");
 });
 
-test("6. the ACTIVE PMFreak project is still rejected, even with a matching handshake", () => {
-  const r = run({
-    PATH: process.env.PATH,
-    SUPABASE_DB_URL: "postgresql://user:pass@db.abcxyz.supabase.co:5432/postgres",
-    SUPABASE_ACCESS_TOKEN: "sbp_test_token_not_real",
-    ALLOW_DESTRUCTIVE_FRESH_DB_TEST: "true",
-    SUPABASE_PROJECT_REF: HOSTED_DENIED_ACTIVE_PMFREAK_REF,
-    FRESH_DB_EXPECTED_PROJECT_REF: HOSTED_DENIED_ACTIVE_PMFREAK_REF,
-  });
-  assert.match(r.stdout + r.stderr, /ACTIVE PMFreak project/i, "rotation must not open a path to the live project");
+test("6. every LIVE PMFreak project is still rejected, even with a matching handshake", () => {
+  for (const deniedRef of HOSTED_DENIED_PMFREAK_REFS) {
+    const r = run({
+      PATH: process.env.PATH,
+      SUPABASE_DB_URL: "postgresql://user:pass@db.abcxyz.supabase.co:5432/postgres",
+      SUPABASE_ACCESS_TOKEN: "sbp_test_token_not_real",
+      ALLOW_DESTRUCTIVE_FRESH_DB_TEST: "true",
+      SUPABASE_PROJECT_REF: deniedRef,
+      FRESH_DB_EXPECTED_PROJECT_REF: deniedRef,
+    });
+    assert.match(r.stdout + r.stderr, /LIVE PMFreak project/i, `rotation must not open a path to ${deniedRef}`);
+  }
 });
 
 test("7. destructive confirmation is still required after the rotation change", () => {
@@ -1062,17 +1108,19 @@ test("binding: ending in a Supabase domain is never sufficient on its own", () =
   assert.equal(extractSupabaseProjectRefFromDbUrl("https://db.abc.supabase.co").ok, false, "a non-postgres protocol must be refused");
 });
 
-test("binding: the ACTIVE project is still denied by the guard regardless of a well-formed URL", () => {
+test("binding: every LIVE project is still denied by the guard regardless of a well-formed URL", () => {
   const saved = { ...process.env };
   const savedExit = process.exitCode;
   try {
-    Object.assign(process.env, {
-      ALLOW_DESTRUCTIVE_FRESH_DB_TEST: "true",
-      SUPABASE_DB_URL: `postgresql://postgres:pw@db.${HOSTED_DENIED_ACTIVE_PMFREAK_REF}.supabase.co:5432/postgres`,
-      SUPABASE_PROJECT_REF: HOSTED_DENIED_ACTIVE_PMFREAK_REF,
-      FRESH_DB_EXPECTED_PROJECT_REF: HOSTED_DENIED_ACTIVE_PMFREAK_REF,
-    });
-    assert.equal(safetyGuard("hosted"), false, "a perfectly-bound URL must not unlock the ACTIVE project");
+    for (const deniedRef of HOSTED_DENIED_PMFREAK_REFS) {
+      Object.assign(process.env, {
+        ALLOW_DESTRUCTIVE_FRESH_DB_TEST: "true",
+        SUPABASE_DB_URL: `postgresql://postgres:pw@db.${deniedRef}.supabase.co:5432/postgres`,
+        SUPABASE_PROJECT_REF: deniedRef,
+        FRESH_DB_EXPECTED_PROJECT_REF: deniedRef,
+      });
+      assert.equal(safetyGuard("hosted"), false, `a perfectly-bound URL must not unlock ${deniedRef}`);
+    }
   } finally {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
     Object.assign(process.env, saved);
