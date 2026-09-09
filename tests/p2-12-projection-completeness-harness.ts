@@ -17,6 +17,7 @@
  */
 
 import { getOperationalSummary } from "@/lib/operational-flow/operational-flow-service";
+import { computeGovernedExecutionRoot } from "./ux-w4-execution-root-membership-stub";
 
 type Row = Record<string, unknown>;
 
@@ -210,6 +211,7 @@ type QueryBuilder = {
   eq: (column: string, value: unknown) => QueryBuilder;
   in: (column: string, values: unknown[]) => QueryBuilder;
   lte: (column: string, value: unknown) => QueryBuilder;
+  gt: (column: string, value: unknown) => QueryBuilder;
   not: (column: string, operator: string, value: unknown) => QueryBuilder;
   is: (column: string, value: unknown) => QueryBuilder;
   order: (column: string, options?: { ascending?: boolean }) => QueryBuilder;
@@ -234,6 +236,7 @@ function makeClient() {
     const notNull: string[] = [];
     const isNull: string[] = [];
     const lte: Array<[string, unknown]> = [];
+    const gt: Array<[string, unknown]> = [];
     // Ordered clauses in CALL order, not a single column. A `.order(a).order(b)` chain is a
     // lexicographic sort in PostgREST, and modelling only the last column would make this
     // stub unable to see the very defect multi-column ordering exists to prevent: tied rows
@@ -262,6 +265,12 @@ function makeClient() {
           return cell !== null && cell !== undefined && String(cell) <= String(value);
         });
       }
+      for (const [column, value] of gt) {
+        rows = rows.filter((row) => {
+          const cell = read(column, row);
+          return cell !== null && cell !== undefined && String(cell) > String(value);
+        });
+      }
       for (const column of notNull) rows = rows.filter((row) => read(column, row) !== null && read(column, row) !== undefined);
       for (const column of isNull) rows = rows.filter((row) => read(column, row) === null || read(column, row) === undefined);
       if (orderBy.length > 0) {
@@ -287,6 +296,10 @@ function makeClient() {
       eq: (column: string, value: unknown) => { eqs.push([column, value]); filters.push(`eq:${column}`); return chain; },
       in: (column: string, values: unknown[]) => { ins.push([column, values]); filters.push(`in:${column}`); return chain; },
       lte: (column: string, value: unknown) => { lte.push([column, value]); filters.push(`lte:${column}`); return chain; },
+      // W4 reads the open-Action root with `expires_at > asOf`. Applied for real:
+      // a stub that accepted the filter and ignored it would model a wider set than
+      // PostgREST returns, and the ceiling/overflow behaviour under test would be fiction.
+      gt: (column: string, value: unknown) => { gt.push([column, value]); filters.push(`gt:${column}`); return chain; },
       is: (column: string, value: unknown) => {
         if (value !== null) throw new Error(`unsupported_stub_filter: is(${column}, ${String(value)})`);
         isNull.push(column);
@@ -323,7 +336,16 @@ function makeClient() {
   return {
     client: {
       from: (table: string) => builder(table),
-      rpc: async (name: string) => (name === "get_operational_assurance_summary" ? { data: {}, error: null } : { data: null, error: null }),
+      rpc: async (name: string) => {
+        if (name === "get_operational_assurance_summary") return { data: {}, error: null };
+        // UX-W4 authoritative execution-root membership, answered the way the migration
+        // answers it — from ONE evaluation over the same table snapshot. The completion
+        // reads it drives are part of what this harness is proving is by exact reference.
+        if (name === "get_governed_execution_root") {
+          return { data: computeGovernedExecutionRoot(TABLES, WORKSPACE, PROJECT, new Date().toISOString()), error: null };
+        }
+        return { data: null, error: null };
+      },
     },
     queries,
   };
@@ -451,6 +473,7 @@ async function largeFanoutProof() {
     let ins: [string, unknown[]] | null = null;
     let rangeFrom: number | null = null, rangeTo: number | null = null, limit: number | null = null;
     const lteBounds: Array<[string, unknown]> = [];
+    const gtBounds: Array<[string, unknown]> = [];
     const read = (column: string, row: Row): unknown => {
       const arrow = column.split("->>");
       if (arrow.length === 1) return row[column];
@@ -463,6 +486,12 @@ async function largeFanoutProof() {
         rows = rows.filter((r) => {
           const cell = read(c, r);
           return cell !== null && cell !== undefined && String(cell) <= String(v);
+        });
+      }
+      for (const [c, v] of gtBounds) {
+        rows = rows.filter((r) => {
+          const cell = read(c, r);
+          return cell !== null && cell !== undefined && String(cell) > String(v);
         });
       }
       if (ins) {
@@ -482,6 +511,9 @@ async function largeFanoutProof() {
       // fan-out proof has no `recommended_actions` rows, so the filter changes nothing here
       // — but the stub must model the call rather than crash on it.
       lte: (c: string, v: unknown) => { lteBounds.push([c, v]); return chain; },
+      // W4's open-Action root reads `expires_at > asOf`. Applied for real: accepting the
+      // filter and ignoring it would let this fan-out proof see rows PostgREST would not.
+      gt: (c: string, v: unknown) => { gtBounds.push([c, v]); return chain; },
       is: () => chain,
       not: () => chain,
       order: () => chain,

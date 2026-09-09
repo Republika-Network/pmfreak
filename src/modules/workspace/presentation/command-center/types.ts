@@ -1,3 +1,4 @@
+import type { DecisionJourney } from "./decision-journey";
 import type { ExecutionOperation, GovernedExecutionChain } from "./execution-read-model";
 
 export type StatusTone = "danger" | "task" | "approval" | "insight" | "success" | "info";
@@ -141,6 +142,11 @@ export type DrawerContent = {
   /** P2-12: the governed continuation after a Decision — action, task, execution,
    *  outcome, observation and lineage. Present only for a decided canonical chain. */
   executionPanel?: ExecutionPanel;
+  /** UX-W4: the human reading of that same chain — DECIDE / DO / VERIFY / LEARN, what is
+   *  happening, what happens next, the result and what was learned. Rendered ABOVE the
+   *  canonical detail, which is unchanged and still present beneath it. Derived purely
+   *  from persisted rows; never persisted itself. */
+  journey?: DecisionJourney;
 };
 
 /** P2-12 continuation surface inputs. `onRun` must reject on failure so the panel can

@@ -1655,6 +1655,7 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
     tasks,
     executions,
     assuranceResult,
+    executionRootResult,
     actorRole,
   ] = await Promise.all([
     client.from("operational_sources").select("*").eq("workspace_id", workspaceId).eq("project_id", projectId).order("created_at", { ascending: false }).limit(20),
@@ -1691,6 +1692,15 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
     client.from("execution_tasks").select("*").eq("workspace_id", workspaceId).eq("project_id", projectId).eq("source_payload->>source", "governed_action").order("created_at", { ascending: false }).limit(30),
     client.from("internal_task_executions").select("*").eq("workspace_id", workspaceId).eq("project_id", projectId).order("created_at", { ascending: false }).limit(30),
     client.rpc("get_operational_assurance_summary", { p_workspace_id: workspaceId, p_project_id: projectId }),
+    /*
+     * UX-W4 authoritative execution-root membership, in ONE statement.
+     *
+     * Deliberately NOT error-checked below with the reads that throw. A database that has
+     * not applied `20260909000000_ux_w4_governed_execution_root_membership.sql` returns an
+     * error here, and the honest consequence is an execution answer that is UNPROVEN — not
+     * a page that fails to render, and under no circumstances one that is called complete.
+     */
+    client.rpc("get_governed_execution_root", { p_workspace_id: workspaceId, p_project_id: projectId }),
     loadActorRole(client, workspaceId, userId),
   ]);
   for (const result of [sources, rawInputs, normalizedEvents, evidence, observationEligibleEvidence, signals, risks, governance, recommendations, decisions, materialActions, materialActionEvaluations, outcomes, observations, tasks, executions]) {
@@ -1882,10 +1892,157 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
   };
   const idsOf = (rows: SummaryRow[]): string[] => [...new Set(rows.map((row) => String(row.id)))];
 
+  /*
+   * UX-W4 — the governed EXECUTION root, as ONE authoritative membership proof.
+   *
+   * Everything downstream of a Decision is already completed by exact canonical reference
+   * below, so for any chain that is projected, an absent Outcome or Observation is a real
+   * absence rather than a windowing artefact. That was the F7 fix and it still holds.
+   *
+   * What it does NOT fix is the ROOT. The chain projection walks outward from
+   * `decisions` — `operational_decision_records`, newest 30, project-wide. Thirty newer
+   * decisions push an older one out of that window, and every Action, Task, Execution and
+   * Outcome beneath it leaves the surface with it. "In Progress" would then render empty
+   * while work was genuinely running, which is the same false-clear W3 removed from Needs
+   * You, one surface along.
+   *
+   * The first cut answered that with three independent reads — active executions, pending
+   * outcomes, unexpired actions — and called their union authoritative whenever none hit
+   * its ceiling. Two things were wrong with it, and they are the same mistake seen twice.
+   *
+   * 1. THREE STATEMENTS ARE THREE SNAPSHOTS. `Promise.all` schedules requests; it does not
+   *    give them shared MVCC visibility, and under READ COMMITTED each statement takes its
+   *    own snapshot. A canonical transition that moves work from one predicate to the next
+   *    falls straight through the gap: read pending Outcomes BEFORE a completion commits
+   *    and active Executions AFTER it, with the Action already expired, and all three come
+   *    back empty for a chain that is unambiguously open in both worlds. No snapshot ever
+   *    held that union — and being far below the ceiling, it was reported COMPLETE.
+   *
+   * 2. WORK-SHAPED PREDICATES ARE NOT OPEN JOURNEYS. `deriveDecisionJourney` calls a
+   *    Decision open from the DECISION, not from a running row. An accepted Decision with
+   *    no Material Action is DO/open with nothing beneath it to match; a completed
+   *    Execution with no Outcome and a lapsed authorisation is VERIFY/open and matches
+   *    none of the three either. Both vanished.
+   *
+   * So membership is now named by the database, in one statement, as canonical ids:
+   * `get_governed_execution_root` returns `openExecutionDecisionIds` under exactly the
+   * predicate the journey model uses for `closure === "open"`. This read then proves
+   * completeness BY IDENTITY — every frozen member must be resolvable — which is the only
+   * proof W3 left standing. A count that matches, a request that succeeded, or a set of
+   * equal size assembled from a later instant prove nothing and are not used.
+   *
+   * The result is a SEPARATE projection. Nothing here is unioned into `decisions`, which
+   * keeps its recent-history meaning that "What changed" is built on.
+   */
+  const executionRootSnapshot = (executionRootResult.error ? null : executionRootResult.data) as
+    | { asOf?: unknown; openExecutionDecisions?: unknown; openExecutionDecisionIds?: unknown }
+    | null;
+  /**
+   * The server's own instant for this projection. Absent means there was no projection.
+   *
+   * Unlike W3's attention loader, no timestamp CLAMP is derived from it: `asOf` is not the
+   * proof here and must never be mistaken for one. `operational_decision_records` is
+   * append-only — it carries no `updated_at` and the terminal-status unique index makes a
+   * decided Decision immutable in place — so identity alone settles membership.
+   */
+  const executionRootAsOf =
+    typeof executionRootSnapshot?.asOf === "string" && Number.isFinite(Date.parse(executionRootSnapshot.asOf))
+      ? executionRootSnapshot.asOf
+      : null;
+  /**
+   * The authoritative membership set, or `null` when the database did not name it.
+   *
+   * `null` is the honest state for a deployment that has not yet applied
+   * `20260909000000_ux_w4_governed_execution_root_membership.sql`, and for a call the
+   * server refused. The recent window is still read and still shown; what cannot be said
+   * is that it is everything. An RPC error is deliberately NOT fatal — an older database
+   * must degrade to UNPROVEN, never to a failed page and never to "complete".
+   *
+   * Deduped by canonical id before anything else looks at it, so a transport duplicate can
+   * never pad the proof: two copies of one id are one member, and the member it would
+   * otherwise have displaced is reported missing.
+   */
+  const frozenExecutionMembershipIds = (() => {
+    const raw = executionRootSnapshot?.openExecutionDecisionIds;
+    if (!Array.isArray(raw)) return null;
+    return [...new Set(raw.map((value) => String(value)).filter((value) => value.length > 0))];
+  })();
+  const frozenExecutionMembership =
+    frozenExecutionMembershipIds === null ? null : new Set(frozenExecutionMembershipIds);
+  /** The count from the SAME statement. It must agree with the ids or nothing is proven. */
+  const frozenExecutionMembershipTotal = Number(executionRootSnapshot?.openExecutionDecisions ?? Number.NaN);
+
+  /**
+   * An explicit ceiling on how large an authoritative membership set this read will attempt.
+   *
+   * The database deliberately does not cap `openExecutionDecisionIds` — a silent cap would
+   * truncate authoritative membership while still looking authoritative. The bound lives
+   * here, and crossing it makes completeness UNPROVEN rather than truncating a set that is
+   * then called complete. Members up to the ceiling are still LOADED and still shown; what
+   * is withheld is the claim that they are all of them.
+   */
+  const EXECUTION_MEMBERSHIP_CEILING = 500;
+
+  /** Decisions the recent window already carries need no second read. */
+  const windowDecisionIds = new Set(decisionIds.map(String));
+  const executionMembersToLoad = (frozenExecutionMembershipIds ?? [])
+    .filter((id) => !windowDecisionIds.has(id))
+    .slice(0, EXECUTION_MEMBERSHIP_CEILING);
+  const loadedExecutionRootRows =
+    executionMembersToLoad.length > 0
+      ? await linkedRows("operational_decision_records", "id", executionMembersToLoad)
+      : [];
+  /**
+   * MEMBERSHIP IS AUTHORITATIVE. A row the loader returned that the snapshot did not name
+   * is a nonmember — a Decision that became open after the projection was taken, say — and
+   * it may be a perfectly real row without being one of THESE. Letting it in would let a
+   * late arrival stand in for a frozen member that could not be resolved, which is
+   * substitution by another name and exactly what identity-based proof exists to stop.
+   */
+  const governedExecutionRootDecisions = loadedExecutionRootRows.filter((row) =>
+    frozenExecutionMembership?.has(String(row.id))
+  );
+
+  /**
+   * Every Decision the chain projection must reach: the recent window PLUS every frozen
+   * member the read resolved.
+   */
+  const resolvedExecutionRootIds = new Set(governedExecutionRootDecisions.map((row) => String(row.id)));
+  const chainRootDecisionIds = [...new Set([...decisionIds.map(String), ...resolvedExecutionRootIds])];
+
+  /** Frozen members this read did not produce. Non-empty means it is not the snapshot. */
+  const missingExecutionMembers =
+    frozenExecutionMembershipIds === null
+      ? null
+      : frozenExecutionMembershipIds.filter(
+          (id) => !windowDecisionIds.has(id) && !resolvedExecutionRootIds.has(id)
+        );
+
+  /**
+   * Completeness is PROVEN BY IDENTITY, and only by identity.
+   *
+   * A request that succeeded says nothing about what it returned. Neither does a matching
+   * count over a substituted set, nor three cardinalities that each stayed under a ceiling.
+   * Every loaded root row is a member (the filter above), so proving that no member is
+   * missing proves the loaded set IS the snapshot.
+   */
+  const governedExecutionRootComplete =
+    // No server instant means there was no projection to anchor anything to.
+    executionRootAsOf !== null &&
+    // No named membership means membership was never frozen — absence of proof, not proof.
+    frozenExecutionMembershipIds !== null &&
+    missingExecutionMembers !== null &&
+    // The count and the ids come from ONE statement, so they must agree; disagreement means
+    // the projection is not the one this proof assumes and nothing may be claimed from it.
+    Number.isFinite(frozenExecutionMembershipTotal) &&
+    frozenExecutionMembershipIds.length === frozenExecutionMembershipTotal &&
+    frozenExecutionMembershipIds.length <= EXECUTION_MEMBERSHIP_CEILING &&
+    missingExecutionMembers.length === 0;
+
   const allMaterialActions = unionById(
     "persisted_at",
     materialActions.data as unknown as SummaryRow[] | null,
-    await linkedRows("material_action_proposals", "source_decision_id", decisionIds.map(String))
+    await linkedRows("material_action_proposals", "source_decision_id", chainRootDecisionIds)
   );
   const actionIds = idsOf(allMaterialActions);
   const [linkedEvaluations, linkedTasks] = await Promise.all([
@@ -2257,6 +2414,8 @@ export async function getOperationalSummary(client: Client, workspaceId: string,
     observations: allObservations,
     tasks: allTasks,
     executions: allExecutions,
+    governedExecutionRootDecisions,
+    governedExecutionRootComplete,
     governedAttentionRecommendations: safeGovernedAttentionRecommendations,
     governedAttentionReconciliationRecommendations: safeReconciliationRecommendations,
     governedAttentionDecisions,

@@ -435,6 +435,32 @@ const progressOutcome = (id: string, taskId: string, actionId: string, state: st
   expected_result: "The client confirms the revised scope in writing.",
 });
 
+/**
+ * The Observation that MOVED an Outcome to its resolved state.
+ *
+ * P2-09 moves an Outcome off `expected` only through
+ * `record_canonical_outcome_observation`, so a resolved Outcome with no Observation row is
+ * not a simpler fixture — it is an impossible one, and it makes a chain read as "the result
+ * is known but nothing proves what was learned", which is a different group from closed.
+ * These rows make the fixture canonical so the terminal chains below really are terminal.
+ */
+const progressObservation = (id: string, outcomeId: string, taskId: string, state: string) => ({
+  id,
+  outcome_id: outcomeId,
+  task_id: taskId,
+  observation_state: state,
+  summary: "The client confirmed the revised scope in writing.",
+  evidence_reference_ids: ["ev-1"],
+  confidence_score: 0.9,
+  missing_data_state: "COMPLETE",
+  observed_by: PROGRESS_ACTOR,
+  observed_at: "2026-08-17T10:30:00Z",
+  evaluated_at: "2026-08-17T10:30:00Z",
+  recorded_at: "2026-08-17T10:30:00Z",
+  correlation_id: `corr-${id}`,
+  idempotency_key: `obs-idem-${id}`,
+});
+
 const progressSummary: OperationalSummary = {
   generatedAt: PROGRESS_NOW.toISOString(),
   sources: [],
@@ -505,7 +531,13 @@ const progressSummary: OperationalSummary = {
     progressOutcome("out-term-a", "task-term-a", "act-term-a", "achieved"),
     progressOutcome("out-term-b", "task-term-b", "act-term-b", "superseded"),
   ],
-  observations: [],
+  // One per RESOLVED Outcome above. The superseded ones carry none: nothing observed them,
+  // which is exactly what `superseded` means.
+  observations: [
+    progressObservation("obs-achieved", "out-achieved", "task-achieved", "achieved"),
+    progressObservation("obs-mixed-a", "out-mixed-a", "task-mixed-a", "achieved"),
+    progressObservation("obs-term-a", "out-term-a", "task-term-a", "achieved"),
+  ],
   lineages: [],
   assurance: {} as OperationalSummary["assurance"],
   actor: { role: "owner", userId: PROGRESS_ACTOR, canCreateEvidence: true },
@@ -515,9 +547,17 @@ const progressChains = deriveExecutionChains(progressSummary, PROGRESS_NOW);
 const progressGroups = projectChainProgress(progressChains);
 const progressQueueMarkup = renderToStaticMarkup(<ExecutionQueue chains={progressChains} onSelect={noop} />);
 
-/** The chain titles rendered under a given test id, in document order. */
+/**
+ * The chain titles rendered under a given test id, in document order.
+ *
+ * Anchored on the row's own OPEN control (`<testId>-open`) rather than on a class string.
+ * W4 restructured the card — the row can no longer be a single `<button>`, because it now
+ * contains the Decide/Do/Verify/Learn indicator, and a button may not contain a list — so
+ * matching on presentational classes made this read the DOM's styling rather than its
+ * structure. The test id is the stable contract; the class names are not.
+ */
 function titlesFor(markup: string, testId: string): string[] {
-  return [...markup.matchAll(new RegExp(`data-testid="${testId}"[\\s\\S]*?<span class="block truncate text-sm[^"]*">([^<]*)<`, "g"))].map((m) => m[1]);
+  return [...markup.matchAll(new RegExp(`data-testid="${testId}-open"[^>]*>([^<]*)<`, "g"))].map((m) => m[1]);
 }
 
 // ── W2-P1-02: attention completeness scenarios ───────────────────────────────

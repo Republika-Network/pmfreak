@@ -22,6 +22,11 @@ import {
 } from "../../presentation/command-center/operational-data";
 import type { DecisionStatus } from "../../presentation/command-center/operational-data";
 import { isBranchLive } from "../../presentation/command-center/execution-read-model";
+import { deriveDecisionJourney } from "../../presentation/command-center/decision-journey";
+import {
+  TERMINAL_DECISION_STATUSES,
+  type CanonicalDecisionStatus,
+} from "../../presentation/command-center/attention-read-model";
 import type { ExecutionOperation, GovernedExecutionChain } from "../../presentation/command-center/execution-read-model";
 import { deriveWhatChanged } from "../../presentation/command-center/change-read-model";
 import { deriveLastUpdatedLabel } from "../../presentation/command-center/activity-read-model";
@@ -175,6 +180,21 @@ export function CommandCenterLayout({
   const [openAttentionId, setOpenAttentionId] = useState<string | null>(null);
   /** P2-12: the canonical Decision whose governed chain is open in the drawer. */
   const [openChainId, setOpenChainId] = useState<string | null>(null);
+
+  /**
+   * UX-W4 — the DECIDE -> DO handoff.
+   *
+   * Recording a terminal Decision removes the item from Needs You, which is correct: it no
+   * longer needs judgment. Before W4 that was the whole interaction — the drawer closed and
+   * the PM was returned to the queue with no statement of what their decision had started.
+   *
+   * This holds the canonical Recommendation just decided until the REFRESHED server payload
+   * carries a chain for it, then opens that chain. Nothing is assumed from the request: the
+   * chain only appears because persisted state produced it, so the drawer that opens is a
+   * reading of the database and never an optimistic echo of what was submitted. If the
+   * write did not produce a chain, nothing opens and nothing is claimed.
+   */
+  const [followDecidedRecommendationId, setFollowDecidedRecommendationId] = useState<string | null>(null);
   /** A governed write committed but the follow-up summary read did not. The work is saved;
    *  only this surface's view of it is stale. Never rendered as a write failure.
    *
@@ -211,6 +231,13 @@ export function CommandCenterLayout({
     });
     // The rendered result comes from persisted server state, not from the request payload.
     await mutateFlow();
+    // Only a terminal Decision can carry work: `persist_governed_material_action` selects
+    // its source with `decision_status in ('accepted','modified')`, and `rejected` closes
+    // the loop with a statement of its own. `escalated` and `needs_more_evidence` leave the
+    // Recommendation open and belong to Needs You, so they are deliberately not followed.
+    if (TERMINAL_DECISION_STATUSES.includes(decisionStatus as CanonicalDecisionStatus)) {
+      selectDrawer({ followRecommendationId: recommendationId });
+    }
   };
 
   // Triage for RAID-derived suggestions: accepting/rejecting/deferring goes through
@@ -245,6 +272,12 @@ export function CommandCenterLayout({
     return new Date(Math.max(Number.isFinite(generatedAt) ? generatedAt : 0, projectionFloor));
   }, [flowData, projectionFloor]);
   const executionChains = useMemo(() => deriveExecutionChains(flowData, projectionNow), [flowData, projectionNow]);
+  /**
+   * W4 completeness. A payload that predates W4 carries no flag at all, and `undefined` is
+   * treated as UNPROVEN rather than complete — the conservative direction, and the same
+   * reading W3 gives a missing `governedAttentionComplete`.
+   */
+  const executionRootIncomplete = flowLoading ? false : flowData?.governedExecutionRootComplete !== true;
   const evidenceOptions = useMemo(() => deriveEvidenceOptions(flowData, projectionNow), [flowData, projectionNow]);
   // One wake-up at the next deadline, then the next — never a polling loop. When nothing is
   // pending, no timer exists at all. Waking advances the projection clock to just past the
@@ -380,10 +413,16 @@ export function CommandCenterLayout({
    * click would look unresponsive. Every selection path therefore goes through this
    * helper, which clears the two it is not, instead of each handler remembering to.
    */
-  const selectDrawer = (next: { chainId?: string | null; attentionId?: string | null; content?: DrawerContent | null }) => {
+  const selectDrawer = (next: {
+    chainId?: string | null;
+    attentionId?: string | null;
+    content?: DrawerContent | null;
+    followRecommendationId?: string | null;
+  }) => {
     setOpenChainId(next.chainId ?? null);
     setOpenAttentionId(next.attentionId ?? null);
     setDrawerContent(next.content ?? null);
+    setFollowDecidedRecommendationId(next.followRecommendationId ?? null);
   };
 
   const handleSourceClick = (source: string) => {
@@ -451,6 +490,9 @@ export function CommandCenterLayout({
    *  The summary rows describe the branch the chain currently speaks for; every other
    *  canonical Action stays rendered in full inside the panel below. */
   const buildChainDrawer = (chain: GovernedExecutionChain): DrawerContent => {
+    // W4: the human reading of this chain. Pure, derived from the same persisted rows the
+    // canonical panel below renders, so the two can never tell different stories.
+    const journey = deriveDecisionJourney(chain, flowData?.actor?.userId ?? null);
     const leading =
       chain.branches.find((branch) => branch.boundary.outcomeAchieved) ??
       chain.branches.find((branch) => isBranchLive(branch)) ??
@@ -462,6 +504,7 @@ export function CommandCenterLayout({
       : "Not requested";
     return {
       title: chain.title,
+      journey,
       why: chain.rationale ?? "A human decision was recorded for this recommendation.",
       evidence: leading?.action.evidenceReferenceIds ?? [],
       // `boundary.statement` is the read model's factual conclusion about this chain, not
@@ -504,9 +547,30 @@ export function CommandCenterLayout({
         const chain = executionChains.find((entry) => entry.decisionId === openChainId);
         return chain ? buildChainDrawer(chain) : null;
       })()
-    : openAttentionId
-      ? ([...governedAttentionAll, ...raidNeedsYou].find((item) => item.id === openAttentionId)?.drawer ?? null)
-      : drawerContent;
+    : /*
+       * W4 — the DECIDE -> DO handoff, resolved rather than assigned.
+       *
+       * An earlier cut held the just-decided Recommendation in state and used an effect to
+       * copy it into `openChainId` once the chain appeared. That is a cascading render, and
+       * React is right to refuse it: the follow id is not a second source of truth to be
+       * synchronised, it is a SELECTOR, exactly like `openChainId` and `openAttentionId`.
+       *
+       * So it is resolved here, on the refreshed payload, in its own precedence slot. What
+       * opens is persisted state — the chain exists because the server produced it, never
+       * because the submission implied it. A rejected Decision resolves too, onto a chain
+       * that says the loop legitimately closes there. If no chain was produced, nothing
+       * opens and nothing is claimed.
+       */
+      followDecidedRecommendationId
+      ? (() => {
+          const chain = executionChains.find(
+            (entry) => entry.recommendationId === followDecidedRecommendationId
+          );
+          return chain ? buildChainDrawer(chain) : null;
+        })()
+      : openAttentionId
+        ? ([...governedAttentionAll, ...raidNeedsYou].find((item) => item.id === openAttentionId)?.drawer ?? null)
+        : drawerContent;
 
   const handleIntakeComplete = (summary: string) => {
     setUserInteracted(true);
@@ -583,6 +647,13 @@ export function CommandCenterLayout({
             changes={changes}
             chains={executionChains}
             onSelectChain={handleChainSelect}
+            chainActorUserId={flowData?.actor?.userId ?? null}
+            chainsIncomplete={executionRootIncomplete}
+            chainsIncompleteNote={
+              executionRootIncomplete
+                ? "Some of this project's work could not be read, so this list may not be complete."
+                : null
+            }
             monitoring={monitoring}
             monitoringActive={hasRealData}
             agentDetail={

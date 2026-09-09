@@ -300,6 +300,41 @@ export type OperationalSummary = {
    * still-open one out of that window, and an attention queue rooted on it would then show
    * nothing and tell the PM they are clear while a real decision waited.
    */
+  /**
+   * Decisions with OPEN governed work that the recent `decisions` window does not reach.
+   *
+   * `decisions` is the newest-30 project-wide history window, and the execution chain
+   * projection walks outward from it. Thirty newer decisions push an older one out, taking
+   * every Action, Task, Execution and Outcome beneath it off the surface — so "In Progress"
+   * would render empty while work was genuinely running.
+   *
+   * Membership is named by the DATABASE, as canonical ids, from ONE statement:
+   * `get_governed_execution_root` returns `openExecutionDecisionIds` under exactly the
+   * predicate `deriveDecisionJourney` uses for `closure === "open"` — a work-bearing
+   * Decision with no Material Action yet, or with at least one branch that is neither
+   * superseded nor observed. Only ids the snapshot named appear here; a row that became
+   * open after the projection was taken is a NONMEMBER and cannot stand in for one.
+   *
+   * An earlier cut assembled this from three independent reads (active executions, pending
+   * outcomes, unexpired actions). Three statements are three MVCC snapshots, so a
+   * completion committing between two of them could empty all three for a chain that was
+   * open throughout — and those three predicates never covered the two open journeys that
+   * carry no work-shaped row at all.
+   *
+   * Deliberately SEPARATE from `decisions`, which keeps its recent-history meaning.
+   */
+  governedExecutionRootDecisions?: Array<Record<string, unknown>>;
+  /**
+   * Whether the execution root above provably holds every open governed chain.
+   *
+   * Proven BY IDENTITY: every id the single-statement projection named was resolved. False
+   * whenever the projection is absent (an older database), disagrees with its own count, a
+   * frozen member could not be loaded, or membership exceeded the read's safety ceiling.
+   * The surface must then withhold both its count and the claim that nothing is in
+   * progress — a successful request is not completeness. Absent on a payload produced
+   * before W4.
+   */
+  governedExecutionRootComplete?: boolean;
   governedAttentionRecommendations?: Array<Record<string, unknown>>;
   /**
    * Whether the set above provably represents every open governed Recommendation in the

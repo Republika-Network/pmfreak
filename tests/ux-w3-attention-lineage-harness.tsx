@@ -159,6 +159,7 @@ type QueryBuilder = {
   eq: (column: string, value: unknown) => QueryBuilder;
   in: (column: string, values: unknown[]) => QueryBuilder;
   lte: (column: string, value: unknown) => QueryBuilder;
+  gt: (column: string, value: unknown) => QueryBuilder;
   not: (column: string, operator: string, value: unknown) => QueryBuilder;
   is: (column: string, value: unknown) => QueryBuilder;
   order: (column: string, options?: { ascending?: boolean }) => QueryBuilder;
@@ -183,6 +184,7 @@ function makeClient() {
     const notNull: string[] = [];
     const isNull: string[] = [];
     const lte: Array<[string, unknown]> = [];
+    const gt: Array<[string, unknown]> = [];
     // Ordered clauses in CALL order, not a single column. A `.order(a).order(b)` chain is a
     // lexicographic sort in PostgREST, and modelling only the last column would make this
     // stub unable to see the very defect multi-column ordering exists to prevent: tied rows
@@ -211,6 +213,12 @@ function makeClient() {
           return cell !== null && cell !== undefined && String(cell) <= String(value);
         });
       }
+      for (const [column, value] of gt) {
+        rows = rows.filter((row) => {
+          const cell = read(column, row);
+          return cell !== null && cell !== undefined && String(cell) > String(value);
+        });
+      }
       for (const column of notNull) rows = rows.filter((row) => read(column, row) !== null && read(column, row) !== undefined);
       for (const column of isNull) rows = rows.filter((row) => read(column, row) === null || read(column, row) === undefined);
       if (orderBy.length > 0) {
@@ -236,6 +244,10 @@ function makeClient() {
       eq: (column: string, value: unknown) => { eqs.push([column, value]); filters.push(`eq:${column}`); return chain; },
       in: (column: string, values: unknown[]) => { ins.push([column, values]); filters.push(`in:${column}`); return chain; },
       lte: (column: string, value: unknown) => { lte.push([column, value]); filters.push(`lte:${column}`); return chain; },
+      // W4 reads the open-Action root with `expires_at > asOf`. Applied for real:
+      // a stub that accepted the filter and ignored it would model a wider set than
+      // PostgREST returns, and the ceiling/overflow behaviour under test would be fiction.
+      gt: (column: string, value: unknown) => { gt.push([column, value]); filters.push(`gt:${column}`); return chain; },
       is: (column: string, value: unknown) => {
         if (value !== null) throw new Error(`unsupported_stub_filter: is(${column}, ${String(value)})`);
         isNull.push(column);
