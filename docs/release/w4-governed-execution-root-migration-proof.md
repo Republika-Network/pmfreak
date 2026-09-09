@@ -485,7 +485,7 @@ The database certification — stack boot, migration chain, catalog snapshots, a
 
 The certification run itself modified no repository worktree and created no branch, worktree, or commit. The merged remote feature branch remains deleted, and W3 and the historical worktrees were not touched.
 
-This document was subsequently authored on a dedicated documentation-only branch checked out from the certified baseline SHA, so that the proof does not land on the frozen W4 branch. It is the only file added, and no commit was created for it.
+This document was subsequently authored on a dedicated documentation-only branch checked out from the certified baseline SHA, so that the proof does not land on the frozen W4 branch. It is the only file added by this documentation PR. The certification run itself created no commit; this proof was committed afterward as a separate documentation-only change.
 
 Out of scope, recorded only so it is not mistaken for certification output: the historical main-repo checkout carries four untracked files predating this work (`docs/ux/pass-4-implementation-plan.md` and three `p0-launch-06-hosted-structural-recertification.*` artifacts). They are unrelated to W4, form no part of this evidence, and were neither modified nor removed.
 
