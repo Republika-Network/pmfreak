@@ -295,6 +295,37 @@ const signatureOf = (qualified, args) => `${qualified}(${args})`;
 // Statement handlers
 // ---------------------------------------------------------------------------
 
+
+/**
+ * The routine-option text of a CREATE FUNCTION statement: everything after the
+ * argument list, with the dollar-quoted body span removed.
+ *
+ * Options are legal both before and after the body, so both sides are returned
+ * joined. The body is excluded rather than included: including it would let
+ * `-- security definer` in a comment, or the string 'SECURITY DEFINER', flip a
+ * SECURITY INVOKER function's classification.
+ *
+ * Fails closed on an unterminated body tag.
+ */
+export function routineOptionsText(stmt, from) {
+  const rest = stmt.slice(from);
+  const bodyMatch = /\$([A-Za-z_]\w*)?\$/.exec(rest);
+  if (!bodyMatch) {
+    // No dollar-quoted body (e.g. `AS 'file', 'symbol'`, or a SQL-standard
+    // `BEGIN ATOMIC` body). Scan the whole remainder: over-detecting SECURITY
+    // DEFINER forces a matrix entry, which fails closed; under-detecting would
+    // drop the function from enforcement.
+    return { text: rest, error: null };
+  }
+  const tag = bodyMatch[0];
+  const bodyStart = bodyMatch.index;
+  const bodyEnd = rest.indexOf(tag, bodyStart + tag.length);
+  if (bodyEnd < 0) {
+    return { text: "", error: `unterminated dollar-quoted body ${tag} in CREATE FUNCTION` };
+  }
+  return { text: `${rest.slice(0, bodyStart)}\n${rest.slice(bodyEnd + tag.length)}`, error: null };
+}
+
 function handleCreate(stmt, file, state, unresolved) {
   const head = /create\s+(or\s+replace\s+)?function\s+(?:("?[a-zA-Z_]\w*"?)\s*\.\s*)?("?[a-zA-Z_]\w*"?)\s*\(/i.exec(stmt);
   if (!head) return false;
@@ -312,9 +343,20 @@ function handleCreate(stmt, file, state, unresolved) {
     unresolved.push(`${file}: ${qualified}: ${error}`);
     return true;
   }
-  // Everything between the argument list and the body is the routine header.
-  const bodyIdx = stmt.search(/\$([A-Za-z_]\w*)?\$/);
-  const header = stmt.slice(paren.end + 1, bodyIdx > paren.end ? bodyIdx : undefined);
+  // Routine options may appear on EITHER side of the body. PostgreSQL accepts
+  //     CREATE FUNCTION f() RETURNS int AS $$ ... $$
+  //       LANGUAGE sql SECURITY DEFINER SET search_path = '';
+  // just as it accepts the same options before `AS`. Reading only the text
+  // before the body silently classified such a function as SECURITY INVOKER
+  // and dropped it from matrix enforcement entirely — a false negative in the
+  // one direction that matters. Scan both sides, and EXCLUDE the body itself so
+  // that a comment or string literal inside it can never be read as an option.
+  const options = routineOptionsText(stmt, paren.end + 1);
+  if (options.error) {
+    unresolved.push(`${file}: ${qualified}: ${options.error}`);
+    return true;
+  }
+  const header = options.text;
   const sig = signatureOf(qualified, args);
 
   const securityDefiner = /\bsecurity\s+definer\b/i.test(header);
@@ -367,10 +409,22 @@ function handleDrop(stmt, file, state, unresolved) {
 }
 
 function handleGrantRevoke(stmt, file, state, unresolved) {
-  const head = /^(grant|revoke)\s+(?:grant\s+option\s+for\s+)?([\s\S]*?)\s+on\s+function\s+/i.exec(stmt);
+  const head = /^(grant|revoke)\s+(grant\s+option\s+for\s+)?([\s\S]*?)\s+on\s+function\s+/i.exec(stmt);
   if (!head) return false;
   const isGrant = head[1].toLowerCase() === "grant";
-  const privileges = head[2].trim().toLowerCase();
+  // `REVOKE GRANT OPTION FOR EXECUTE ... FROM r` removes only r's ability to
+  // re-grant EXECUTE. r KEEPS EXECUTE. Modelling it as EXECUTE=false would
+  // report a privilege as denied while it is still held — the exact direction
+  // of error this checker exists to prevent. Grant-option state is not
+  // modelled, so fail closed rather than guess.
+  if (head[2]) {
+    unresolved.push(
+      `${file}: GRANT OPTION FOR is not modelled by this checker (statement: ${stmt.slice(0, 100)}). ` +
+      "It changes only the grant option, never the EXECUTE privilege itself; extend this checker to track grant-option state before using it.",
+    );
+    return true;
+  }
+  const privileges = head[3].trim().toLowerCase();
   if (!/^(all(\s+privileges)?|execute)$/.test(privileges)) {
     unresolved.push(`${file}: unsupported privilege list ${JSON.stringify(privileges)} in ${isGrant ? "GRANT" : "REVOKE"} ON FUNCTION`);
     return true;
@@ -499,6 +553,34 @@ export function loadMatrix(matrixPath = MATRIX_PATH) {
 // Diff reconstructed state against the declarative matrix
 // ---------------------------------------------------------------------------
 
+
+/**
+ * Canonical form of a `search_path` setting, so that the source-side model and
+ * the live-catalog certification compare like with like.
+ *
+ * The same setting is spelled differently on each side: source says
+ * `set search_path = ''` while pg_proc.proconfig reports `search_path=""`, and
+ * element spacing varies freely. Normalising to a lowercased, unquoted,
+ * comma-joined element list means an inconsequential formatting difference can
+ * never raise a false mismatch — while a genuinely different path still does.
+ * The empty path (`''`) normalises to the empty string, distinct from `null`
+ * (no pinned search_path at all).
+ */
+export function normalizeSearchPath(value) {
+  if (value === null || value === undefined) return null;
+  return value
+    .split(",")
+    .map((part) => {
+      let t = part.trim();
+      if (t.length >= 2 && ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'")))) {
+        t = t.slice(1, -1);
+      }
+      return t.trim().toLowerCase();
+    })
+    .filter((t) => t.length > 0)
+    .join(", ");
+}
+
 /**
  * @returns {{problems: string[], totals: object}}
  */
@@ -518,7 +600,11 @@ export function diffAgainstMatrix(state, matrix) {
     // 14. every SECURITY DEFINER function must pin search_path
     if (fn.searchPath === null || fn.searchPath === undefined) {
       problems.push(`${fn.signature}: SECURITY DEFINER without a pinned 'set search_path' in its latest definition (${fn.latestDefinition})`);
-    } else if (spec.search_path !== undefined && spec.search_path !== null && spec.search_path !== fn.searchPath) {
+    } else if (
+      spec.search_path !== undefined &&
+      spec.search_path !== null &&
+      normalizeSearchPath(spec.search_path) !== normalizeSearchPath(fn.searchPath)
+    ) {
       problems.push(`${fn.signature}: search_path is ${JSON.stringify(fn.searchPath)} but the matrix declares ${JSON.stringify(spec.search_path)}`);
     }
     if (Boolean(spec.trigger_only) !== Boolean(fn.isTrigger)) {

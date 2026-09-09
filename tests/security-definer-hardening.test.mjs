@@ -33,6 +33,8 @@ import {
   loadMigrations,
   loadMatrix,
   parseIdentityArguments,
+  normalizeSearchPath,
+  routineOptionsText,
 } from "../scripts/check-security-definer-hardening.mjs";
 
 const ROOT = process.cwd();
@@ -418,4 +420,169 @@ test("PRINCIPALS models PUBLIC and anon as distinct entries", () => {
   assert.ok(PRINCIPALS.includes("public"));
   assert.ok(PRINCIPALS.includes("anon"));
   assert.notEqual(PRINCIPALS.indexOf("public"), PRINCIPALS.indexOf("anon"));
+});
+
+// ============================================================================
+// Codex PR #602 review findings — regression coverage
+// ============================================================================
+
+// P1: PostgreSQL accepts routine options on EITHER side of the body. Reading
+// only the text before it classified such a function as SECURITY INVOKER and
+// dropped it from matrix enforcement — a false negative in the one direction
+// that matters.
+test("P1: SECURITY DEFINER declared AFTER the dollar-quoted body is recognised", () => {
+  const { functions, unresolved } = replay([
+    ["001_a.sql", [
+      "create or replace function public.late_options(p_id uuid) returns boolean",
+      "as $$ select true $$",
+      "language sql",
+      "security definer",
+      "set search_path = '';",
+    ].join("\n")],
+  ]);
+  assert.deepEqual(unresolved, []);
+  const fn = functions.get("public.late_options(uuid)");
+  assert.ok(fn, "function must be parsed");
+  assert.equal(fn.securityDefiner, true, "SECURITY DEFINER after the body must be recognised");
+  assert.equal(fn.searchPath, "''", "SET search_path after the body must be recognised");
+  assert.equal(finalSecurityDefiner(functions).length, 1);
+});
+
+test("P1: a post-body SECURITY DEFINER function is included in matrix enforcement", () => {
+  const { functions } = replay([
+    ["001_a.sql", [
+      "create or replace function public.late_options(p_id uuid) returns boolean",
+      "as $$ select true $$",
+      "language sql",
+      "security definer",
+      "set search_path = '';",
+    ].join("\n")],
+  ]);
+  // Absent from the matrix -> must fail, rather than being silently skipped.
+  const { problems } = diffAgainstMatrix(functions, { functions: [] });
+  assert.ok(
+    problems.some((p) => /late_options\(uuid\).*absent from security-definer-grant-matrix\.json/.test(p)),
+    problems.join("\n"),
+  );
+  // And its anon grant is enforced like any other.
+  const matrix = { functions: [{ schema: "public", name: "late_options", identity_arguments: "uuid", signature: "public.late_options(uuid)", public: false, anon: false, authenticated: false, service_role: true, trigger_only: false, search_path: "''" }] };
+  const { problems: p2 } = diffAgainstMatrix(functions, matrix);
+  assert.ok(p2.some((p) => /anon EXECUTE is GRANTED/.test(p)), p2.join("\n"));
+});
+
+test("P1: post-body trigger and RETURNS TRIGGER are still classified correctly", () => {
+  const { functions, unresolved } = replay([
+    ["001_a.sql", [
+      "create or replace function public.late_trigger() returns trigger",
+      "as $$ begin return new; end $$",
+      "language plpgsql security definer set search_path = public;",
+    ].join("\n")],
+  ]);
+  assert.deepEqual(unresolved, []);
+  const fn = functions.get("public.late_trigger()");
+  assert.equal(fn.securityDefiner, true);
+  assert.equal(fn.isTrigger, true);
+  assert.equal(fn.searchPath, "public");
+});
+
+test("P1: the body itself is excluded, so its text cannot flip classification", () => {
+  const { functions } = replay([
+    ["001_a.sql", [
+      "create or replace function public.invoker_fn() returns text",
+      "as $$ select 'security definer'::text $$",
+      "language sql;",
+    ].join("\n")],
+  ]);
+  assert.equal(functions.get("public.invoker_fn()").securityDefiner, false,
+    "a string literal inside the body must not be read as a routine option");
+});
+
+test("P1: an unterminated body in CREATE FUNCTION fails closed", () => {
+  const { error } = routineOptionsText("create function public.f() returns int as $tag$ begin", 0);
+  assert.match(error ?? "", /unterminated dollar-quoted body/);
+});
+
+// P2: `REVOKE GRANT OPTION FOR EXECUTE ... FROM r` removes only r's ability to
+// re-grant EXECUTE. r KEEPS EXECUTE. Modelling it as EXECUTE=false would report
+// a held privilege as denied.
+test("P2: REVOKE GRANT OPTION FOR cannot conclude anon EXECUTE=false", () => {
+  const { functions, unresolved } = replay([
+    ["001_a.sql", sql(DEF("f", "uuid"), "revoke grant option for execute on function public.f(uuid) from anon;")],
+  ]);
+  assert.ok(unresolved.some((u) => /GRANT OPTION FOR is not modelled/.test(u)),
+    `expected fail-closed, got: ${unresolved.join("|")}`);
+  // The privilege state must be left untouched — never flipped to denied.
+  assert.equal(functions.get("public.f(uuid)").acl.anon, true,
+    "anon retains EXECUTE: only the grant option was revoked");
+});
+
+test("P2: GRANT OPTION FOR fails closed for every role and both verbs", () => {
+  for (const stmt of [
+    "revoke grant option for execute on function public.f(uuid) from anon;",
+    "revoke grant option for execute on function public.f(uuid) from authenticated;",
+    "revoke grant option for all on function public.f(uuid) from service_role;",
+  ]) {
+    const { unresolved } = replay([["001_a.sql", sql(DEF("f", "uuid"), stmt)]]);
+    assert.ok(unresolved.some((u) => /GRANT OPTION FOR is not modelled/.test(u)), stmt);
+  }
+});
+
+test("P2: WITH GRANT OPTION on a GRANT still correctly models EXECUTE=true", () => {
+  const { functions, unresolved } = replay([
+    ["001_a.sql", sql(
+      DEF("f", "uuid"),
+      "revoke execute on function public.f(uuid) from public, anon, authenticated;",
+      "grant execute on function public.f(uuid) to authenticated with grant option;",
+    )],
+  ]);
+  assert.deepEqual(unresolved, []);
+  const acl = functions.get("public.f(uuid)").acl;
+  assert.equal(acl.authenticated, true, "WITH GRANT OPTION grants EXECUTE and is modelled as such");
+  assert.equal(acl.anon, false);
+});
+
+// P2 (fresh-db): a pinned search_path is necessary but not sufficient — it must
+// be the one the matrix declares.
+test("P3: search_path normalisation ignores formatting but not substance", () => {
+  assert.equal(normalizeSearchPath("''"), normalizeSearchPath('""'), "'' and \"\" are the same empty path");
+  assert.equal(normalizeSearchPath("''"), "");
+  assert.equal(normalizeSearchPath("pg_catalog, public, extensions"), normalizeSearchPath("pg_catalog,public,  extensions"));
+  assert.equal(normalizeSearchPath("PUBLIC"), normalizeSearchPath("public"));
+  assert.equal(normalizeSearchPath('"public", pg_temp'), normalizeSearchPath("public, pg_temp"));
+  assert.notEqual(normalizeSearchPath("public"), normalizeSearchPath("public, pg_temp"));
+  assert.notEqual(normalizeSearchPath("public"), normalizeSearchPath("''"));
+  assert.equal(normalizeSearchPath(null), null, "null (no pinned path) is distinct from the empty path");
+});
+
+test("P3: a non-null but unexpected search_path FAILS the source-side diff", () => {
+  const { functions } = replay([
+    ["001_a.sql", sql(
+      DEF("f", "uuid", "security definer set search_path = pg_temp"),
+      "revoke execute on function public.f(uuid) from public, anon, authenticated;",
+      "grant execute on function public.f(uuid) to service_role;",
+    )],
+  ]);
+  const matrix = { functions: [{ schema: "public", name: "f", identity_arguments: "uuid", signature: "public.f(uuid)", public: false, anon: false, authenticated: false, service_role: true, trigger_only: false, search_path: "''" }] };
+  const { problems } = diffAgainstMatrix(functions, matrix);
+  assert.ok(problems.some((p) => /search_path is "pg_temp" but the matrix declares "''"/.test(p)), problems.join("\n"));
+});
+
+test("P3: an equivalent-but-differently-spelled search_path does NOT fail", () => {
+  const { functions } = replay([
+    ["001_a.sql", sql(
+      DEF("f", "uuid", "security definer set search_path = pg_catalog,public,  extensions"),
+      "revoke execute on function public.f(uuid) from public, anon, authenticated;",
+      "grant execute on function public.f(uuid) to service_role;",
+    )],
+  ]);
+  const matrix = { functions: [{ schema: "public", name: "f", identity_arguments: "uuid", signature: "public.f(uuid)", public: false, anon: false, authenticated: false, service_role: true, trigger_only: false, search_path: "pg_catalog, public, extensions" }] };
+  const { problems } = diffAgainstMatrix(functions, matrix);
+  assert.deepEqual(problems, []);
+});
+
+test("P3: the fresh-DB certification compares live search_path against the matrix", () => {
+  const src = readFileSync(path.join(ROOT, "scripts/check-fresh-db-migrations.mjs"), "utf8");
+  assert.match(src, /normalizeSearchPath/, "must use the shared normaliser");
+  assert.match(src, /search_path in the applied database is .* but the matrix declares/,
+    "must report a live-vs-matrix search_path mismatch, not merely a missing pin");
 });

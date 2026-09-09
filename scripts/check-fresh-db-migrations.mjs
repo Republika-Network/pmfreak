@@ -38,7 +38,7 @@ import { fileURLToPath } from "node:url";
 import { STOCK_MANAGED_OBJECT_PROFILES, MANAGED_OBJECT_SERIALIZER_REVISION } from "./fixtures/managed-object-profiles.mjs";
 import { STOCK_EXTENSION_PROFILES } from "./fixtures/extension-profiles.mjs";
 import { STOCK_AUTHORIZATION_PROFILES, authorizationStateLines } from "./fixtures/authorization-profiles.mjs";
-import { parseIdentityArguments } from "./check-security-definer-hardening.mjs";
+import { parseIdentityArguments, normalizeSearchPath } from "./check-security-definer-hardening.mjs";
 
 const ROOT = process.cwd();
 const MIGRATIONS_DIR = path.join(ROOT, "supabase/migrations");
@@ -3560,8 +3560,20 @@ function certifySecurityDefinerGrants(dbUrl) {
         );
       }
     }
+    // A pinned search_path is necessary but NOT sufficient: it must be the one
+    // the matrix declares. A function silently re-pinned to a different path is
+    // a real change in its object-resolution behaviour, so compare the value,
+    // not merely its presence. Both sides go through the source-side checker's
+    // normaliser, so `''` vs `""` and element spacing cannot raise a false
+    // mismatch while a genuinely different path still fails.
     if (fn.searchPath === null || fn.searchPath === undefined) {
       problems.push(`${signature}: SECURITY DEFINER without a pinned search_path in pg_proc.proconfig`);
+    } else if (spec.search_path === null || spec.search_path === undefined) {
+      problems.push(`${signature}: applied database pins search_path=${JSON.stringify(fn.searchPath)} but the matrix declares no expected search_path`);
+    } else if (normalizeSearchPath(fn.searchPath) !== normalizeSearchPath(spec.search_path)) {
+      problems.push(
+        `${signature}: search_path in the applied database is ${JSON.stringify(fn.searchPath)} but the matrix declares ${JSON.stringify(spec.search_path)}`,
+      );
     }
     if (fn.isTrigger !== Boolean(spec.trigger_only)) {
       problems.push(`${signature}: applied database reports trigger=${fn.isTrigger} but the matrix declares trigger_only=${Boolean(spec.trigger_only)}`);
