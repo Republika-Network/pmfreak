@@ -20,8 +20,14 @@ successful result. The active PMFreak project (`refvllnadfzjkxlpidrr`) was never
 a target and was never contacted.
 
 **This closure is deliberately SCOPED.** What is proven here is the hosted
-*fresh migration execution*. It is NOT a hosted RLS/role-matrix/grants
-certification, and it is NOT a deployment-topology certification. The rows still
+*fresh migration execution*. It is NOT a hosted RLS/role-matrix
+certification, and it is NOT a deployment-topology certification. Hosted
+**grants** were subsequently certified, but SEPARATELY and against a
+DIFFERENT target: Gate 3 (2026-09-09) live-verified SECURITY DEFINER EXECUTE
+grants on the canonical production project `yvyrkihxardfqsffgoae` (`pmfreak-production`), not
+on the disposable validation project this document concerns. See
+[`hosted-grants-report.md`](./hosted-grants-report.md); that certification is
+not evidence about `ecwkldflddnmdwusatuh` and does not widen this closure. The rows still
 marked NOT EXECUTED in the result table below remain genuinely unexecuted on
 hosted — see them, not this heading, for what is and is not covered:
 
@@ -149,8 +155,15 @@ RLS coverage......................... NOT EXECUTED
 Tenant isolation..................... NOT EXECUTED
 Full role matrix...................... NOT EXECUTED
 RPC signatures......................... Static inventory done (hosted-rpc-signature-report.md); live execution NOT DONE
-SECURITY DEFINER review................ Static review done (hosted-grants-report.md); live grants NOT VERIFIED
-Grants.................................. NOT EXECUTED
+SECURITY DEFINER review................ Static review done (hosted-grants-report.md); live grants VERIFIED under
+                                       Gate 3 (2026-09-09) on yvyrkihxardfqsffgoae
+                                       (pmfreak-production) -- NOT on this validation project
+Grants.................................. NOT EXECUTED on THIS validation project (ecwkldflddnmdwusatuh).
+                                       Hosted SECURITY DEFINER EXECUTE grants ARE live-verified on the canonical
+                                       production project yvyrkihxardfqsffgoae under Gate 3
+                                       (2026-09-09): SECURITY DEFINER total 30,
+                                       PUBLIC 0, anon 0, authenticated 23, service_role 30, unpinned
+                                       search_path 0. GATE_3=PASS, Gate 3 CLOSED. See hosted-grants-report.md
 Generated types drift................... NOT EXECUTED
 Existing DB compatibility............... NOT EXECUTED
 

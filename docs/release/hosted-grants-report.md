@@ -1,6 +1,6 @@
 # Hosted Grants Report — SECURITY DEFINER EXECUTE privileges
 
-## Status: source model corrected and enforced; hosted re-verification still required
+## Status: LIVE-VERIFIED on `yvyrkihxardfqsffgoae` / `pmfreak-production` (2026-09-09) — Gate 3 CLOSED
 
 **Supersedes the Perilla 13B / RR-MIGRATE revision of this document, whose
 central claim was false.** That revision stated:
@@ -198,34 +198,102 @@ RLS on `public.agent_attestation_nonces` remains intentionally disabled
 (service-role-only by design, `20260826000000`); the `purge_expired_nonces`
 revoke above is what closes the SECURITY DEFINER bypass of that boundary.
 
-## To complete this report for real
+## Hosted verification record
 
-The static and fresh-DB layers are now enforced in CI. What remains is hosted
-re-verification, which must be a separate, explicitly authorized step — **no
-manual `REVOKE` in the SQL editor, no `apply_migration`, no `migration repair`,
-no `db reset`, no editing historical migrations**:
+Migration `20260910000000` was applied to the canonical hosted project through
+the reviewed `source migration → tests → review → fresh/local certification →
+reviewed apply` path, from an interactive operator terminal. **No manual
+`REVOKE` in the SQL editor, no `apply_migration`, no `migration repair`, no
+`db reset`, no edit to any historical migration.** An independent direct
+read-only catalog verification was then run against the same project.
 
-1. Apply `20260910000000` to the canonical project through the reviewed
-   `source migration → tests → review → fresh/local certification → reviewed apply`
-   path.
-2. Run, against the linked project:
-   ```sql
-   select 'public.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')' as signature,
-          p.prosecdef, p.proconfig,
-          exists (select 1 from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
-                  where a.grantee = 0 and a.privilege_type = 'EXECUTE') as public_can_execute,
-          has_function_privilege('anon',          p.oid, 'execute') as anon_can_execute,
-          has_function_privilege('authenticated', p.oid, 'execute') as authenticated_can_execute,
-          has_function_privilege('service_role',  p.oid, 'execute') as service_role_can_execute
-   from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-   where n.nspname = 'public' and p.prosecdef
-   order by 1;
-   ```
-3. Confirm the result matches `security-definer-grant-matrix.json` exactly:
-   PUBLIC 0, anon 0, authenticated 23, service_role 30.
-4. Confirm the Security Advisor reports 0 anon-executable SECURITY DEFINER
-   functions.
-5. Update this status line to "live-verified" with the query output attached,
-   redacted of project-identifying detail.
+**Hosted target, pinned:** `HOSTED_TARGET_REF=yvyrkihxardfqsffgoae` (`pmfreak-production`) —
+the canonical production project, and the same target used for Gate 2. This is
+NOT `refvllnadfzjkxlpidrr` (the legacy/live PMFreak project) and NOT
+`ecwkldflddnmdwusatuh` (the disposable migration-validation project). Both of
+those are denied as fresh-apply targets by `HOSTED_DENIED_PMFREAK_REFS` /
+the allowlist in `scripts/check-fresh-db-migrations.mjs`.
 
-**Gate 3 remains BLOCKED until step 5 is complete.**
+### Directly observed on the hosted project
+
+Every value in this table was read back from the live catalog. Nothing here is
+inferred.
+
+| Assertion | Matrix | Live-observed |
+| --- | --- | --- |
+| Migration head | `20260910000000` | `20260910000000` |
+| `SECURITY_DEFINER_TOTAL` | 30 | 30 |
+| `PUBLIC_EXECUTABLE` | 0 | 0 |
+| `ANON_EXECUTABLE` | 0 | 0 |
+| `AUTHENTICATED_EXECUTABLE` | 23 | 23 |
+| `SERVICE_ROLE_EXECUTABLE` | 30 | 30 |
+| Unpinned SECURITY DEFINER `search_path` | 0 | 0 |
+| `purge_expired_nonces()` — anon EXECUTE | false | false |
+| `operational_workspace_role(uuid)` — authenticated EXECUTE | false | false |
+| `operational_authority_evaluation(uuid,text,text)` — authenticated EXECUTE | false | false |
+| `p2_08_validate_execution_governance(uuid,uuid)` — authenticated EXECUTE | false | false |
+
+The Security Advisor independently reports 0 anon-executable and 23
+authenticated-executable SECURITY DEFINER functions, agreeing with the catalog
+read.
+
+With `SECURITY_DEFINER_TOTAL = 30` and `AUTHENTICATED_EXECUTABLE = 23`, exactly
+seven functions lack `authenticated` EXECUTE. The matrix names those seven as
+`abuse_rate_limit_increment`, `founder_program_transition`,
+`purge_expired_nonces`, `operational_authority_evaluation`,
+`operational_workspace_role`, `p2_08_validate_execution_governance` and
+`prepare_decision_evidence_link`.
+
+### The 43 mutable-`search_path` advisor warnings are NOT in this scope
+
+`UNPINNED_SECURITY_DEFINER_SEARCH_PATH = 0` above is a statement about the 30
+SECURITY DEFINER functions only, and it is now live-confirmed: every one of them
+pins `search_path` on the hosted project.
+
+That is a **disjoint** result from the 43 mutable-`search_path` advisor
+warnings, every one of which is raised against a **SECURITY INVOKER** function.
+Those 43 are classified `CRITICAL=0`, `HARDEN_RECOMMENDED=8`,
+`ACCEPTABLE_WITH_RATIONALE=35`, and they remain **separate, non-blocking
+follow-up work**, deliberately not bundled with this security-critical diff. See
+[Out of scope here](#out-of-scope-here). Gate 3 does not depend on them, and
+closing Gate 3 does not close them.
+
+### Repository certification layers (read-only, re-runnable)
+
+| Layer | Result |
+| --- | --- |
+| `npm run check:security-definer-hardening` | PASS — 30/30 reconstructed effective ACLs match the matrix; all 30 pin `search_path` |
+| `node --test tests/security-definer-hardening.test.mjs` | PASS — 46/46 |
+| `npm run check:fresh-db-migrations` (no `FRESH_DB_URL`) | PASS static; fresh-apply SKIPPED |
+
+The source-side reconstruction and the live catalog now agree on all six totals.
+
+### The re-verification query
+
+Read-only. Re-runnable against the linked project at any time; this is the query
+whose output the table above records.
+
+```sql
+select 'public.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')' as signature,
+       p.prosecdef, p.proconfig,
+       exists (select 1 from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+               where a.grantee = 0 and a.privilege_type = 'EXECUTE') as public_can_execute,
+       has_function_privilege('anon',          p.oid, 'execute') as anon_can_execute,
+       has_function_privilege('authenticated', p.oid, 'execute') as authenticated_can_execute,
+       has_function_privilege('service_role',  p.oid, 'execute') as service_role_can_execute
+from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+where n.nspname = 'public' and p.prosecdef
+order by 1;
+```
+
+## Final status
+
+```
+GATE_3=PASS
+```
+
+**Gate 3 CLOSED — live verified.**
+
+Re-opening Gate 3 requires either a change to
+`security-definer-grant-matrix.json` or a hosted observation that contradicts
+the live-observed table above.
