@@ -170,8 +170,15 @@ test('protected layout uses resolveOnboardingState (canonical resolver) and redi
   // isOnboardingComplete): a Project may exist, and general navigation
   // remains open, before Command Center is active — see
   // tests/pmf-001-002-state-authority-reconciliation.test.mjs.
+  // hasWorkspaceAccess is no longer called directly: the gate is now
+  // shouldRedirectForOnboarding, which is EQUAL to !hasWorkspaceAccess for every
+  // state on a non-archived render (asserted exhaustively in
+  // tests/onboarding-gate-archived-workspace.test.ts) and differs only by
+  // exempting an archived routed workspace from "needs_project". The invariant
+  // this test guards — one canonical resolver, one derived destination, and
+  // needs_project still redirecting — is unchanged.
   assert.match(layoutSrc, /resolveOnboardingState/);
-  assert.match(layoutSrc, /hasWorkspaceAccess\(onboardingState\)/);
+  assert.match(layoutSrc, /shouldRedirectForOnboarding\(\{ state: onboardingState/);
   assert.match(layoutSrc, /getOnboardingRedirect\(onboardingState\)/);
 });
 

@@ -5,6 +5,11 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DERIVED_LENS_METADATA } from "@/lib/workspace/derived-lens-metadata";
 import { NAVIGATION_HIERARCHY } from "@/lib/workspace/navigation-hierarchy";
+import {
+  WORKSPACE_COMMAND_CENTER_LEGACY_PATH,
+  navEntryMatchesPathname,
+  workspaceCommandCenterPath,
+} from "@/lib/workspace/command-center-paths";
 import { AdvancedDrawer } from "@/components/pmfreak/navigation/advanced-drawer";
 import { SidebarPmoTree } from "@/components/pmfreak/navigation/sidebar-pmo-tree";
 import { computeCapabilityRevealState, computeNavigationRail } from "@/features/runtime/capability-reveal/capability-reveal-selectors";
@@ -130,10 +135,20 @@ type OperationalShellProps = {
   user: { fullName: string; role: string; companyName: string };
   /** Pilot capability set (Task 7): resolved server-side; defaults to the curated pilot profile. */
   capabilityProfile?: CapabilityProfile;
+  /**
+   * Active workspace, resolved server-side by `(protected)/layout.tsx`, which
+   * already computes it for the onboarding gate — so this costs no extra query.
+   *
+   * Optional on purpose: when it is absent the Command Center nav entry falls
+   * back to the legacy `/command-center` entry point, which resolves the
+   * workspace and redirects. The nav therefore degrades to one extra hop rather
+   * than to a broken link.
+   */
+  workspaceId?: string;
 };
 
 
-export function OperationalShell({ children, user, capabilityProfile = "pilot" }: OperationalShellProps) {
+export function OperationalShell({ children, user, capabilityProfile = "pilot", workspaceId }: OperationalShellProps) {
   const pathname = usePathname();
   const router = useRouter();
   const [projects, setProjects] = useState<UserProject[]>([]);
@@ -272,7 +287,14 @@ export function OperationalShell({ children, user, capabilityProfile = "pilot" }
       setProjectsLoading(true);
       setProjectsError(null);
       try {
-        const res = await fetch("/api/projects", { cache: "no-store" });
+        // Scope the switcher to the workspace this shell is rendering. Without
+        // it the list comes back from the preferred-workspace cookie, so a
+        // canonical deep link shows one workspace's Command Center wrapped in
+        // another workspace's projects.
+        const res = await fetch(
+          workspaceId ? `/api/projects?workspaceId=${encodeURIComponent(workspaceId)}` : "/api/projects",
+          { cache: "no-store" },
+        );
         if (!res.ok) throw new Error();
         const data = (await res.json()) as { projects?: UserProject[] };
         if (active) setProjects(data.projects ?? []);
@@ -287,7 +309,10 @@ export function OperationalShell({ children, user, capabilityProfile = "pilot" }
     }
     void load();
     return () => { active = false; };
-  }, []);
+    // Refetch when the rendered workspace changes: navigating between two
+    // workspaces' Command Centers must reload the switcher, not keep showing the
+    // first workspace's projects.
+  }, [workspaceId]);
 
   useEffect(() => {
     if (projectId) globalThis.localStorage?.setItem("pmfreak.currentProjectId", projectId);
@@ -798,7 +823,16 @@ export function OperationalShell({ children, user, capabilityProfile = "pilot" }
     canUsePortfolioMemory: true,
     canUseGovernanceDirectives: user.role === "admin" || user.role === "owner",
   }), [hasProjects, user.role]);
-  const navHref = (href: string) => (projectId ? `${href}?projectId=${projectId}` : href);
+  // Navigation destination resolution. The Command Center entry is rewritten to
+  // its canonical, entity-qualified route when the workspace is known, so the
+  // URL the PM lands on (and can copy, bookmark or share) names the workspace
+  // rather than relying on whatever their session last selected.
+  const navHref = (href: string) => {
+    if (href === WORKSPACE_COMMAND_CENTER_LEGACY_PATH && workspaceId) {
+      return workspaceCommandCenterPath(workspaceId, { projectId: projectId ?? undefined });
+    }
+    return projectId ? `${href}?projectId=${projectId}` : href;
+  };
   const navItems = computeNavigationRail(revealState, capabilityProfile).map((item) => ({
     ...item,
     locked: !isLensUnlocked(item.href, awakening.stage),
@@ -868,7 +902,7 @@ export function OperationalShell({ children, user, capabilityProfile = "pilot" }
               <div className="space-y-1">
                 <p className="mb-1.5 px-1 text-[9px] uppercase tracking-[0.3em] text-zinc-400">Start Here</p>
                 {primaryNav.map((item) => {
-                  const isActive = pathname.startsWith(item.href);
+                  const isActive = navEntryMatchesPathname(item.href, pathname);
                   return (
                     <Link
                       key={item.href}
@@ -906,7 +940,7 @@ export function OperationalShell({ children, user, capabilityProfile = "pilot" }
                   <p className="mb-1 text-[9px] uppercase tracking-[0.28em] text-zinc-400">More</p>
                   <div className="space-y-1">
                     {utilityNav.map((item) => (
-                      <Link key={item.href} href={item.href} className={`block rounded-lg border px-2.5 py-1.5 text-xs transition-colors ${pathname.startsWith(item.href) ? item.active : `border-slate-200 ${item.idle} hover:border-slate-200`}`}>{item.label}</Link>
+                      <Link key={item.href} href={item.href} className={`block rounded-lg border px-2.5 py-1.5 text-xs transition-colors ${navEntryMatchesPathname(item.href, pathname) ? item.active : `border-slate-200 ${item.idle} hover:border-slate-200`}`}>{item.label}</Link>
                     ))}
                   </div>
                 </div>
@@ -2215,7 +2249,7 @@ export function OperationalShell({ children, user, capabilityProfile = "pilot" }
                   key={item.label}
                   href={navHref(item.href)}
                   className={`shrink-0 snap-start rounded-lg border px-3 py-1.5 text-xs transition-colors ${
-                    pathname.startsWith(item.href)
+                    navEntryMatchesPathname(item.href, pathname)
                       ? "border-cyan-200/30 bg-cyan-300/[0.08] text-cyan-900"
                       : "border-slate-200 bg-white text-slate-600 hover:text-slate-800"
                   }`}
@@ -2243,7 +2277,7 @@ export function OperationalShell({ children, user, capabilityProfile = "pilot" }
                     href={navHref(item.href)}
                     onClick={() => setMobileMoreOpen(false)}
                     className={`rounded-lg border px-2.5 py-1.5 text-xs transition-colors ${
-                      pathname.startsWith(item.href) ? item.active : `border-slate-200 bg-white ${item.idle}`
+                      navEntryMatchesPathname(item.href, pathname) ? item.active : `border-slate-200 bg-white ${item.idle}`
                     }`}
                   >
                     {item.label}

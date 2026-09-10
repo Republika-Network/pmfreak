@@ -57,6 +57,13 @@ const WORKSPACE_CONTEXTUAL_ROUTES = [
   "/early-access",
   "/trial-inactive",
   "/pm-registry",
+  // The internal PM-ops dashboard, renamed from "/pmo-command-center" per
+  // ADR-PMF-014 Rule 6. Its data is workspace-scoped, so it classifies exactly
+  // as its "/pm-registry" sibling does. Registering it is explicitness, not a
+  // behaviour change: "workspace-contextual" and the "unknown" catch-all it
+  // previously fell through to are both protected by isProtectedPageRoute, and
+  // neither reaches any other branch in proxy.ts.
+  "/pm-operations",
   "/pmo-interventions",
   "/pmo-executive-reporting",
 ] as const;

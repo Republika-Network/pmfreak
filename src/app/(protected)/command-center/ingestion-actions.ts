@@ -2,7 +2,7 @@
 
 import { requireAuthUser } from "@/lib/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { resolvePreferredWorkspace } from "@/lib/workspaces/preferred-workspace";
+import { resolveRoutedWorkspace } from "@/lib/workspaces/routed-workspace";
 import {
   readInitialIngestionStatus,
   withInitialIngestionStatus,
@@ -14,22 +14,33 @@ export type MarkInitialIngestionResult = { ok: boolean };
 /**
  * Advances the durable initial-ingestion marker on `projects.onboarding_payload`.
  *
- * Authorization is unchanged and unconditional: both the read and the write are
- * scoped to the project id AND the caller's own resolved workspace, so a project
- * outside that workspace is never read or mutated. RLS remains the backstop —
- * this uses the user-scoped client, never the service role.
+ * Authorization is unconditional: both the read and the write are scoped to the
+ * project id AND the ROUTED workspace the caller is actually viewing, which is
+ * authorized here rather than trusted. RLS remains the backstop — this uses the
+ * user-scoped client, never the service role.
+ *
+ * The workspace used to be re-resolved from the preferred-workspace cookie. On a
+ * canonical deep link to workspace B while the cookie still named A, that looked
+ * up B's project under A, matched nothing, and returned `{ ok: false }` — so the
+ * durable marker never advanced and the guided ingestion view reappeared on
+ * every refresh. The workspace is now passed in from the route that rendered the
+ * screen.
+ *
+ * Archived workspaces are refused: this writes, and archived is read-only
+ * (`07-route-layout-and-navigation-architecture.md` §7).
  *
  * Monotonic by design: a completed guided entry is never regressed back to
  * in_progress, so re-entering the Inbox later cannot re-trigger onboarding.
  */
 export async function markInitialIngestionAction(
+  workspaceId: string,
   projectId: string,
   status: Extract<InitialIngestionStatus, "in_progress" | "completed">,
 ): Promise<MarkInitialIngestionResult> {
   const user = await requireAuthUser();
 
-  const preferred = await resolvePreferredWorkspace(user.id);
-  if (!preferred.workspaceId) {
+  const access = await resolveRoutedWorkspace(user.id, workspaceId);
+  if (access.access !== "granted") {
     return { ok: false };
   }
 
@@ -39,7 +50,7 @@ export async function markInitialIngestionAction(
     .from("projects")
     .select("onboarding_payload")
     .eq("id", projectId)
-    .eq("workspace_id", preferred.workspaceId)
+    .eq("workspace_id", access.workspaceId)
     .maybeSingle<{ onboarding_payload: unknown }>();
 
   if (readError || !row) {
@@ -63,7 +74,7 @@ export async function markInitialIngestionAction(
     .from("projects")
     .update({ onboarding_payload: nextPayload })
     .eq("id", projectId)
-    .eq("workspace_id", preferred.workspaceId);
+    .eq("workspace_id", access.workspaceId);
 
   if (writeError) {
     console.error(

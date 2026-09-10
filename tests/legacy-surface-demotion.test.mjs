@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const dashboard = readFileSync('src/app/(protected)/dashboard/page.tsx', 'utf8');
-const commandCenter = readFileSync('src/app/(protected)/command-center/page.tsx', 'utf8');
+const commandCenter = readFileSync('src/app/(protected)/workspaces/[workspaceId]/command-center/page.tsx', 'utf8');
 const executive = readFileSync('src/app/(protected)/executive/page.tsx', 'utf8');
 const portfolio = readFileSync('src/app/(protected)/portfolio/page.tsx', 'utf8');
 const nav = readFileSync('src/features/runtime/capability-reveal/capability-reveal-selectors.ts', 'utf8');

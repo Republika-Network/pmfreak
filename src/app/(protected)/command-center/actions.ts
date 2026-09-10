@@ -4,20 +4,51 @@ import { redirect } from "next/navigation";
 import { requireAuthUser } from "@/lib/auth";
 import { canCreateMoreProjects } from "@/lib/feature-gates";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { resolveWriteWorkspace } from "@/lib/workspaces/resolve-write-workspace";
+import { resolveRoutedWorkspace } from "@/lib/workspaces/routed-workspace";
 import { ensureDefaultPmo } from "@/lib/pmos/pmo-service";
 import { generateAndPersistOperationalGovernanceBrief } from "@/lib/projects/first-insight";
 import { ingestProjectSetupContext } from "@/lib/projects/ingest-project-setup-context";
+import { workspaceCommandCenterPath } from "@/lib/workspace/command-center-paths";
 
 const asField = (value: FormDataEntryValue | null) => String(value ?? "").trim();
 
-export async function activateContextAction(formData: FormData) {
+/**
+ * Creates the workspace's first project from the Command Center empty state.
+ *
+ * `workspaceId` is BOUND by the canonical route, so it is the workspace whose
+ * URL the user is actually looking at — not whatever their preferred-workspace
+ * cookie happens to name. That distinction is the whole point: on a shared deep
+ * link to workspace B while the cookie still says A, the previous
+ * `resolveWriteWorkspace(user.id)` created the project in A and redirected
+ * there, silently writing to a tenant the user never named.
+ *
+ * A bound argument is still client-reachable, so it is authorized here rather
+ * than trusted. `resolveRoutedWorkspace` has no fallback: it authorizes this
+ * exact workspace or refuses. Archived workspaces are refused too — this is a
+ * mutation, and archived is read-only
+ * (`07-route-layout-and-navigation-architecture.md` §7).
+ */
+export async function activateContextAction(workspaceId: string, formData: FormData) {
   const user = await requireAuthUser();
+
+  const access = await resolveRoutedWorkspace(user.id, workspaceId);
+  if (access.access !== "granted") {
+    console.error(
+      JSON.stringify({
+        event: "command_center.activate_denied",
+        userId: user.id,
+        workspaceId,
+        access: access.access,
+      }),
+    );
+    redirect("/workspaces?error=" + encodeURIComponent("You cannot create a project in that workspace"));
+  }
+
   const supabase = await createSupabaseServerClient();
 
   const name = asField(formData.get("name"));
   if (!name) {
-    redirect("/command-center?error=Project+name+is+required");
+    redirect(workspaceCommandCenterPath(workspaceId, { error: "Project name is required" }));
   }
 
   const projectAccess = await canCreateMoreProjects(user.id);
@@ -44,7 +75,7 @@ export async function activateContextAction(formData: FormData) {
     .filter(Boolean)
     .join("\n\n") || null;
 
-  const ensured = await resolveWriteWorkspace(user.id);
+  const ensured = { workspaceId: access.workspaceId, role: access.role };
   const defaultPmo = await ensureDefaultPmo(ensured.workspaceId, user.id);
   const { data, error } = await supabase
     .from("projects")
@@ -53,7 +84,7 @@ export async function activateContextAction(formData: FormData) {
     .single<{ id: string }>();
 
   if (error || !data?.id) {
-    redirect(`/command-center?error=${encodeURIComponent(error?.message ?? "Unable to activate context")}`);
+    redirect(workspaceCommandCenterPath(ensured.workspaceId, { error: error?.message ?? "Unable to activate context" }));
   }
 
   // Feed the founder's setup context into the real intelligence loop (vault
@@ -95,5 +126,11 @@ export async function activateContextAction(formData: FormData) {
     briefFailed = true;
   }
 
-  redirect(`/command-center?projectId=${data.id}&from=onboarding${briefFailed ? "&briefGeneration=failed" : ""}`);
+  redirect(
+    workspaceCommandCenterPath(ensured.workspaceId, {
+      projectId: data.id,
+      from: "onboarding",
+      briefGeneration: briefFailed ? "failed" : undefined,
+    }),
+  );
 }
