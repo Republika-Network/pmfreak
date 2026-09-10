@@ -46,7 +46,7 @@ Creation actions are named for the entity they create, never for Command Center:
 
 - Does not, by itself, rename `Create Command Center` in the running application — the actual defect remains live until a future implementation PR executes it (tracked in `02-canonical-product-language.md` §27, Migration Recommendations).
 - Requires every future screen introducing a Command Center variant to carry slightly more verbose copy ("PMO Command Center" vs. bare "Command Center"), a minor but real UX cost traded for disambiguation.
-- The internal `/pmo-command-center` ops dashboard's naming collision with the ratified user-facing "PMO Command Center" is flagged (Rule 6) but not resolved by this ADR; until a future PR renames or removes it, an internal document or support conversation could still conflate the two if this ADR is not consulted.
+- The internal `/pmo-command-center` ops dashboard's naming collision with the ratified user-facing "PMO Command Center" is flagged (Rule 6) but not resolved by this ADR; until a future PR renames or removes it, an internal document or support conversation could still conflate the two if this ADR is not consulted. **Since implemented:** the dashboard was renamed to `/pm-operations`, joining the internal `pm-*` family it is built from; `/pmo-command-center` is retained as a redirect-only entry point holding no copy of the screen. The two surfaces no longer share an unqualified label, so the conflation this bullet describes is closed. The reasoning — including the evidence that this route never was the PMO Command Center — is recorded in `src/lib/pm-operations/pm-operations-paths.ts`.
 
 ## Risks
 
@@ -65,7 +65,7 @@ No migration is executed by this ADR. A future implementation PR should, per thi
 - Rename the `Create Command Center` CTA and `/create-command-center` route/wizard to `Create PMO`.
 - Rewrite the onboarding wizard's gating copy (`getting-started-flow.tsx:359-371`) to remove "Command Center" as the object being created, reconciled with ADR-PMF-003's no-mandatory-default-PMO rule.
 - Audit all existing UI surfaces for bare, unqualified "Command Center" occurrences and add the entity qualifier.
-- Rename or clearly re-scope the internal `/pmo-command-center` ops dashboard so it does not share an unqualified label with the user-facing PMO Command Center.
+- ~~Rename or clearly re-scope the internal `/pmo-command-center` ops dashboard so it does not share an unqualified label with the user-facing PMO Command Center.~~ **Implemented:** renamed to `/pm-operations`, with `/pmo-command-center` retained as a redirect-only entry point.
 
 ## UX Implications
 

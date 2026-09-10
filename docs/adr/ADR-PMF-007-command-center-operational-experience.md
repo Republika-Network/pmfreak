@@ -83,7 +83,8 @@ None of the following is executed by this ADR. They describe what a future imple
 - Rename the `Create Command Center` CTA and the `/create-command-center` route/wizard to name the entity they actually create (a PMO today), per PR1 §11/§22 and consistent with ADR-PMF-003.
 - Rewrite the onboarding wizard's gating copy (`getting-started-flow.tsx:359-371`) so it no longer frames Command Center as a creatable prerequisite; this must be reconciled with ADR-PMF-003's rule that a default PMO may not gate Project creation as a universal requirement.
 - Reconcile the naming of `pmo_command_center_snapshots` (workspace-scoped, predates `pmos`, no FK to it) and `operational_command_centers` (project-scoped) against this ADR's rules 7–8 — either as legitimate view-configuration/snapshot stores with corrected names and scope-appropriate FKs, or as candidates for consolidation.
-- Rename or remove the unrelated `/pmo-command-center` internal ops dashboard and the stray "Operational Command Center" `<h1>` on `/projects`, so that "Command Center" as a user-facing phrase is reserved for actual entity-scoped operational views.
+- ~~Rename or remove the unrelated `/pmo-command-center` internal ops dashboard~~ **Implemented:** renamed to `/pm-operations`, with `/pmo-command-center` retained as a redirect-only entry point (see ADR-PMF-014 Rule 6 and `src/lib/pm-operations/pm-operations-paths.ts`).
+- Remove the stray "Operational Command Center" `<h1>` on `/projects`, so that "Command Center" as a user-facing phrase is reserved for actual entity-scoped operational views. *(Not addressed by the `/pm-operations` rename, which touched no `/projects` surface.)*
 - Decide, and implement, whether the `/command-center` route's mixed Project/cross-PMO-Workspace data should be split into two clearly-scoped Command Center views or explicitly documented as one composite view drawing from two scopes.
 
 ## UX Implications

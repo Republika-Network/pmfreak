@@ -1034,7 +1034,8 @@ Not implemented by this PR. Recorded for a future, separately-scoped implementat
 - Consolidate "Project" / "Context" / "Initiative" UI copy to "Project" only.
 - Rename `personal_portfolios`-facing UI copy from "Portfolio" to "Saved Projects."
 - Reconcile `pmo_command_center_snapshots` and `operational_command_centers` naming against the Command Center contract (§7, ADR-PMF-014).
-- Rename or remove the unrelated `/pmo-command-center` internal dashboard and the stray "Operational Command Center" `<h1>` on `/projects`.
+- ~~Rename or remove the unrelated `/pmo-command-center` internal dashboard~~ **Implemented:** renamed to `/pm-operations`, with `/pmo-command-center` retained as a redirect-only entry point (ADR-PMF-014 Rule 6).
+- Remove the stray "Operational Command Center" `<h1>` on `/projects`. *(Not addressed by the `/pm-operations` rename.)*
 - Reconcile the "Executive Intelligence Feed" heading to "Project Intelligence Feed" once the Feed is actually built.
 - Introduce scope-qualified Health labels (Project Health, PMO Health, etc.) wherever a bare "Health" or "Status" is currently ambiguous.
 
