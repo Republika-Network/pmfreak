@@ -18,7 +18,7 @@ import {
   resolveCommandCenterLanding,
 } from "../src/lib/projects/initial-ingestion-state.ts";
 
-const PAGE_SRC = readFileSync("src/app/(protected)/command-center/page.tsx", "utf8");
+const PAGE_SRC = readFileSync("src/app/(protected)/workspaces/[workspaceId]/command-center/page.tsx", "utf8");
 const ACTION_SRC = readFileSync("src/app/(protected)/command-center/ingestion-actions.ts", "utf8");
 
 // ── reading an untrusted jsonb payload ──────────────────────────────────────

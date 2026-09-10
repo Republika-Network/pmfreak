@@ -16,7 +16,7 @@ const emptyState = readFileSync(
   "utf8"
 );
 const layout = readFileSync(join(ROOT, "src/modules/workspace/screens/command-center/command-center-layout.tsx"), "utf8");
-const page = readFileSync(join(ROOT, "src/app/(protected)/command-center/page.tsx"), "utf8");
+const page = readFileSync(join(ROOT, "src/app/(protected)/workspaces/[workspaceId]/command-center/page.tsx"), "utf8");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONTRACT 1: the real, evidence-derived onboarding checklist is reused,

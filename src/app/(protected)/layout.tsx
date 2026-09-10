@@ -88,5 +88,5 @@ export default async function ProtectedLayout({ children }: { children: React.Re
   }
 
   const capabilityProfile = resolveCapabilityProfile({ isFounderOrInternal: isFounderOrInternalUser(user) });
-  return <OperationalShell user={{ fullName: user.fullName, role: user.role, companyName: user.companyName }} capabilityProfile={capabilityProfile}>{children}</OperationalShell>;
+  return <OperationalShell user={{ fullName: user.fullName, role: user.role, companyName: user.companyName }} capabilityProfile={capabilityProfile} workspaceId={resolvedWorkspace.workspaceId}>{children}</OperationalShell>;
 }

@@ -8,6 +8,7 @@ import { resolveWriteWorkspace } from "@/lib/workspaces/resolve-write-workspace"
 import { ensureDefaultPmo } from "@/lib/pmos/pmo-service";
 import { generateAndPersistOperationalGovernanceBrief } from "@/lib/projects/first-insight";
 import { ingestProjectSetupContext } from "@/lib/projects/ingest-project-setup-context";
+import { workspaceCommandCenterPath } from "@/lib/workspace/command-center-paths";
 
 const asField = (value: FormDataEntryValue | null) => String(value ?? "").trim();
 
@@ -53,7 +54,7 @@ export async function activateContextAction(formData: FormData) {
     .single<{ id: string }>();
 
   if (error || !data?.id) {
-    redirect(`/command-center?error=${encodeURIComponent(error?.message ?? "Unable to activate context")}`);
+    redirect(workspaceCommandCenterPath(ensured.workspaceId, { error: error?.message ?? "Unable to activate context" }));
   }
 
   // Feed the founder's setup context into the real intelligence loop (vault
@@ -95,5 +96,11 @@ export async function activateContextAction(formData: FormData) {
     briefFailed = true;
   }
 
-  redirect(`/command-center?projectId=${data.id}&from=onboarding${briefFailed ? "&briefGeneration=failed" : ""}`);
+  redirect(
+    workspaceCommandCenterPath(ensured.workspaceId, {
+      projectId: data.id,
+      from: "onboarding",
+      briefGeneration: briefFailed ? "failed" : undefined,
+    }),
+  );
 }

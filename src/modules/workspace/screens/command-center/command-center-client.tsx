@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { OperationalGovernanceBrief } from "@/lib/projects/first-insight";
+import { workspaceCommandCenterPath } from "@/lib/workspace/command-center-paths";
 import { CommandCenterLayout } from "./command-center-layout";
 import type { ProjectListItem, ToneBadge } from "../../presentation/command-center/types";
 import { ProjectBrainOnlineHero } from "@/components/pmfreak/intelligence-inbox/project-brain-online-hero";
@@ -163,7 +164,7 @@ export function CommandCenterClient({
         projects={projectListItems}
         activeProjectId={projectId}
         hasBrief={brief !== null}
-        onSelectProject={(id) => router.push(`/command-center?projectId=${encodeURIComponent(id)}`)}
+        onSelectProject={(id) => router.push(workspaceCommandCenterPath(workspaceId, { projectId: id }))}
         onEvidenceAdded={() => { void retryBrief(); }}
       />
     </div>

@@ -13,7 +13,7 @@ import { readFileSync } from "node:fs";
 
 import { summarizePortfolio } from "../src/app/(protected)/command-center/portfolio-summary.ts";
 
-const PAGE_SRC = readFileSync("src/app/(protected)/command-center/page.tsx", "utf8");
+const PAGE_SRC = readFileSync("src/app/(protected)/workspaces/[workspaceId]/command-center/page.tsx", "utf8");
 
 test("a null portfolio is reported as unavailable, never as empty", () => {
   const summary = summarizePortfolio(null);

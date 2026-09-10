@@ -1,5 +1,11 @@
 const BLOCKED_PREFIXES = ["/login", "/signup", "/auth", "/debug", "/api", "/_next"];
-const ALLOWED_PREFIXES = ["/workspace", "/projects", "/dashboard", "/portfolio", "/upload", "/command-center", "/create-command-center", "/create-pmo", "/pmo"];
+// "/workspaces" is listed separately from "/workspace": the prefix test is
+// `pathname === prefix || pathname.startsWith(prefix + "/")`, so "/workspace"
+// does NOT cover "/workspaces/<id>/command-center". Without its own entry the
+// canonical Command Center would fail the continuation check, and a user whose
+// session expired on a deep link would be returned to the bare entry point
+// instead of the workspace they were actually looking at.
+const ALLOWED_PREFIXES = ["/workspace", "/workspaces", "/projects", "/dashboard", "/portfolio", "/upload", "/command-center", "/create-command-center", "/create-pmo", "/pmo"];
 
 export function isSafeContinuationRoute(route: string): boolean {
   if (typeof route !== "string") return false;
