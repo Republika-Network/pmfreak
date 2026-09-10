@@ -8,6 +8,7 @@ import type {
   ReportType,
   ExecutiveReportSection,
 } from "@/lib/pmo-executive-reporting";
+import { PM_OPERATIONS_PATH } from "@/lib/pm-operations/pm-operations-paths";
 
 // ─── Style maps ───────────────────────────────────────────────────────────────
 
@@ -177,10 +178,10 @@ export default function PMOExecutiveReportingPage() {
         <div>
           <h1 className="text-2xl font-bold text-slate-900">PMO Executive Reporting & Alerts</h1>
           <p className="mt-1 text-sm text-zinc-600">
-            Executive-facing PMO reports and alert payloads derived deterministically from the PMO Command Center, governance compliance, and intervention action loop. Read-only — no external notifications are sent.
+            Executive-facing PMO reports and alert payloads derived deterministically from PM Operations, governance compliance, and the intervention action loop. Read-only — no external notifications are sent.
           </p>
           <div className="mt-3 flex flex-wrap gap-3 text-xs text-zinc-600">
-            <Link href="/pmo-command-center" className="hover:text-slate-900">Command Center</Link>
+            <Link href={PM_OPERATIONS_PATH} className="hover:text-slate-900">PM Operations</Link>
             <span>·</span>
             <Link href="/pmo-governance-compliance" className="hover:text-slate-900">Governance Compliance</Link>
             <span>·</span>

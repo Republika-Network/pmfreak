@@ -8,6 +8,7 @@ import type {
   GovernanceRecommendation,
   DomainAssessment,
 } from "@/lib/pmo-governance-compliance";
+import { PM_OPERATIONS_PATH } from "@/lib/pm-operations/pm-operations-paths";
 
 // ─── Style maps ───────────────────────────────────────────────────────────────
 
@@ -161,7 +162,7 @@ export default function PMOGovernanceCompliancePage() {
               PMO operating discipline snapshot — profile, assignment hygiene, capacity, performance, evidence, and intervention readiness.
             </p>
             <div className="mt-2 flex gap-3 text-xs text-zinc-500">
-              <Link href="/pmo-command-center" className="hover:text-zinc-700 hover:underline">PMO Command Center</Link>
+              <Link href={PM_OPERATIONS_PATH} className="hover:text-zinc-700 hover:underline">PM Operations</Link>
               <Link href="/pm-registry" className="hover:text-zinc-700 hover:underline">PM Registry</Link>
               <Link href="/pm-capacity" className="hover:text-zinc-700 hover:underline">Capacity</Link>
               <Link href="/pm-performance" className="hover:text-zinc-700 hover:underline">Performance</Link>
