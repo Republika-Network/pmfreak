@@ -34,7 +34,7 @@ export default async function PmoChatPage({ params }: Props) {
           {pmo.name} — Chat
         </h1>
         <div className="mt-4">
-          <PmoTabNav pmoId={pmo.id} active="chat" />
+          <PmoTabNav workspaceId={resolution.workspaceId} pmoId={pmo.id} active="chat" />
         </div>
       </header>
 

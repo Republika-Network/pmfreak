@@ -473,6 +473,23 @@ export const PRIVILEGED_ACCESS_REGISTRY: readonly PrivilegedAccessEntry[] = [
     needsRlsBeforeSwap: false,
   },
   {
+    file: "src/lib/pmos/routed-pmo.ts",
+    purpose:
+      "resolveRoutedPmo authorizes a PMO id that arrived from a ROUTE segment, for the canonical PMO Command Center at /workspaces/[workspaceId]/pmos/[pmoId]/command-center. It reads exactly two columns from `pmos` by id — workspace_id and status — in order to discover WHICH workspace must be authorized, then delegates the membership question to resolveRoutedWorkspace. That one lookup cannot use the caller's own client without assuming its own answer: RLS on `pmos` filters by workspace_memberships, which is the very membership this function exists to establish, so a caller-scoped read would return null for both 'not yours' and 'not a member yet-to-be-checked' and collapse the ancestry check it must perform. Every DATA read on the screen itself uses the caller's own client, so RLS remains the tenant boundary; this is authorization metadata only. Sibling of routed-workspace.ts and should be narrowed in the same SWAP pass, not separately.",
+    riskLevel: "MEDIUM",
+    mitigations: [
+      "userId is always the resolved authenticated caller's own id, never a client-supplied 'view as' parameter",
+      "Read-only — it performs no insert, update or delete",
+      "Selects only workspace_id and status; no PMO name, description, type or any other row content is read, so nothing it returns can leak into a refusal",
+      "Returns an access verdict only. A denied result carries null for both ids, so an unauthorized caller learns nothing beyond the refusal itself",
+      "Membership is never decided here: it delegates to resolveRoutedWorkspace, which authorizes the PMO's REAL parent workspace against the caller's own workspace_memberships row",
+      "The client-supplied workspaceId segment can only narrow the answer: a value disagreeing with pmos.workspace_id returns denied rather than being corrected, so the URL cannot address a PMO under a workspace that does not own it",
+      "Absent, deleted, unauthorized and ancestry-mismatched PMOs collapse to one indistinguishable 'denied' result, so the id cannot be used to probe which PMOs exist",
+      "Fails closed: a failed or empty PMO lookup returns denied rather than proceeding",
+    ],
+    needsRlsBeforeSwap: false,
+  },
+  {
     file: "src/lib/projects/first-insight/operational-governance-brief-store.ts",
     purpose: "persistOperationalGovernanceBrief upserts operational_governance_briefs after the initial project-brief generation flow. Accepts an optional caller-supplied client (used by in-request callers with a scoped session); defaults to a fresh privileged client when none is supplied, for background/system callers that generate the brief asynchronously after the request has returned — same no-session-left-to-scope justification as evidence-processor.ts and discovery-repository.ts. loadLatestOperationalGovernanceBrief (read) always requires an explicit caller-supplied client and never creates a privileged client itself.",
     riskLevel: "MEDIUM",
