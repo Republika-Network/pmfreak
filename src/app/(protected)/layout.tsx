@@ -8,8 +8,11 @@ import { resolvePostAuthDestination } from "@/lib/auth/resolve-post-auth-destina
 import { isSafeContinuationRoute } from "@/lib/auth/validate-continuation-route";
 import { headers } from "next/headers";
 import { resolveOnboardingState } from "@/lib/auth/resolve-onboarding-state";
-import { getOnboardingRedirect, hasWorkspaceAccess } from "@/lib/auth/onboarding-route-map";
+import { getOnboardingRedirect } from "@/lib/auth/onboarding-route-map";
+import { shouldRedirectForOnboarding } from "@/lib/auth/onboarding-gate";
 import { resolveCapabilityProfile } from "@/lib/workspace/pilot-capability-set";
+import { parseWorkspaceIdFromPath } from "@/lib/workspace/command-center-paths";
+import { resolveRoutedWorkspace } from "@/lib/workspaces/routed-workspace";
 
 export default async function ProtectedLayout({ children }: { children: React.ReactNode }) {
   const continuity = await assertRuntimeAuthContinuity();
@@ -39,8 +42,33 @@ export default async function ProtectedLayout({ children }: { children: React.Re
     const nextParam = encodeURIComponent(currentPath || "/command-center");
     redirect(`/login?next=${nextParam}`);
   }
-  const resolvedWorkspace = await resolveWriteWorkspace(user.id);
-  console.log("[protected-layout] workspace resolution: workspaceId:", resolvedWorkspace.workspaceId, "bootstrapped:", resolvedWorkspace.bootstrapped);
+  /**
+   * Workspace context for the shell AND for the onboarding gate below.
+   *
+   * A canonical Command Center URL names its own workspace, and this layout runs
+   * BEFORE the page that authorizes it. Resolving from the preferred-workspace
+   * cookie regardless produced two distinct defects on a shared deep link to
+   * workspace B while the cookie still named A:
+   *
+   *   1. the shell loaded A's projects and rewrote its own Command Center
+   *      navigation back to A, so the chrome disagreed with the page; and
+   *   2. the onboarding gate evaluated A's state, so an incomplete A could
+   *      redirect the user away from a B they were entitled to see.
+   *
+   * The path is only a HINT — `resolveRoutedWorkspace` authorizes it against
+   * real membership and has no fallback, so a URL can never widen access. When
+   * it is not authorized we keep the preferred workspace and let the page render
+   * its own refusal, which is the surface that owns that message.
+   */
+  const routedHeaders = await headers();
+  const routedWorkspaceId = parseWorkspaceIdFromPath(routedHeaders.get("x-pathname") ?? "");
+  const routedAccess = routedWorkspaceId ? await resolveRoutedWorkspace(user.id, routedWorkspaceId) : null;
+  const routedWorkspaceArchived = routedAccess?.access === "archived";
+  const resolvedWorkspace =
+    routedAccess && routedAccess.access !== "denied"
+      ? { workspaceId: routedAccess.workspaceId, role: routedAccess.role, bootstrapped: false }
+      : await resolveWriteWorkspace(user.id);
+  console.log("[protected-layout] workspace resolution: workspaceId:", resolvedWorkspace.workspaceId, "bootstrapped:", resolvedWorkspace.bootstrapped, "fromRoute:", Boolean(routedAccess && routedAccess.access !== "denied"));
 
   // Canonical onboarding state — single source of truth for ALL routing
   // decisions in this app, including onboarding/activation redirects. Edge
@@ -74,7 +102,14 @@ export default async function ProtectedLayout({ children }: { children: React.Re
   // (already reachable like any other route) is what shows the correct next
   // action (add first task / activate Command Center) via the unchanged
   // evidence-derived WorkspaceOnboardingPanel/CommandCenterEmptyState.
-  if (!hasWorkspaceAccess(onboardingState)) {
+  //
+  // `shouldRedirectForOnboarding` replaces the bare `!hasWorkspaceAccess(...)`
+  // test so that ONE case can be exempted: an archived routed workspace deriving
+  // "needs_project". Instructing someone to create a project in a workspace that
+  // cannot accept one is a false instruction, and redirecting there hides the
+  // archival that §7 requires be shown. `trial_blocked` and `no_workspace` still
+  // redirect — see the function for why the exemption stops there.
+  if (shouldRedirectForOnboarding({ state: onboardingState, routedWorkspaceArchived })) {
     const headersList = await headers();
     const currentPath = headersList.get("x-pathname") ?? "";
     const dest = getOnboardingRedirect(onboardingState);

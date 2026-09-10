@@ -287,7 +287,14 @@ export function OperationalShell({ children, user, capabilityProfile = "pilot", 
       setProjectsLoading(true);
       setProjectsError(null);
       try {
-        const res = await fetch("/api/projects", { cache: "no-store" });
+        // Scope the switcher to the workspace this shell is rendering. Without
+        // it the list comes back from the preferred-workspace cookie, so a
+        // canonical deep link shows one workspace's Command Center wrapped in
+        // another workspace's projects.
+        const res = await fetch(
+          workspaceId ? `/api/projects?workspaceId=${encodeURIComponent(workspaceId)}` : "/api/projects",
+          { cache: "no-store" },
+        );
         if (!res.ok) throw new Error();
         const data = (await res.json()) as { projects?: UserProject[] };
         if (active) setProjects(data.projects ?? []);
@@ -302,7 +309,10 @@ export function OperationalShell({ children, user, capabilityProfile = "pilot", 
     }
     void load();
     return () => { active = false; };
-  }, []);
+    // Refetch when the rendered workspace changes: navigating between two
+    // workspaces' Command Centers must reload the switcher, not keep showing the
+    // first workspace's projects.
+  }, [workspaceId]);
 
   useEffect(() => {
     if (projectId) globalThis.localStorage?.setItem("pmfreak.currentProjectId", projectId);

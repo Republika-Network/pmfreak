@@ -115,13 +115,15 @@ test("the legacy resolver forwards the hand-off query keys instead of dropping t
 });
 
 test("the canonical route authorizes the URL's workspace id against real membership", () => {
-  // resolveCanonicalWorkspace runs on the service-role client and FALLS BACK to
-  // another workspace when the requested one is not the caller's. Substituting
-  // silently would render workspace B at workspace A's address, so the route
-  // must compare and refuse.
-  assert.match(canonicalRoute, /resolveCanonicalWorkspace\(user\.id, requestedWorkspaceId\)/);
-  assert.match(canonicalRoute, /workspaceAccess\.workspaceId !== requestedWorkspaceId/);
+  // Originally this compared resolveCanonicalWorkspace's answer against the
+  // request, because that resolver silently FALLS BACK to another workspace.
+  // Review finding P2 showed the comparison also swallowed archived workspaces,
+  // so the route now uses resolveRoutedWorkspace, which authorizes the exact id
+  // or refuses and has no fallback to compare against.
+  assert.match(canonicalRoute, /resolveRoutedWorkspace\(user\.id, requestedWorkspaceId\)/);
+  assert.match(canonicalRoute, /workspaceAccess\.access === "denied"/);
   assert.doesNotMatch(canonicalRoute, /resolvePreferredWorkspace/, "the URL is the scope here, not the cookie");
+  assert.doesNotMatch(canonicalRoute, /resolveCanonicalWorkspace/, "the falling-back resolver must not return");
 });
 
 test("the refusal does not reveal whether the workspace exists", () => {

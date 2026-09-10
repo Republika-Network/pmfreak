@@ -105,7 +105,10 @@ test("the ingestion marker is never derived from evidence counts", () => {
 });
 
 test("the ingestion action stays workspace-scoped on both read and write, and never regresses a completed entry", () => {
-  const scoped = ACTION_SRC.match(/\.eq\("workspace_id", preferred\.workspaceId\)/g) ?? [];
+  // The workspace is now the ROUTED one, authorized by resolveRoutedWorkspace,
+  // rather than one re-resolved from the preferred-workspace cookie. The
+  // invariant this test guards is unchanged: read AND write stay scoped.
+  const scoped = ACTION_SRC.match(/\.eq\("workspace_id", access\.workspaceId\)/g) ?? [];
   assert.ok(scoped.length >= 2, "both the read and the write must be workspace-scoped");
   assert.match(ACTION_SRC, /current === "completed"/, "a completed guided entry must never be regressed");
   assert.ok(

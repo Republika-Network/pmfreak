@@ -91,6 +91,9 @@ export function CommandCenterClient({
   // below re-opens it on any later visit, so this being false after the
   // first visit never means Project Memory becomes unreachable.
   const [showIntelligenceInbox, setShowIntelligenceInbox] = useState(firstRun);
+  // Set when the durable initial-ingestion marker could not be advanced. The
+  // guided view stays open rather than closing over a write that did not happen.
+  const [ingestionMarkerFailed, setIngestionMarkerFailed] = useState(false);
 
   const projectListItems = useMemo(() => {
     const source = projects.length > 0 ? projects : [{ id: projectId, name: projectName }];
@@ -120,6 +123,14 @@ export function CommandCenterClient({
     return (
       <div className="space-y-5">
         <ProjectBrainOnlineHero projectName={projectName} />
+        {ingestionMarkerFailed && (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-4">
+            <p className="text-xs text-amber-800">
+              We couldn&apos;t record that you finished setting up, so this view would have come back
+              next time. Nothing you added has been lost — try again in a moment.
+            </p>
+          </div>
+        )}
         <ProjectIntelligenceInbox
           projectId={projectId}
           workspaceId={workspaceId}
@@ -127,7 +138,16 @@ export function CommandCenterClient({
           createdAt={projectCreatedAt}
           onboarding={onboarding}
           onEvidenceAdded={() => { void retryBrief(); }}
-          onEnterCommandCenter={() => { void markInitialIngestionAction(projectId, "completed"); setShowIntelligenceInbox(false); }}
+          onEnterCommandCenter={() => {
+            // Close only once the durable marker actually advanced. Closing
+            // regardless used to leave the marker incomplete, so the guided view
+            // came back on the next refresh with no sign anything had failed.
+            setIngestionMarkerFailed(false);
+            void markInitialIngestionAction(workspaceId, projectId, "completed").then((result) => {
+              if (result.ok) setShowIntelligenceInbox(false);
+              else setIngestionMarkerFailed(true);
+            });
+          }}
         />
       </div>
     );

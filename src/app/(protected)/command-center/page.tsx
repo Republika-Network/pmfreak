@@ -4,6 +4,7 @@ import { ensureUserWorkspace } from "@/lib/workspaces";
 import { resolvePreferredWorkspace } from "@/lib/workspaces/preferred-workspace";
 import {
   COMMAND_CENTER_FORWARDED_QUERY_KEYS,
+  firstQueryValue,
   workspaceCommandCenterPath,
 } from "@/lib/workspace/command-center-paths";
 
@@ -51,13 +52,13 @@ export default async function CommandCenterLegacyEntryPage({
   const params = await searchParams;
   const forwarded: Record<string, string> = {};
   for (const key of COMMAND_CENTER_FORWARDED_QUERY_KEYS) {
-    const value = params[key];
-    // A repeated query key arrives as an array. Forward the first occurrence
-    // rather than serialising "a,b", which would produce an id the screen
-    // cannot resolve and an "invalid project" state for a link that was merely
-    // duplicated.
-    const single = Array.isArray(value) ? value[0] : value;
-    if (typeof single === "string" && single !== "") forwarded[key] = single;
+    // Shared with the canonical route on purpose. A repeated query key arrives
+    // as an array; forwarding the first occurrence rather than serialising
+    // "a,b" is what keeps a merely-duplicated link from producing an id the
+    // screen cannot resolve. This used to be an inline copy of the same three
+    // lines — identical in behaviour, but nothing held the two in step.
+    const single = firstQueryValue(params[key]);
+    if (single !== undefined) forwarded[key] = single;
   }
 
   redirect(workspaceCommandCenterPath(workspace.workspaceId, forwarded));

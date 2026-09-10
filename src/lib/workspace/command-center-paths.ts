@@ -87,3 +87,44 @@ export function navEntryMatchesPathname(navHref: string, pathname: string): bool
   }
   return pathname.startsWith(navHref);
 }
+
+/**
+ * Collapse one Next.js search-param value to a single string.
+ *
+ * A repeated key (`?projectId=p1&projectId=p1`) arrives as `string[]`, not
+ * `string`. Declaring the params as scalars does not make them scalars — it only
+ * hides the array from the type checker, and the array then flows into
+ * `resolveActiveProject`, which compares it against real project ids, fails, and
+ * tells the user a project they can see is "not found in this workspace".
+ *
+ * Both the canonical route and the legacy resolver normalize through this one
+ * function so a link cannot behave differently depending on which entry point it
+ * went through.
+ */
+export function firstQueryValue(value: string | string[] | undefined): string | undefined {
+  const single = Array.isArray(value) ? value[0] : value;
+  return typeof single === "string" && single !== "" ? single : undefined;
+}
+
+/**
+ * Extract the workspace id from a canonical Command Center pathname.
+ *
+ * The protected layout needs this because it resolves workspace context for the
+ * shell and the onboarding gate BEFORE the page component runs. Without it the
+ * layout answers from the preferred-workspace cookie, so a canonical link to
+ * workspace B renders workspace A's navigation and evaluates A's onboarding
+ * state — and an incomplete A can redirect the user away from a B they are
+ * perfectly entitled to see.
+ *
+ * Returns the raw segment only. It is an UNAUTHORIZED hint: every caller must
+ * still put it through `resolveRoutedWorkspace` before acting on it.
+ */
+export function parseWorkspaceIdFromPath(pathname: string): string | null {
+  const match = /^\/workspaces\/([^/]+)\/command-center(?:\/|$)/.exec(pathname);
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]) || null;
+  } catch {
+    return null;
+  }
+}

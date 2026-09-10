@@ -101,7 +101,10 @@ test("OperationalShell no longer special-cases /command-center into a bare bypas
 });
 
 test("(protected)/layout.tsx contains no hardcoded per-route allowlist for the incomplete-onboarding branch", () => {
-  const branchStart = layout.indexOf("if (!hasWorkspaceAccess(onboardingState))");
+  // The condition moved into shouldRedirectForOnboarding (so an archived routed
+  // workspace is not redirected away from its own read-only page). The branch
+  // BODY — which is what this test guards — is unchanged.
+  const branchStart = layout.indexOf("if (shouldRedirectForOnboarding(");
   const branchEnd = layout.indexOf("const capabilityProfile");
   const incompleteBranch = layout.slice(branchStart, branchEnd);
   assert.doesNotMatch(incompleteBranch, /currentPath\.startsWith\(/, "no hardcoded route allowlist — the destination must be derived from getOnboardingRedirect");

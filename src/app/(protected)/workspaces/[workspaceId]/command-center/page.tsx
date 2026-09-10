@@ -2,8 +2,8 @@ import Link from "next/link";
 import { activateContextAction } from "@/app/(protected)/command-center/actions";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { requireAuthUser } from "@/lib/auth";
-import { resolveCanonicalWorkspace } from "@/lib/workspaces/canonical-workspace-resolver";
-import { workspaceCommandCenterPath } from "@/lib/workspace/command-center-paths";
+import { resolveRoutedWorkspace } from "@/lib/workspaces/routed-workspace";
+import { firstQueryValue, workspaceCommandCenterPath } from "@/lib/workspace/command-center-paths";
 import { listPmosWithProjects, type PmoWithProjects } from "@/lib/pmos/pmo-service";
 import { CommandCenterClient, CommandCenterEmptyState } from "@/features/command-center";
 import { resolveActiveProject } from "@/lib/resolve-active-project";
@@ -28,41 +28,45 @@ import { summarizePortfolio } from "@/app/(protected)/command-center/portfolio-s
  * ------------------------------------------------------
  * The legacy route derived the workspace from the SESSION, so there was no
  * caller-supplied identity to check. This route reads it from the URL, which
- * makes it untrusted input, and `resolveCanonicalWorkspace` runs on the SERVICE
- * ROLE client — it deliberately bypasses RLS in order to see memberships. So the
- * membership comparison below is the authorization boundary for the path
- * segment; it is not a redundant nicety layered over RLS.
+ * makes it untrusted input. `resolveRoutedWorkspace` is the authorization
+ * boundary for that path segment: it authorizes the EXACT id it is given, or
+ * refuses. It has no fallback, deliberately — a resolver that substitutes a
+ * different workspace when the requested one is unusable would render workspace
+ * B's data at workspace A's address, which is the one thing an entity-qualified
+ * route exists to prevent.
  *
- * `resolveCanonicalWorkspace(userId, requested)` returns the requested
- * workspace when the caller is a member of it and it is not archived/deleted,
- * and otherwise FALLS BACK to their oldest active membership. That fallback is
- * correct for a stale cookie and wrong for a URL: silently rendering workspace
- * B's data at workspace A's address would make the address lie, which is the one
- * thing an entity-qualified route exists to prevent. So a resolution that does
- * not equal the request is refused rather than substituted.
+ * It reports three outcomes, and the difference between them is load-bearing:
  *
- * The refusal deliberately does not distinguish "no such workspace" from "not
- * your workspace" — the reply is identical either way, so the route cannot be
- * used to probe which workspace ids exist.
+ *   granted  — member, active workspace. Full screen.
+ *   archived — member, archived workspace. NOT an access failure: §7 requires
+ *              the viewer to keep seeing last-known data with mutations
+ *              disabled and explained. An earlier cut compared a falling-back
+ *              resolver's answer against the request, which collapsed this case
+ *              into the refusal below and told a legitimate member they had no
+ *              access to a workspace they own.
+ *   denied   — not a member, no such workspace, or deleted. One indistinguishable
+ *              reply, so the route cannot be used to probe which ids exist (§7).
  */
 export default async function WorkspaceCommandCenterPage({
   params: routeParams,
   searchParams,
 }: {
   params: Promise<{ workspaceId: string }>;
-  searchParams: Promise<{ from?: string; projectId?: string; briefGeneration?: string; error?: string; brainActivated?: string }>;
+  // Declared as Next actually delivers them. A repeated key is an array, and
+  // typing it as a scalar does not make it one — it only hides the array until
+  // it reaches code that compares it against a project id.
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const user = await requireAuthUser();
   const { workspaceId: requestedWorkspaceId } = await routeParams;
-  const workspaceAccess = await resolveCanonicalWorkspace(user.id, requestedWorkspaceId);
+  const workspaceAccess = await resolveRoutedWorkspace(user.id, requestedWorkspaceId);
 
-  if (!workspaceAccess.workspaceId || workspaceAccess.workspaceId !== requestedWorkspaceId) {
+  if (workspaceAccess.access === "denied") {
     console.error(
       JSON.stringify({
         event: "command_center.workspace_not_accessible",
         userId: user.id,
         requestedWorkspaceId,
-        resolutionStatus: workspaceAccess.status,
       }),
     );
     return (
@@ -75,10 +79,10 @@ export default async function WorkspaceCommandCenterPage({
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             <a
-              href={workspaceAccess.workspaceId ? workspaceCommandCenterPath(workspaceAccess.workspaceId) : "/workspaces"}
+              href="/workspaces"
               className="inline-block rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
             >
-              {workspaceAccess.workspaceId ? "Go to your Command Center" : "Choose a workspace"}
+              Choose a workspace
             </a>
           </div>
         </div>
@@ -86,12 +90,23 @@ export default async function WorkspaceCommandCenterPage({
     );
   }
 
+  // Archived is authorized-but-read-only, never an access failure
+  // (`07-route-layout-and-navigation-architecture.md` §7): the viewer still sees
+  // last-known data, with every mutation affordance withheld and explained.
+  const isArchived = workspaceAccess.access === "archived";
   const workspace = { workspaceId: workspaceAccess.workspaceId };
   // Founder Circle onboarding evidence — flag-gated no-op for everyone else,
   // and internally fail-silent so it can never affect this page.
   await noteFounderCommandCenterVisit(user.id);
   const supabase = await createSupabaseServerClient();
-  const params = await searchParams;
+  const rawParams = await searchParams;
+  const params = {
+    from: firstQueryValue(rawParams.from),
+    projectId: firstQueryValue(rawParams.projectId),
+    briefGeneration: firstQueryValue(rawParams.briefGeneration),
+    error: firstQueryValue(rawParams.error),
+    brainActivated: firstQueryValue(rawParams.brainActivated),
+  };
   const fromOnboarding = params.from === "onboarding";
   const subscription = await getCompanySubscription(user.companyId);
   const capabilities = getPlanCapabilities(subscription.plan);
@@ -167,12 +182,63 @@ export default async function WorkspaceCommandCenterPage({
     );
   }
 
+  if (isArchived) {
+    // §7: archival is a state transition, not a deletion. The viewer keeps
+    // seeing what was there; what they lose is the ability to change it. The
+    // interactive Command Center is deliberately NOT mounted here — every
+    // surface it hosts is a mutation entry point (activate, decide, dispatch,
+    // record an outcome), and rendering it disabled-in-name-only would be a
+    // worse lie than not rendering it. Last-known data is shown instead.
+    const archivedProjects = (projects ?? []) as { id: string; name: string }[];
+    return (
+      <div className="space-y-4">
+        <WorkspaceContextBanner lens="Command Center" />
+        <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-6">
+          <p className="text-sm font-semibold text-amber-900">This workspace is archived</p>
+          <p className="mt-1 text-xs text-amber-700/80">
+            You still have access to it, and everything below is its last-known state. Creating,
+            deciding and dispatching are turned off while it stays archived — nothing here has been
+            deleted, and restoring the workspace restores the full Command Center.
+          </p>
+        </div>
+        <div className="rounded-2xl border border-slate-200 bg-white/80 px-4 py-3">
+          <p className="text-xs text-slate-600">
+            {portfolio.status === "available" ? (
+              <>
+                Last known: <span className="font-semibold text-slate-900">{portfolio.pmoCount}</span> PMO{portfolio.pmoCount === 1 ? "" : "s"} ·{" "}
+                <span className="font-semibold text-slate-900">{portfolio.projectCount}</span> project{portfolio.projectCount === 1 ? "" : "s"}
+              </>
+            ) : (
+              "Portfolio overview is temporarily unavailable. The projects below are unaffected."
+            )}
+          </p>
+        </div>
+        {archivedProjects.length === 0 ? (
+          <div className="rounded-2xl border border-slate-200 bg-white/80 p-6">
+            <p className="text-xs text-slate-600">This workspace had no projects when it was archived.</p>
+          </div>
+        ) : (
+          <ul className="space-y-2">
+            {archivedProjects.map((project) => (
+              <li
+                key={project.id}
+                className="rounded-2xl border border-slate-200 bg-white/80 px-4 py-3 text-sm text-slate-800"
+              >
+                {project.name}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    );
+  }
+
   if ((projects ?? []).length === 0) {
     return (
       <div className="space-y-4">
         <WorkspaceContextBanner lens="Command Center" />
         <CommandCenterEmptyState
-          activateAction={activateContextAction}
+          activateAction={activateContextAction.bind(null, workspace.workspaceId)}
           errorMessage={params.error}
           fromOnboarding={fromOnboarding}
           pmoName={portfolio.status === "available" ? portfolio.firstPmoName : null}

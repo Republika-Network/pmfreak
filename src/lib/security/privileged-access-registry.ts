@@ -460,6 +460,19 @@ export const PRIVILEGED_ACCESS_REGISTRY: readonly PrivilegedAccessEntry[] = [
     needsRlsBeforeSwap: false,
   },
   {
+    file: "src/lib/workspaces/routed-workspace.ts",
+    purpose: "resolveRoutedWorkspace authorizes a workspace id that arrived from a ROUTE segment (or was bound into a Server Action) against the caller's own workspace_memberships row and that workspace's status. It is the sibling of canonical-workspace-resolver.ts and exists because that resolver FALLS BACK to a different workspace when its hint is unusable — correct for a stale cookie, unsafe for a URL, where falling back means acting on a tenant the caller never named. It reads the same two tables under the same policies (users_can_read_own_workspace_memberships) and uses the service role for the same reason: it is called from pages, Server Actions and a layout with varying session availability. Documented as a SWAP candidate alongside canonical-workspace-resolver.ts and should be narrowed in the same pass, not separately.",
+    riskLevel: "MEDIUM",
+    mitigations: [
+      "userId is always the resolved authenticated caller's own id, never a client-supplied 'view as' parameter",
+      "Read-only — it performs no insert, update or delete",
+      "The client-supplied workspaceId is used ONLY as an equality filter on the caller's own membership row; a workspace the caller is not a member of returns denied, so the parameter can narrow the answer but never widen it",
+      "Deleted workspaces and absent memberships collapse to one indistinguishable 'denied' result, so the id cannot be used to probe which workspaces exist",
+      "Fails closed: a failed membership or workspace read returns denied rather than proceeding",
+    ],
+    needsRlsBeforeSwap: false,
+  },
+  {
     file: "src/lib/projects/first-insight/operational-governance-brief-store.ts",
     purpose: "persistOperationalGovernanceBrief upserts operational_governance_briefs after the initial project-brief generation flow. Accepts an optional caller-supplied client (used by in-request callers with a scoped session); defaults to a fresh privileged client when none is supplied, for background/system callers that generate the brief asynchronously after the request has returned — same no-session-left-to-scope justification as evidence-processor.ts and discovery-repository.ts. loadLatestOperationalGovernanceBrief (read) always requires an explicit caller-supplied client and never creates a privileged client itself.",
     riskLevel: "MEDIUM",
