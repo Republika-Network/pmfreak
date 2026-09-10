@@ -38,7 +38,7 @@ export default async function PmoSettingsPage({ params }: Props) {
           {pmo.name} — Settings
         </h1>
         <div className="mt-4">
-          <PmoTabNav pmoId={pmo.id} active="settings" />
+          <PmoTabNav workspaceId={resolution.workspaceId} pmoId={pmo.id} active="settings" />
         </div>
       </header>
 

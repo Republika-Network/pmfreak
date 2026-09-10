@@ -23,6 +23,8 @@
  * string literals across 35 files (ADR-PMF-068 rule 5).
  */
 
+import { isPmoCommandCenterPath, PMOS_NAV_HREF } from "@/lib/pmos/pmo-command-center-paths";
+
 export const WORKSPACE_COMMAND_CENTER_LEGACY_PATH = "/command-center";
 
 /**
@@ -80,8 +82,20 @@ export function isWorkspaceCommandCenterPath(pathname: string): boolean {
  * Every other entry keeps the shell's original `startsWith` semantics exactly,
  * so this slice changes active-state behaviour for the Command Center route
  * only and for nothing else.
+ *
+ * The PMO Command Center (`/workspaces/<id>/pmos/<id>/command-center`) has the
+ * same collision one level deeper, and is tested FIRST because it nests under
+ * `/workspaces/` too. Its winner is the "PMOs" entry, not "Command Center":
+ * that nav item is the Workspace Command Center's identity, and lighting it up
+ * on a PMO route would say the PM is in the workspace's Command Center while
+ * they are looking at a PMO's. The two are different entity scopes
+ * (ADR-PMF-014 Rule 1), which is also why `isWorkspaceCommandCenterPath` is
+ * NOT widened to match both — it stays the Workspace screen's own predicate.
  */
 export function navEntryMatchesPathname(navHref: string, pathname: string): boolean {
+  if (isPmoCommandCenterPath(pathname)) {
+    return navHref === PMOS_NAV_HREF;
+  }
   if (isWorkspaceCommandCenterPath(pathname)) {
     return navHref === WORKSPACE_COMMAND_CENTER_LEGACY_PATH;
   }

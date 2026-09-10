@@ -12,6 +12,7 @@ import { getOnboardingRedirect } from "@/lib/auth/onboarding-route-map";
 import { shouldRedirectForOnboarding } from "@/lib/auth/onboarding-gate";
 import { resolveCapabilityProfile } from "@/lib/workspace/pilot-capability-set";
 import { parseWorkspaceIdFromPath } from "@/lib/workspace/command-center-paths";
+import { parsePmoRouteFromPath } from "@/lib/pmos/pmo-command-center-paths";
 import { resolveRoutedWorkspace } from "@/lib/workspaces/routed-workspace";
 
 export default async function ProtectedLayout({ children }: { children: React.ReactNode }) {
@@ -59,9 +60,19 @@ export default async function ProtectedLayout({ children }: { children: React.Re
    * real membership and has no fallback, so a URL can never widen access. When
    * it is not authorized we keep the preferred workspace and let the page render
    * its own refusal, which is the surface that owns that message.
+   *
+   * The canonical PMO Command Center carries its workspace in the same position
+   * (`/workspaces/<id>/pmos/<id>/command-center`), so it is read here too — for
+   * exactly the two defects above, which do not care which entity-qualified
+   * Command Center is being opened. That route's own resolver additionally
+   * checks this segment against `pmos.workspace_id` and refuses a mismatch; the
+   * shell only needs enough context to stop answering from the cookie.
    */
   const routedHeaders = await headers();
-  const routedWorkspaceId = parseWorkspaceIdFromPath(routedHeaders.get("x-pathname") ?? "");
+  const routedWorkspaceId =
+    parseWorkspaceIdFromPath(routedHeaders.get("x-pathname") ?? "") ??
+    parsePmoRouteFromPath(routedHeaders.get("x-pathname") ?? "")?.workspaceId ??
+    null;
   const routedAccess = routedWorkspaceId ? await resolveRoutedWorkspace(user.id, routedWorkspaceId) : null;
   const routedWorkspaceArchived = routedAccess?.access === "archived";
   const resolvedWorkspace =

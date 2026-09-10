@@ -60,7 +60,7 @@ export default async function PmoReportsPage({ params }: Props) {
           {pmo.name} — Reports
         </h1>
         <div className="mt-4">
-          <PmoTabNav pmoId={pmo.id} active="reports" />
+          <PmoTabNav workspaceId={resolution.workspaceId} pmoId={pmo.id} active="reports" />
         </div>
       </header>
 
