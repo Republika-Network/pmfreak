@@ -360,7 +360,7 @@ export function WorkspaceConversationShell({ awakening, onAwakeningAdvance, scop
     <main className="mx-auto min-h-[82vh] w-full">
       <section className="rounded-3xl border border-white/10 bg-slate-900/55 p-4 shadow-[0_30px_70px_-50px_rgba(15,23,42,0.95)] backdrop-blur-xl md:p-6">
         <header className="mb-4">
-          <h1 className="text-2xl font-semibold">Operational Command Center</h1>
+          <h1 className="text-2xl font-semibold">Workspace Chat</h1>
         </header>
 
         <div
