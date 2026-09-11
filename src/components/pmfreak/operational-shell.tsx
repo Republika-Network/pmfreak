@@ -935,7 +935,7 @@ export function OperationalShell({ children, user, capabilityProfile = "pilot", 
                     {user.companyName || "Workspace"}
                   </Link>
                 </div>
-                <SidebarPmoTree activeProjectId={projectId || undefined} onSelectProject={(id) => setProjectId(id)} />
+                <SidebarPmoTree workspaceId={workspaceId} activeProjectId={projectId || undefined} onSelectProject={(id) => setProjectId(id)} />
                 <div>
                   <p className="mb-1 text-[9px] uppercase tracking-[0.28em] text-zinc-400">More</p>
                   <div className="space-y-1">

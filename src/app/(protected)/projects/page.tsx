@@ -3,10 +3,21 @@ import { requireAuthUser } from "@/lib/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { EmptyProjects } from "@/components/pmfreak/empty-states";
 import { resolvePreferredWorkspace } from "@/lib/workspaces/preferred-workspace";
+import { projectHomePath } from "@/lib/projects/project-paths";
 import { createProjectAction } from "./actions";
 
 type ProjectRow = {
   id: string;
+  /**
+   * The project's own parent workspace. Selected so each row can link straight
+   * into canonical Project Home without a redirect hop and WITHOUT consulting
+   * the preferred-workspace cookie: `projects.workspace_id` is NOT NULL and is
+   * the authority for the project's parent, so the row already carries the one
+   * value the canonical path needs. Resolving a workspace separately here would
+   * be asking a cookie a question this row already answers, and would answer it
+   * wrongly for any project outside the caller's preferred workspace.
+   */
+  workspace_id: string;
   name: string;
   description: string | null;
   status: string;
@@ -19,7 +30,7 @@ export default async function ProjectsPage() {
 
   const { data } = await supabase
     .from("projects")
-    .select("id, name, description, status, created_at")
+    .select("id, workspace_id, name, description, status, created_at")
     .eq("user_id", user.id)
     .order("created_at", { ascending: false });
 
@@ -78,7 +89,7 @@ export default async function ProjectsPage() {
 
         <div className="mt-5 grid gap-3 md:grid-cols-2">
           {projects.map((project) => (
-            <Link key={project.id} href={`/projects/${project.id}`} className="group rounded-2xl border border-slate-200 bg-slate-50 p-4 transition hover:border-cyan-200/50">
+            <Link key={project.id} href={projectHomePath(project.workspace_id, project.id)} className="group rounded-2xl border border-slate-200 bg-slate-50 p-4 transition hover:border-cyan-200/50">
               <p className="text-xs uppercase tracking-[0.14em] text-slate-500">Project</p>
               <h3 className="mt-1 text-lg font-semibold text-cyan-900 group-hover:text-cyan-950">{project.name}</h3>
               {project.description && (

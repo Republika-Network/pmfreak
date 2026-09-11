@@ -4,8 +4,20 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { parseCanonicalPmoRoute, pmoHomePath, PMOS_NAV_HREF } from "@/lib/pmos/pmo-paths";
+import { parseCanonicalProjectRoute, projectHomePath } from "@/lib/projects/project-paths";
 
-type TreeProject = { id: string; name: string; status: string };
+type TreeProject = {
+  id: string;
+  /**
+   * The project's own parent workspace, from its `projects` row via
+   * `GET /api/pmos`. Deliberately not the shell's current workspace and not the
+   * PMO's: a project's link must be a property of the project, the same rule the
+   * PMO links below already follow.
+   */
+  workspace_id: string;
+  name: string;
+  status: string;
+};
 type TreePmo = {
   id: string;
   /**
@@ -27,9 +39,27 @@ type TreePmo = {
  * nested project list. Scales to many PMOs via per-group collapse.
  */
 export function SidebarPmoTree({
+  workspaceId,
   activeProjectId,
   onSelectProject,
 }: {
+  /**
+   * The workspace this shell is RENDERING — the one the protected layout
+   * authorized, which on a canonical route is the workspace named in the URL and
+   * not the preferred-workspace cookie's.
+   *
+   * Without it `GET /api/pmos` answers from that cookie, and on
+   * `/workspaces/B/projects/P` the tree came back holding workspace A's rows: the
+   * routed project was absent so no row could light, and every PMO and project
+   * link below pointed back into A. The tree is the navigation surface — chrome
+   * that disagrees with the page it wraps sends people out of the workspace they
+   * deliberately opened.
+   *
+   * It is only a SCOPE, never an authorization: the handler authorizes the id it
+   * is given, and RLS admits rows only for workspaces the caller belongs to, so
+   * passing one here can narrow the answer and can never widen it.
+   */
+  workspaceId?: string;
   activeProjectId?: string;
   onSelectProject?: (projectId: string) => void;
 }) {
@@ -42,7 +72,10 @@ export function SidebarPmoTree({
     let active = true;
     async function load() {
       try {
-        const res = await fetch("/api/pmos", { cache: "no-store" });
+        const res = await fetch(
+          workspaceId ? `/api/pmos?workspaceId=${encodeURIComponent(workspaceId)}` : "/api/pmos",
+          { cache: "no-store" },
+        );
         if (!res.ok) throw new Error();
         const data = (await res.json()) as { pmos?: TreePmo[] };
         if (active) setPmos(data.pmos ?? []);
@@ -54,9 +87,16 @@ export function SidebarPmoTree({
     }
     void load();
     return () => { active = false; };
-  }, [pathname]);
+    // Refetch when the rendered workspace changes as well as on navigation:
+    // moving between two workspaces' canonical routes must reload the tree, not
+    // keep showing the first one's PMOs.
+  }, [pathname, workspaceId]);
 
   const routedPmo = parseCanonicalPmoRoute(pathname);
+  // Which project the viewer is actually on, when they are on a canonical
+  // Project route. The legacy `/projects/<id>` prefix test below stays as well,
+  // because that path is still routable while it drains.
+  const routedProject = parseCanonicalProjectRoute(pathname);
 
   return (
     <div>
@@ -116,11 +156,14 @@ export function SidebarPmoTree({
                       <p className="px-1 text-[10px] text-zinc-400">No projects</p>
                     ) : (
                       pmo.projects.map((project) => {
-                        const isActive = project.id === activeProjectId || pathname.startsWith(`/projects/${project.id}`);
+                        const isActive =
+                          project.id === activeProjectId ||
+                          routedProject?.projectId === project.id ||
+                          pathname.startsWith(`/projects/${project.id}`);
                         return (
                           <Link
                             key={project.id}
-                            href={`/projects/${project.id}`}
+                            href={projectHomePath(project.workspace_id, project.id)}
                             onClick={() => onSelectProject?.(project.id)}
                             className={`block truncate rounded px-1.5 py-1 text-[11px] transition-colors ${
                               isActive ? "bg-cyan-300/[0.08] text-cyan-900" : "text-slate-600 hover:bg-white hover:text-slate-800"

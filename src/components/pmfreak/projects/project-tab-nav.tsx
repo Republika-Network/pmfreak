@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { projectHomePath } from "@/lib/projects/project-paths";
 
 /**
  * Project section navigation. The project opens on Overview; the chat is one
@@ -9,10 +10,45 @@ import Link from "next/link";
  * "(preview)": their destination pages (/meetings, /change-detection) are
  * generic workspace-wide modules that do not read a projectId param at all —
  * passing one would falsely imply per-project scoping that doesn't exist yet.
+ *
+ * WHY ONLY OVERVIEW IS CANONICAL
+ * ------------------------------
+ * Overview now points at canonical Project Home,
+ * `/workspaces/[workspaceId]/projects/[projectId]`, because that route exists and
+ * is where the screen lives. NOTHING ELSE in this strip is rewritten, and that is
+ * the honest state of the product rather than a half-finished migration:
+ *
+ *   - Chat and Settings still point at `/projects/[id]/chat` and
+ *     `/projects/[id]/settings`. `07-route-layout-and-navigation-architecture.md`
+ *     §2's ratified Project family does not contain `chat` or `settings` at all,
+ *     so `/workspaces/W/projects/P/chat` is not a route this architecture
+ *     authorizes — writing it here would invent one and 404.
+ *   - Execution, Timeline, Tasks, Documents, Evidence and Reports point at
+ *     workspace-wide modules with a `?projectId=`. Their canonical replacements
+ *     (`…/projects/[projectId]/tasks`, `/milestones`, `/documents`, …) are in the
+ *     ratified map and none of them is built. A link is a claim that a screen
+ *     exists; these tabs keep pointing where the screens actually are.
+ *
+ * So this strip is not yet canonical, and does not pretend to be. It becomes
+ * canonical one tab at a time, as each destination ships.
  */
-export function ProjectTabNav({ projectId, active }: { projectId: string; active: "overview" | "chat" | "settings" }) {
+export function ProjectTabNav({
+  workspaceId,
+  projectId,
+  active,
+}: {
+  /**
+   * The project's AUTHORITATIVE workspace — `projects.workspace_id`, as returned
+   * by `resolveRoutedProject` or read from the project's own row, never the
+   * preferred-workspace cookie. Every call site holds it because every call site
+   * read the project before rendering.
+   */
+  workspaceId: string;
+  projectId: string;
+  active: "overview" | "chat" | "settings";
+}) {
   const tabs: { label: string; href: string; key?: string }[] = [
-    { label: "Overview", href: `/projects/${projectId}`, key: "overview" },
+    { label: "Overview", href: projectHomePath(workspaceId, projectId), key: "overview" },
     { label: "Chat", href: `/projects/${projectId}/chat`, key: "chat" },
     { label: "Execution", href: `/command-center?projectId=${projectId}` },
     { label: "Timeline", href: `/dashboard?projectId=${projectId}` },

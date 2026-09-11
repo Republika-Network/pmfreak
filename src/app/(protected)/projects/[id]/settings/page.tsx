@@ -5,7 +5,8 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { evaluateCapabilityAccess } from "@/lib/security/capability-flow";
 import { listPmos } from "@/lib/pmos/pmo-service";
 import { ProjectSettingsClient } from "@/components/pmfreak/projects/project-settings-client";
-import { ProjectTabNav } from "../project-tab-nav";
+import { ProjectTabNav } from "@/components/pmfreak/projects/project-tab-nav";
+import { projectHomePath } from "@/lib/projects/project-paths";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +15,14 @@ type Props = { params: Promise<{ id: string }> };
 /**
  * Project Settings — rename, restatus, move between PMOs, change
  * methodology/icon/color, duplicate, or delete this project.
+ *
+ * DELIBERATELY NOT MIGRATED BY THIS SLICE, for the same reason as Project Chat:
+ * `07-route-layout-and-navigation-architecture.md` §2's ratified Project family
+ * has no `settings` member, so there is no canonical destination to move to and
+ * inventing `/workspaces/W/projects/P/settings` would be inventing architecture.
+ * Only its two Project-Home links changed — the breadcrumb and the tab strip now
+ * lead to canonical Project Home, built from the `projects.workspace_id` this
+ * page already reads and already authorizes against.
  */
 export default async function ProjectSettingsPage({ params }: Props) {
   await requireAuthUser();
@@ -35,14 +44,14 @@ export default async function ProjectSettingsPage({ params }: Props) {
     <main className="space-y-5">
       <header className="rounded-3xl border border-slate-200 bg-white p-6">
         <p className="text-xs uppercase tracking-[0.24em] text-cyan-800">
-          <Link href={`/projects/${project.id}`} className="hover:text-cyan-900">{project.name}</Link> / Settings
+          <Link href={projectHomePath(project.workspace_id, project.id)} className="hover:text-cyan-900">{project.name}</Link> / Settings
         </p>
         <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-900">
           {project.icon ? <span className="mr-2">{project.icon}</span> : null}
           {project.name} — Settings
         </h1>
         <div className="mt-4">
-          <ProjectTabNav projectId={project.id} active="settings" />
+          <ProjectTabNav workspaceId={project.workspace_id} projectId={project.id} active="settings" />
         </div>
       </header>
 

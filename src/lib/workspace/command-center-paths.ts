@@ -35,6 +35,7 @@
  */
 
 import { isCanonicalPmoRoutePath, PMOS_NAV_HREF } from "@/lib/pmos/pmo-paths";
+import { isCanonicalProjectRoutePath, PROJECTS_NAV_HREF } from "@/lib/projects/project-paths";
 import { parseCanonicalWorkspaceRoute } from "@/lib/workspaces/workspace-paths";
 
 /**
@@ -109,6 +110,16 @@ export function isWorkspaceCommandCenterPath(pathname: string): boolean {
  * still resolves to it unchanged because the family predicate requires a `/pmos/`
  * segment.
  *
+ * The canonical PROJECT family (`/workspaces/<id>/projects/<id>`) has the same
+ * collision and the same shape of answer: its winner is the "Projects" entry. A PM
+ * inside a project is in Projects — not in the workspace list they travelled
+ * through, and not in the Workspace Command Center, whose nav identity
+ * `/command-center` would otherwise claim they are looking at the workspace's
+ * operations console while they are on a project's Home. It is tested after the
+ * PMO branch and before the Command Center one; the two families cannot both
+ * match, because a canonical project path has a `/projects/` segment where a PMO
+ * path has `/pmos/`, and neither parser tolerates an extra segment.
+ *
  * Workspace Home (`/workspaces/<id>`) and Workspace Settings
  * (`/workspaces/<id>/settings`) need NO branch of their own: they fall through to
  * the `startsWith` default and light up "Workspaces", which is the truthful
@@ -116,10 +127,17 @@ export function isWorkspaceCommandCenterPath(pathname: string): boolean {
  * is simultaneously in. The Workspace Command Center keeps its separate nav
  * identity because `/command-center` is a real, separately-labelled entry; that
  * is PR #604's behaviour and this slice does not re-open it.
+ *
+ * The legacy `/projects/<id>` keeps plain prefix semantics and keeps lighting up
+ * "Projects" — it starts with `/projects`, so the default already answers
+ * correctly, and it is a redirect anyway.
  */
 export function navEntryMatchesPathname(navHref: string, pathname: string): boolean {
   if (isCanonicalPmoRoutePath(pathname)) {
     return navHref === PMOS_NAV_HREF;
+  }
+  if (isCanonicalProjectRoutePath(pathname)) {
+    return navHref === PROJECTS_NAV_HREF;
   }
   if (isWorkspaceCommandCenterPath(pathname)) {
     return navHref === WORKSPACE_COMMAND_CENTER_LEGACY_PATH;

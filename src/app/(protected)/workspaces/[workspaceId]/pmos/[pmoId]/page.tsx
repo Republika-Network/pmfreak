@@ -4,6 +4,7 @@ import { getPmoById } from "@/lib/pmos/pmo-service";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { resolveRoutedPmo } from "@/lib/pmos/routed-pmo";
 import { PMOS_NAV_HREF } from "@/lib/pmos/pmo-paths";
+import { projectHomePath } from "@/lib/projects/project-paths";
 import { PmoArchivedNotice, PmoNotAvailable } from "@/components/pmfreak/pmos/pmo-route-states";
 import { PmoTabNav } from "./pmo-tab-nav";
 
@@ -142,9 +143,17 @@ export default async function PmoHomePage({ params }: Props) {
             </p>
           ) : (
             projects.map((project) => (
+              /* Canonical Project Home. `workspaceId` here is the PMO's
+                 AUTHORITATIVE workspace from `resolveRoutedPmo`, and these rows
+                 were read with `.eq("workspace_id", workspaceId)`, so it is also
+                 each project's own `projects.workspace_id`. The project's route
+                 parent stays the WORKSPACE even though it is listed under a PMO:
+                 `pmo_id` is nullable and `workspace_id` is not, so PMO membership
+                 is ancestry the breadcrumb tells the truth about, never a route
+                 segment. */
               <Link
                 key={project.id}
-                href={`/projects/${encodeURIComponent(project.id)}`}
+                href={projectHomePath(workspaceId, project.id)}
                 className="group rounded-2xl border border-slate-200 bg-slate-50 p-4 transition hover:border-cyan-200/35"
                 style={{ borderLeftColor: project.color ?? undefined, borderLeftWidth: project.color ? 3 : undefined }}
               >

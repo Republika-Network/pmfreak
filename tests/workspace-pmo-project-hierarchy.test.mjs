@@ -233,7 +233,12 @@ test("project creation lands in the command center scoped to the new project", (
 });
 
 test("project overview exposes chat as one tab among many", () => {
-  const tabNav = fs.readFileSync("src/app/(protected)/projects/[id]/project-tab-nav.tsx", "utf8");
+  // The strip moved to src/components/pmfreak/projects/ with the canonical
+  // Project Home slice: it is now rendered by canonical Project Home
+  // (/workspaces/[workspaceId]/projects/[projectId]) as well as by legacy Project
+  // Chat and Settings, so it belongs to none of those route folders. Its content
+  // is what this test is about, and that is unchanged.
+  const tabNav = fs.readFileSync("src/components/pmfreak/projects/project-tab-nav.tsx", "utf8");
   assert.ok(tabNav.includes('{ label: "Overview"'));
   assert.ok(tabNav.includes('{ label: "Chat"'));
   assert.ok(tabNav.includes("Settings"));

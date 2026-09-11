@@ -9,6 +9,7 @@ import {
 } from "@/lib/workspaces/workspace-paths";
 import { listPmos } from "@/lib/pmos/pmo-service";
 import { pmoHomePath } from "@/lib/pmos/pmo-paths";
+import { projectHomePath } from "@/lib/projects/project-paths";
 import { WorkspaceArchivedNotice, WorkspaceNotAvailable } from "@/components/pmfreak/workspace/workspace-route-states";
 import { WorkspaceTabNav } from "./workspace-tab-nav";
 
@@ -282,13 +283,17 @@ export default async function WorkspaceHomePage({ params }: Props) {
           <ul className="mt-4 grid gap-3 md:grid-cols-2">
             {directProjects.map((project) => (
               <li key={project.id}>
-                {/* The Project route family has not been migrated yet — its
-                    canonical, workspace-rooted form is the next slice. Linking at
-                    the shipped `/projects/[id]` is the honest destination today;
-                    inventing `/workspaces/<id>/projects/<id>` here would produce a
-                    404 and pre-empt a migration that has not happened. */}
+                {/* Drill-down into the canonical Project family, carrying the
+                    AUTHORIZED workspace — `access.workspaceId`, not the routed
+                    segment and not a cookie — so the child route never has to
+                    guess its own ancestry. These rows were read with
+                    `.eq("workspace_id", workspaceId)`, so this workspace IS each
+                    project's `projects.workspace_id`: the link states an ancestry
+                    that is true by construction, which is why it needs no extra
+                    lookup. (The note that used to sit here said this family was
+                    not migrated yet. It is now.) */}
                 <Link
-                  href={`/projects/${encodeURIComponent(project.id)}`}
+                  href={projectHomePath(workspaceId, project.id)}
                   className="group block rounded-2xl border border-slate-200 bg-slate-50 p-4 transition hover:border-cyan-200/35"
                   style={{ borderLeftColor: project.color ?? undefined, borderLeftWidth: project.color ? 3 : undefined }}
                 >

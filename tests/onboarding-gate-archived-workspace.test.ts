@@ -110,7 +110,7 @@ test("the archived read-only render is driven by authorization, not by the gate"
 // ─── The layout actually uses it ──────────────────────────────────────────
 
 test("the layout gates through the pure function, not the bare access test", () => {
-  assert.match(layout, /shouldRedirectForOnboarding\(\{ state: onboardingState, routedWorkspaceArchived \}\)/);
+  assert.match(layout, /shouldRedirectForOnboarding\(\{ state: onboardingState, routedWorkspaceArchived, routedProjectArchived \}\)/);
   assert.match(layout, /const routedWorkspaceArchived = routedAccess\?\.access === "archived"/);
 });
 
