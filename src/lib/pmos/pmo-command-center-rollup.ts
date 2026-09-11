@@ -135,7 +135,8 @@ export function summarizePmoProjects(projects: readonly PmoProjectRow[]): PmoPro
 
 /**
  * Open-state semantics copied verbatim from the shipped PMO surface
- * (`/pmos/[pmoId]/reports`): an item counts as open unless it is closed or
+ * (PMO Reports, now `/workspaces/[workspaceId]/pmos/[pmoId]/reports`): an item
+ * counts as open unless it is closed or
  * resolved. `raid_items.status` is CHECK-constrained to
  * `open | monitoring | mitigated | closed`, so "resolved" cannot currently
  * occur — it is retained because the shipped precedent excludes it, and

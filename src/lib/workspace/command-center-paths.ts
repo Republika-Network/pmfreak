@@ -23,7 +23,7 @@
  * string literals across 35 files (ADR-PMF-068 rule 5).
  */
 
-import { isPmoCommandCenterPath, PMOS_NAV_HREF } from "@/lib/pmos/pmo-command-center-paths";
+import { isCanonicalPmoRoutePath, PMOS_NAV_HREF } from "@/lib/pmos/pmo-paths";
 
 export const WORKSPACE_COMMAND_CENTER_LEGACY_PATH = "/command-center";
 
@@ -83,17 +83,22 @@ export function isWorkspaceCommandCenterPath(pathname: string): boolean {
  * so this slice changes active-state behaviour for the Command Center route
  * only and for nothing else.
  *
- * The PMO Command Center (`/workspaces/<id>/pmos/<id>/command-center`) has the
- * same collision one level deeper, and is tested FIRST because it nests under
- * `/workspaces/` too. Its winner is the "PMOs" entry, not "Command Center":
- * that nav item is the Workspace Command Center's identity, and lighting it up
- * on a PMO route would say the PM is in the workspace's Command Center while
- * they are looking at a PMO's. The two are different entity scopes
- * (ADR-PMF-014 Rule 1), which is also why `isWorkspaceCommandCenterPath` is
- * NOT widened to match both — it stays the Workspace screen's own predicate.
+ * The canonical PMO route FAMILY (`/workspaces/<id>/pmos/<id>` and its `chat`,
+ * `reports`, `settings` and `command-center` children) has the same collision one
+ * level deeper, and is tested FIRST because all of it nests under `/workspaces/`
+ * too. Its winner is the "PMOs" entry: a PM inside any PMO surface is in PMOs,
+ * not in the workspace list they happened to travel through and not in the
+ * Workspace Command Center. That last one matters most — `/command-center` is the
+ * Workspace Command Center's nav identity, and lighting it up on a PMO route
+ * would say the PM is in the workspace's Command Center while they are looking at
+ * a PMO's. The two are different entity scopes (ADR-PMF-014 Rule 1), which is
+ * also why `isWorkspaceCommandCenterPath` is NOT widened to match both — it stays
+ * the Workspace screen's own predicate, and `/workspaces/<id>/command-center`
+ * still resolves to it unchanged because the family predicate requires a `/pmos/`
+ * segment.
  */
 export function navEntryMatchesPathname(navHref: string, pathname: string): boolean {
-  if (isPmoCommandCenterPath(pathname)) {
+  if (isCanonicalPmoRoutePath(pathname)) {
     return navHref === PMOS_NAV_HREF;
   }
   if (isWorkspaceCommandCenterPath(pathname)) {

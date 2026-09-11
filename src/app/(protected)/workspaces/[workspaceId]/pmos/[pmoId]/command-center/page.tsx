@@ -2,11 +2,9 @@ import Link from "next/link";
 import { requireAuthUser } from "@/lib/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { resolveRoutedPmo } from "@/lib/pmos/routed-pmo";
-import {
-  legacyPmoHomePath,
-  pmoCommandCenterBreadcrumb,
-  pmoCommandCenterPath,
-} from "@/lib/pmos/pmo-command-center-paths";
+import { pmoCommandCenterBreadcrumb, pmoCommandCenterPath } from "@/lib/pmos/pmo-command-center-paths";
+import { pmoHomePath } from "@/lib/pmos/pmo-paths";
+import { PmoNotAvailable } from "@/components/pmfreak/pmos/pmo-route-states";
 import {
   pmoProjectsQuery,
   pmoRaidQuery,
@@ -93,35 +91,15 @@ function Shell({ children }: { children: React.ReactNode }) {
 }
 
 /**
- * The refusal. Identical for absent, deleted, unauthorized and ancestry-mismatched
- * PMOs, and deliberately free of anything that would confirm a PMO exists — no
- * name, no status, no workspace id, and not the requested id echoed back.
- * Precedent and wording follow the Workspace Command Center's own refusal.
+ * The refusal lives in `@/components/pmfreak/pmos/pmo-route-states` now, shared
+ * with the four PMO surfaces this slice added and the four legacy resolvers that
+ * strangle their old routes. Nine copies of "this PMO isn't available to you" is
+ * nine chances for one of them to differ, and a refusal that differs between
+ * surfaces is itself a signal about the PMO. One component, one wording.
  */
-function PmoNotAvailable() {
-  return (
-    <Shell>
-      <div className="rounded-2xl border border-slate-200 bg-white/80 p-6">
-        <p className="text-sm font-semibold text-slate-900">This PMO isn&apos;t available to you</p>
-        <p className="mt-1 text-xs text-slate-600">
-          The PMO in this link either does not exist or is not one you have access to. Nothing has been
-          changed. If you followed an old link, choose a PMO below.
-        </p>
-        <div className="mt-3 flex flex-wrap gap-2">
-          <Link
-            href="/pmos"
-            className="inline-block rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
-          >
-            Choose a PMO
-          </Link>
-        </div>
-      </div>
-    </Shell>
-  );
-}
 
-function Breadcrumb({ pmoName, pmoId }: { pmoName: string; pmoId: string }) {
-  const nodes = pmoCommandCenterBreadcrumb({ workspaceLabel: "Workspace", pmoName, pmoId });
+function Breadcrumb({ workspaceId, pmoName, pmoId }: { workspaceId: string; pmoName: string; pmoId: string }) {
+  const nodes = pmoCommandCenterBreadcrumb({ workspaceLabel: "Workspace", workspaceId, pmoName, pmoId });
   return (
     <nav aria-label="Breadcrumb" className="text-xs uppercase tracking-[0.24em] text-cyan-800">
       {nodes.map((node, index) => (
@@ -145,13 +123,13 @@ function Breadcrumb({ pmoName, pmoId }: { pmoName: string; pmoId: string }) {
   );
 }
 
-function PmoHeader({ pmo }: { pmo: PmoIdentityRow }) {
+function PmoHeader({ workspaceId, pmo }: { workspaceId: string; pmo: PmoIdentityRow }) {
   return (
     <header
       className="rounded-3xl border border-slate-200 bg-white p-6"
       style={{ borderTopColor: pmo.color ?? undefined, borderTopWidth: pmo.color ? 3 : undefined }}
     >
-      <Breadcrumb pmoName={pmo.name} pmoId={pmo.id} />
+      <Breadcrumb workspaceId={workspaceId} pmoName={pmo.name} pmoId={pmo.id} />
       <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-900">
         <span className="mr-2">{pmo.icon ?? "🏛️"}</span>
         {pmo.name} — PMO Command Center
@@ -258,7 +236,7 @@ export default async function PmoCommandCenterPage({
     );
     return (
       <Shell>
-        <PmoHeader pmo={pmo} />
+        <PmoHeader workspaceId={workspaceId} pmo={pmo} />
         <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-6">
           <p className="text-sm font-semibold text-amber-900">We couldn&apos;t load this PMO&apos;s projects</p>
           <p className="mt-1 text-xs text-amber-700/80">
@@ -306,7 +284,7 @@ export default async function PmoCommandCenterPage({
 
   return (
     <Shell>
-      <PmoHeader pmo={pmo} />
+      <PmoHeader workspaceId={workspaceId} pmo={pmo} />
 
       {isArchived ? (
         <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-6">
@@ -335,7 +313,7 @@ export default async function PmoCommandCenterPage({
           </p>
           {isArchived ? null : (
             <Link
-              href={legacyPmoHomePath(pmoId)}
+              href={pmoHomePath(workspaceId, pmoId)}
               className="mt-4 inline-block rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
             >
               Open PMO home

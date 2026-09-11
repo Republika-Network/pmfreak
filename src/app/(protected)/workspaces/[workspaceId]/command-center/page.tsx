@@ -78,12 +78,12 @@ export default async function WorkspaceCommandCenterPage({
             has been changed. If you followed an old link, open your own Command Center below.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
-            <a
+            <Link
               href="/workspaces"
               className="inline-block rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
             >
               Choose a workspace
-            </a>
+            </Link>
           </div>
         </div>
       </div>

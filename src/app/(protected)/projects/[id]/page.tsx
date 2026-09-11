@@ -9,6 +9,7 @@ import { ProjectPMAssignment } from "@/components/pmfreak/ProjectPMAssignment";
 import { ProjectTaskList } from "@/components/pmfreak/tasks/project-task-list";
 import { resolvePreferredWorkspace } from "@/lib/workspaces/preferred-workspace";
 import { ProjectTabNav } from "./project-tab-nav";
+import { PMOS_NAV_HREF, pmoHomePath } from "@/lib/pmos/pmo-paths";
 
 type Props = { params: Promise<{ id: string }> };
 
@@ -25,8 +26,12 @@ export default async function ProjectDetailPage({ params }: Props) {
 
   if (!project) notFound();
 
+  // `workspace_id` is selected because the breadcrumb links to the PMO's
+  // canonical Home, which is workspace-rooted. It comes from the PMO's own row —
+  // the authority for its parent — not from the project's workspace and not from
+  // the preferred-workspace cookie.
   const { data: pmo } = project.pmo_id
-    ? await supabase.from("pmos").select("id, name, icon").eq("id", project.pmo_id).maybeSingle()
+    ? await supabase.from("pmos").select("id, workspace_id, name, icon").eq("id", project.pmo_id).maybeSingle()
     : { data: null };
 
   const canonicalProject = await resolveCanonicalProject(project.workspace_id, id);
@@ -54,9 +59,9 @@ export default async function ProjectDetailPage({ params }: Props) {
       <div>
         {pmo ? (
           <p className="text-xs uppercase tracking-[0.2em] text-cyan-800">
-            <Link href="/pmos" className="hover:text-cyan-900">PMOs</Link>
+            <Link href={PMOS_NAV_HREF} className="hover:text-cyan-900">PMOs</Link>
             {" / "}
-            <Link href={`/pmos/${pmo.id}`} className="hover:text-cyan-900">{pmo.icon ? `${pmo.icon} ` : ""}{pmo.name}</Link>
+            <Link href={pmoHomePath(pmo.workspace_id, pmo.id)} className="hover:text-cyan-900">{pmo.icon ? `${pmo.icon} ` : ""}{pmo.name}</Link>
             {" / "}
             {project.name}
           </p>

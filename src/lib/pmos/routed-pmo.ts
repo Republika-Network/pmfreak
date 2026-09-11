@@ -134,13 +134,26 @@ export function decideRoutedPmoAccess(input: {
  * membership, and inventing anything else here would be inventing domain
  * semantics (ADR-PMF-003 ratifies no PMO-level role).
  */
-export async function resolveRoutedPmo(
-  userId: string,
-  routedWorkspaceId: string,
-  pmoId: string,
-): Promise<RoutedPmoAccess> {
-  if (!userId || !routedWorkspaceId || !pmoId) return DENIED;
-
+/**
+ * The ONE privileged read in this module: a PMO's parent workspace and status,
+ * by id, and nothing else.
+ *
+ * Both resolvers below share it so there is exactly one service-role lookup site
+ * for PMO ancestry in the app — the alternative was four legacy route files each
+ * constructing their own privileged client, which is how a narrow boundary turns
+ * into a wide one. `null` means "not a PMO", whether the row is absent or the
+ * read failed: both fail closed.
+ *
+ * It cannot be done with the caller's own client without assuming its own
+ * answer. RLS on `pmos` filters by `workspace_memberships`, which is the very
+ * membership the caller of this function is trying to establish, so a
+ * caller-scoped read returns null both for "not yours" and for "yours, but we
+ * have not checked yet" — collapsing the ancestry question into the access
+ * question. Every DATA read on the screens themselves uses the caller's own
+ * client, so RLS remains the tenant-isolation boundary; this is authorization
+ * metadata only.
+ */
+async function readPmoAncestry(userId: string, pmoId: string): Promise<PmoAncestry | null> {
   const supabase = createSupabaseServiceRoleClient({
     routeId: "routed-pmo",
     operation: "authorize",
@@ -149,25 +162,105 @@ export async function resolveRoutedPmo(
     actorUserId: userId,
   });
 
-  const { data: pmo, error: pmoError } = await supabase
+  const { data: pmo, error } = await supabase
     .from("pmos")
     .select("workspace_id, status")
     .eq("id", pmoId)
     .maybeSingle<{ workspace_id: string; status: PmoStatus }>();
 
-  // A failed lookup is not a PMO. Fail closed.
-  if (pmoError || !pmo) return DENIED;
+  if (error || !pmo) return null;
+  return { workspaceId: pmo.workspace_id, status: pmo.status };
+}
+
+/**
+ * Authorizes a PMO id supplied by a ROUTE.
+ *
+ * WHY THIS EXISTS ALONGSIDE resolveRoutedWorkspace
+ * ------------------------------------------------
+ * `resolveRoutedWorkspace` answers "may this user act in THIS workspace?" — but
+ * a PMO route does not name a workspace it can trust. It names a PMO, and the
+ * workspace segment beside it is a claim, not an authority. This function
+ * answers "may this user act in THIS PMO, and is the URL telling the truth
+ * about where it lives?", by deriving the parent workspace from the PMO row
+ * itself and then delegating the membership question to the existing resolver.
+ *
+ * Every surface in the canonical PMO route family goes through it — Home, Chat,
+ * Reports, Settings and the Command Center — so the ancestry rule is decided in
+ * one place rather than re-implemented per screen.
+ *
+ * It has no fallback at all. There is no "preferred PMO", no "first PMO in the
+ * workspace", and no preferred-workspace cookie anywhere in this path: a
+ * requested PMO either resolves as authorized or is refused.
+ *
+ * No PMO membership model is consulted, because none exists: there is no
+ * `pmo_members` table anywhere in the schema, `pmo_team_invites` is
+ * workspace-scoped and predates the `pmos` table, and the `pmos` RLS policies
+ * read `workspace_memberships`. PMO access is inherited through workspace
+ * membership, and inventing anything else here would be inventing domain
+ * semantics (ADR-PMF-003 ratifies no PMO-level role).
+ */
+export async function resolveRoutedPmo(
+  userId: string,
+  routedWorkspaceId: string,
+  pmoId: string,
+): Promise<RoutedPmoAccess> {
+  if (!userId || !routedWorkspaceId || !pmoId) return DENIED;
+
+  const pmo = await readPmoAncestry(userId, pmoId);
+  if (!pmo) return DENIED;
 
   // Authorize the PMO's REAL workspace, not the one the URL asserted. Checking
   // the claim afterwards (in the pure decision above) rather than short-circuiting
   // on it keeps this path from behaving observably differently for a mismatched
   // id than for an unauthorized one.
-  const workspaceAccess = await resolveRoutedWorkspace(userId, pmo.workspace_id);
+  const workspaceAccess = await resolveRoutedWorkspace(userId, pmo.workspaceId);
+
+  return decideRoutedPmoAccess({ routedWorkspaceId, pmoId, pmo, workspaceAccess });
+}
+
+/**
+ * Authorizes a PMO id that arrived on a LEGACY route — one that carries no
+ * workspace segment at all.
+ *
+ * `/pmos/[pmoId]` and its three siblings are compatibility entry points kept
+ * alive for old bookmarks and links. They hold no screen: each resolves through
+ * here and redirects into the canonical family, so there is never a second copy
+ * of PMO Home, Chat, Reports or Settings to drift out of sync (ADR-PMF-068
+ * rule 2).
+ *
+ * WHY THIS IS NOT `resolveRoutedPmo(userId, someWorkspaceId, pmoId)`
+ * -----------------------------------------------------------------
+ * Because there is no honest value for the middle argument. A legacy URL asserts
+ * nothing about ancestry, so there is no claim to check — and the temptation is
+ * to fill the gap from the preferred-workspace cookie, which would be the exact
+ * defect this whole route family exists to remove: the SAME legacy PMO id would
+ * then resolve differently depending on which workspace the caller happened to
+ * be in last, and a redirect destination would be attacker-influenced by a
+ * client-controlled cookie. The authoritative parent comes from
+ * `pmos.workspace_id` and from nowhere else.
+ *
+ * So the ancestry check is satisfied trivially and deliberately: the routed
+ * workspace IS the authoritative one, because there was no routed workspace. The
+ * decision function is still the one that decides — same archived semantics, same
+ * single indistinguishable refusal, same absence of any fallback — so the legacy
+ * seam cannot grant anything the canonical route would refuse.
+ *
+ * The returned `workspaceId` is what the redirect must be built from: it is the
+ * PMO's real parent, so `/pmos/P` lands on `/workspaces/W/pmos/P` for exactly
+ * one W, forever, for every caller.
+ */
+export async function resolveLegacyPmoRoute(userId: string, pmoId: string): Promise<RoutedPmoAccess> {
+  if (!userId || !pmoId) return DENIED;
+
+  const pmo = await readPmoAncestry(userId, pmoId);
+  if (!pmo) return DENIED;
+
+  const workspaceAccess = await resolveRoutedWorkspace(userId, pmo.workspaceId);
 
   return decideRoutedPmoAccess({
-    routedWorkspaceId,
+    routedWorkspaceId: pmo.workspaceId,
     pmoId,
-    pmo: { workspaceId: pmo.workspace_id, status: pmo.status },
+    pmo,
     workspaceAccess,
   });
 }

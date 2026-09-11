@@ -6,11 +6,15 @@ import {
   LEGACY_WORKSPACE_HOME_PATH,
   PMOS_NAV_HREF,
   isPmoCommandCenterPath,
-  legacyPmoHomePath,
   parsePmoRouteFromPath,
   pmoCommandCenterBreadcrumb,
   pmoCommandCenterPath,
 } from "../src/lib/pmos/pmo-command-center-paths";
+// MIGRATED by the PMO canonical route-family slice: PMO Home moved from the
+// legacy `/pmos/[pmoId]` to `/workspaces/[workspaceId]/pmos/[pmoId]`, so the
+// breadcrumb's PMO ancestor now points at a canonical route and needs the
+// workspace id. `legacyPmoHomePath` is gone with the seam it described.
+import { pmoHomePath } from "../src/lib/pmos/pmo-paths";
 import { decideRoutedPmoAccess, type RoutedPmoAccess } from "../src/lib/pmos/routed-pmo";
 import {
   CLOSED_RAID_STATUSES,
@@ -56,7 +60,8 @@ const resolver = readFileSync("src/lib/pmos/routed-pmo.ts", "utf8");
 const rollup = readFileSync("src/lib/pmos/pmo-command-center-rollup.ts", "utf8");
 const paths = readFileSync("src/lib/pmos/pmo-command-center-paths.ts", "utf8");
 const protectedLayout = readFileSync("src/app/(protected)/layout.tsx", "utf8");
-const tabNav = readFileSync("src/app/(protected)/pmos/[pmoId]/pmo-tab-nav.tsx", "utf8");
+// MIGRATED: PmoTabNav moved into the canonical family it now links to.
+const tabNav = readFileSync("src/app/(protected)/workspaces/[workspaceId]/pmos/[pmoId]/pmo-tab-nav.tsx", "utf8");
 const pmoCommandCenterLegacyRoute = readFileSync("src/app/(protected)/pmo-command-center/page.tsx", "utf8");
 const pmOperationsScreen = readFileSync("src/app/(protected)/pm-operations/page.tsx", "utf8");
 
@@ -136,7 +141,7 @@ test("the PMO predicate does not claim the Workspace Command Center route", () =
 // ─── 3. Breadcrumb contract ───────────────────────────────────────────────
 
 test("the breadcrumb is Workspace → PMO → PMO Command Center", () => {
-  const trail = pmoCommandCenterBreadcrumb({ workspaceLabel: "Acme", pmoName: "Delivery PMO", pmoId: PMO });
+  const trail = pmoCommandCenterBreadcrumb({ workspaceLabel: "Acme", workspaceId: WS, pmoName: "Delivery PMO", pmoId: PMO });
   assert.deepEqual(
     trail.map((node) => node.label),
     ["Acme", "Delivery PMO", "PMO Command Center"],
@@ -144,14 +149,14 @@ test("the breadcrumb is Workspace → PMO → PMO Command Center", () => {
 });
 
 test("the terminal node is not a link", () => {
-  const trail = pmoCommandCenterBreadcrumb({ workspaceLabel: "Acme", pmoName: "Delivery PMO", pmoId: PMO });
+  const trail = pmoCommandCenterBreadcrumb({ workspaceLabel: "Acme", workspaceId: WS, pmoName: "Delivery PMO", pmoId: PMO });
   const terminal = trail[trail.length - 1];
   assert.equal(terminal.label, "PMO Command Center");
   assert.equal(terminal.href, null, "Command Center is where a trail ends (nav-contracts §2.3 rule 4)");
 });
 
 test("every ancestor links to a Home, never to a Command Center", () => {
-  const trail = pmoCommandCenterBreadcrumb({ workspaceLabel: "Acme", pmoName: "Delivery PMO", pmoId: PMO });
+  const trail = pmoCommandCenterBreadcrumb({ workspaceLabel: "Acme", workspaceId: WS, pmoName: "Delivery PMO", pmoId: PMO });
   const ancestors = trail.slice(0, -1);
   assert.equal(ancestors.length, 2);
   for (const node of ancestors) {
@@ -167,7 +172,8 @@ test("every ancestor links to a Home, never to a Command Center", () => {
     );
   }
   assert.equal(ancestors[0].href, LEGACY_WORKSPACE_HOME_PATH);
-  assert.equal(ancestors[1].href, legacyPmoHomePath(PMO));
+  // MIGRATED: the PMO ancestor is its canonical Home, not the legacy seam.
+  assert.equal(ancestors[1].href, pmoHomePath(WS, PMO));
 });
 
 test("the paths that redirect to a Command Center really do still redirect", () => {
@@ -180,7 +186,7 @@ test("the paths that redirect to a Command Center really do still redirect", () 
 });
 
 test("the breadcrumb preserves the PMO identity it was given", () => {
-  const trail = pmoCommandCenterBreadcrumb({ workspaceLabel: "Acme", pmoName: "Delivery PMO", pmoId: OTHER_PMO });
+  const trail = pmoCommandCenterBreadcrumb({ workspaceLabel: "Acme", workspaceId: WS, pmoName: "Delivery PMO", pmoId: OTHER_PMO });
   assert.match(trail[1].href!, new RegExp(OTHER_PMO));
 });
 
@@ -577,7 +583,13 @@ test("no resolver with a fallback appears anywhere in this route's path", () => 
 });
 
 test("the refusal reveals nothing about whether the PMO exists", () => {
-  assert.match(route, /does not exist or is not one you have access to/);
+  // MIGRATED: the copy moved into a component shared by all nine PMO routes (the
+  // five canonical surfaces and the four legacy resolvers), so one wording serves
+  // every surface and they cannot drift into distinguishable replies. The copy is
+  // still pinned — just in its new home.
+  const refusal = readFileSync("src/components/pmfreak/pmos/pmo-route-states.tsx", "utf8");
+  assert.match(refusal, /does not exist or is not one you have access to/);
+  assert.match(route, /pmo-route-states/, "the route must use the shared refusal");
   // One refusal component, reached from both the denial and the vanished-row
   // path, so the two cannot drift into distinguishable replies.
   assert.equal(route.match(/<PmoNotAvailable \/>/g)?.length, 2);
@@ -660,15 +672,22 @@ test("the protected layout derives workspace context from the PMO route", () => 
   // Without this the shell and the onboarding gate answer from the
   // preferred-workspace cookie, so the chrome disagrees with the route and an
   // incomplete other workspace can redirect the user away from this one.
-  assert.match(protectedLayout, /parsePmoRouteFromPath\([\s\S]*?\)\?\.workspaceId/);
+  // MIGRATED: the layout now serves the whole PMO family, not just the Command
+  // Center, so it uses the family parser. Same defect, four more surfaces.
+  assert.match(protectedLayout, /parseCanonicalPmoRoute\([\s\S]*?\)\?\.workspaceId/);
   // The Workspace Command Center's own derivation is still tried first and is
   // untouched, so PR #604's behaviour is a strict prefix of this one.
   assert.match(protectedLayout, /parseWorkspaceIdFromPath\(routedHeaders\.get\("x-pathname"\)/);
 });
 
 test("the PMO tab nav links to the canonical route, preserving both ids", () => {
-  assert.match(tabNav, /pmoCommandCenterPath\(workspaceId, pmoId\)/);
+  // MIGRATED: every tab is now one row of the same canonical family, built by the
+  // shared surface helper, so the Command-Center-only call site is gone. The
+  // stronger property — no tab leaves canonical space — is proved behaviourally in
+  // tests/pmo-canonical-route-family.test.ts.
+  assert.match(tabNav, /pmoSurfacePath\(workspaceId, pmoId, tab\.surface\)/);
   assert.doesNotMatch(tabNav, /"\/workspaces\//, "the path must not be re-typed as a literal");
+  assert.doesNotMatch(tabNav, /"\/pmos\//, "no tab may point back into legacy PMO space");
 });
 
 test("the PMO tab entry is entity-qualified", () => {
@@ -679,16 +698,23 @@ test("the PMO tab entry is entity-qualified", () => {
 });
 
 test("every PmoTabNav call site supplies an authoritative workspace id", () => {
+  // MIGRATED: the call sites moved to the canonical family, and the source of the
+  // workspace id changed with them. It used to be `resolvePreferredWorkspace` —
+  // a cookie — which is exactly what this slice removed from PMO identity. It is
+  // now the workspace `resolveRoutedPmo` returns, i.e. `pmos.workspace_id`.
   for (const file of [
-    "src/app/(protected)/pmos/[pmoId]/page.tsx",
-    "src/app/(protected)/pmos/[pmoId]/chat/page.tsx",
-    "src/app/(protected)/pmos/[pmoId]/reports/page.tsx",
-    "src/app/(protected)/pmos/[pmoId]/settings/page.tsx",
+    "src/app/(protected)/workspaces/[workspaceId]/pmos/[pmoId]/page.tsx",
+    "src/app/(protected)/workspaces/[workspaceId]/pmos/[pmoId]/chat/page.tsx",
+    "src/app/(protected)/workspaces/[workspaceId]/pmos/[pmoId]/reports/page.tsx",
+    "src/app/(protected)/workspaces/[workspaceId]/pmos/[pmoId]/settings/page.tsx",
   ]) {
     const source = readFileSync(file, "utf8");
-    assert.match(source, /<PmoTabNav workspaceId=\{resolution\.workspaceId\}/, `${file} must pass a workspace id`);
-    // Authoritative because the page already proved this PMO belongs to that
-    // workspace by looking it up scoped to it.
-    assert.match(source, /getPmoById\(resolution\.workspaceId, pmoId\)/, `${file} must scope its PMO lookup`);
+    assert.match(source, /<PmoTabNav workspaceId=\{workspaceId\}/, `${file} must pass a workspace id`);
+    assert.match(
+      source,
+      /const \{ workspaceId, pmoId \} = access;/,
+      `${file} must take both ids from the resolver's verdict, not from the URL`,
+    );
+    assert.match(source, /getPmoById\(workspaceId, pmoId\)/, `${file} must scope its PMO lookup`);
   }
 });

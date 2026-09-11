@@ -3,9 +3,8 @@ import { AccessDeniedError } from "@/aoc/runtime-consumer";
 import { denyFromAccessError, denyResponse } from "@/lib/security/deny-response";
 import { requireAuthenticatedUser, requireWorkspaceMember } from "@/lib/security/server-authorization";
 import { requireWorkspaceRole as requireWorkspaceMinimumRole } from "@/lib/workspace-access";
-import { resolvePreferredWorkspace } from "@/lib/workspaces/preferred-workspace";
 import { safeLegacyErrorResponse } from "@/lib/security/safe-route-error";
-import { duplicatePmo } from "@/lib/pmos/pmo-service";
+import { duplicatePmo, getPmoWorkspaceId } from "@/lib/pmos/pmo-service";
 
 const ROUTE_ID = "/api/pmos/[id]/duplicate";
 
@@ -18,18 +17,22 @@ export async function POST(_request: Request, { params }: Params) {
     const pmoId = id.trim();
     if (!pmoId) return NextResponse.json({ error: "PMO id is required." }, { status: 400 });
 
-    const resolution = await resolvePreferredWorkspace(user.id);
-    if (!resolution.workspaceId) {
-      return denyResponse({ status: 403, routeId: ROUTE_ID, message: "Workspace context required.", reason: "workspace_missing", actorUserId: user.id, eventType: "workspace_scope_violation" });
-    }
-    await requireWorkspaceMember(resolution.workspaceId);
+    // The source PMO's OWN workspace is where the copy belongs and whose role
+    // gate applies — not the caller's preferred workspace, which would decide
+    // both from a client-controlled cookie. Same reasoning as
+    // `/api/pmos/[id]`; the lookup runs on the caller's own client, so a PMO
+    // they cannot see reads as absent.
+    const workspaceId = await getPmoWorkspaceId(pmoId);
+    if (!workspaceId) return NextResponse.json({ error: "PMO not found." }, { status: 404 });
+
+    await requireWorkspaceMember(workspaceId);
     try {
-      await requireWorkspaceMinimumRole(resolution.workspaceId, "pm");
+      await requireWorkspaceMinimumRole(workspaceId, "pm");
     } catch {
       return denyResponse({ status: 403, routeId: ROUTE_ID, message: "Forbidden", reason: "insufficient_role", actorUserId: user.id, eventType: "workspace_scope_violation" });
     }
 
-    const pmo = await duplicatePmo(resolution.workspaceId, pmoId, user.id);
+    const pmo = await duplicatePmo(workspaceId, pmoId, user.id);
     return NextResponse.json({ pmo }, { status: 201 });
   } catch (error) {
     if (error instanceof AccessDeniedError) {

@@ -56,40 +56,34 @@
  * is therefore the only structural PMO→descendant edge this screen can project
  * over, and everything else must be reached through the PMO's project ids.
  *
- * Keeping the literals in one module is what makes the slice reversible:
- * reverting is reverting this module's callers, not hunting strings across the
- * tree (ADR-PMF-068 rule 5).
+ * WHERE THE LITERALS LIVE NOW
+ * ---------------------------
+ * `pmo-paths.ts` owns the canonical PMO route family — all five surfaces, their
+ * parser, and the `/pmos` nav identity. This module consumes it and keeps only
+ * what is genuinely Command-Center-specific: the one-surface predicate, and this
+ * screen's breadcrumb. That split is why the family's migration did not turn a
+ * module named for one surface into the home of five (ADR-PMF-068 rule 5 wants
+ * one literal in one place; it does not want that place to be misnamed).
  */
 
-/**
- * The `/pmos` navigation entry's stable identity in `NAVIGATION_HIERARCHY`.
- *
- * Declared here, next to the route it belongs to, so the shell's active-state
- * rule and this route cannot drift apart. It is the entry a PM is "in" while
- * viewing a PMO Command Center — not "Workspaces", which would otherwise win by
- * prefix because the canonical path nests under `/workspaces/<id>/`.
- */
-export const PMOS_NAV_HREF = "/pmos";
+import { pmoHomePath, parseCanonicalPmoRoute } from "@/lib/pmos/pmo-paths";
 
 /**
- * PMO Home, as currently shipped.
- *
- * The canonical map puts PMO Home at `/workspaces/[workspaceId]/pmos/[pmoId]`,
- * but that route does not exist yet — the PMO family lives at `/pmos/[pmoId]`
- * and its migration is Phase 1 of `07-frontend-migration-strategy.md` §7, a
- * separate unit of work from this Command Center slice. Per ADR-PMF-068 the
- * legacy route keeps serving until its replacement is verified, so the
- * breadcrumb's PMO node points at where PMO Home actually is today rather than
- * at a path that would 404. One constant to change when that migration lands.
+ * Re-exported so PR #606's callers and tests keep one import site while the
+ * definitions live in the family module. Both are family-level facts, not
+ * Command-Center-level ones: the nav identity covers every PMO surface, and the
+ * Command Center path is one row of `pmoSurfacePath`'s table.
  */
-export function legacyPmoHomePath(pmoId: string): string {
-  return `/pmos/${encodeURIComponent(pmoId)}`;
-}
+export { PMOS_NAV_HREF, pmoCommandCenterPath } from "@/lib/pmos/pmo-paths";
 
 /**
  * The Workspace-level ancestor node's destination.
  *
- * Same situation as above, one level up — but with a trap. The canonical map
+ * The PMO ancestor above it is now canonical: this slice shipped PMO Home at
+ * `/workspaces/[workspaceId]/pmos/[pmoId]`, so the breadcrumb's PMO node points
+ * at a real canonical route instead of the legacy `/pmos/[pmoId]` seam PR #606
+ * had to leave open. The Workspace node is one level up and still has a trap.
+ * The canonical map
  * names `/workspaces/[workspaceId]` for Workspace Home, and only
  * `/workspaces/[workspaceId]/command-center` exists beneath that segment today,
  * so there is no per-workspace Home to point at yet.
@@ -117,33 +111,25 @@ export function legacyPmoHomePath(pmoId: string): string {
 export const LEGACY_WORKSPACE_HOME_PATH = "/workspaces";
 
 /**
- * The canonical PMO Command Center path.
+ * Is this pathname the PMO Command Center specifically?
  *
- * Both ids are percent-encoded. A path segment is not a safe place for
- * arbitrary text: an unencoded id containing `/` would silently add segments
- * and address a different route entirely.
+ * Narrower than `isCanonicalPmoRoutePath` on purpose. This predicate answers
+ * "is the user looking at the PMO's Command Center", which is a question about
+ * ONE surface — used to keep the two Command Centers' identities apart. The
+ * shell's active-state rule asks the wider question (is this any PMO surface)
+ * and uses the family predicate instead.
  */
-export function pmoCommandCenterPath(workspaceId: string, pmoId: string): string {
-  return `/workspaces/${encodeURIComponent(workspaceId)}/pmos/${encodeURIComponent(pmoId)}/command-center`;
-}
-
-const PMO_COMMAND_CENTER_PATTERN = /^\/workspaces\/([^/]+)\/pmos\/([^/]+)\/command-center(?:\/|$)/;
-
 export function isPmoCommandCenterPath(pathname: string): boolean {
-  return PMO_COMMAND_CENTER_PATTERN.test(pathname);
+  return parseCanonicalPmoRoute(pathname)?.surface === "command-center";
 }
 
 /**
  * Extract the workspace and PMO ids from a canonical PMO Command Center path.
  *
- * The protected layout needs this because it resolves workspace context for the
- * shell and the onboarding gate BEFORE the page component runs. Without it the
- * layout answers from the preferred-workspace cookie, so a canonical link to a
- * PMO in workspace B renders workspace A's navigation and evaluates A's
- * onboarding state — and an incomplete A can redirect the user away from a B
- * they are perfectly entitled to see. That defect is already documented on the
- * Workspace Command Center's own parser; this is the same hazard one level
- * deeper.
+ * The Command Center's own narrowing of `parseCanonicalPmoRoute`, sharing its
+ * single pattern so the two cannot drift. Callers that need to serve the whole
+ * PMO family — the protected layout, the shell's active-state rule — use the
+ * family parser directly and read its `surface`.
  *
  * Both values are UNAUTHORIZED HINTS. The workspace id in particular is only an
  * asserted ancestry claim: `pmos.workspace_id` is the authority for a PMO's
@@ -151,17 +137,9 @@ export function isPmoCommandCenterPath(pathname: string): boolean {
  * than correcting the URL. Every caller must authorize before acting.
  */
 export function parsePmoRouteFromPath(pathname: string): { workspaceId: string; pmoId: string } | null {
-  const match = PMO_COMMAND_CENTER_PATTERN.exec(pathname);
-  if (!match) return null;
-  try {
-    const workspaceId = decodeURIComponent(match[1]);
-    const pmoId = decodeURIComponent(match[2]);
-    if (!workspaceId || !pmoId) return null;
-    return { workspaceId, pmoId };
-  } catch {
-    // A malformed percent-escape is not an id. Refusing to guess is the point.
-    return null;
-  }
+  const parsed = parseCanonicalPmoRoute(pathname);
+  if (!parsed || parsed.surface !== "command-center") return null;
+  return { workspaceId: parsed.workspaceId, pmoId: parsed.pmoId };
 }
 
 export type BreadcrumbNode = {
@@ -183,12 +161,23 @@ export type BreadcrumbNode = {
  */
 export function pmoCommandCenterBreadcrumb(input: {
   workspaceLabel: string;
+  /**
+   * The AUTHORITATIVE parent workspace, from `pmos.workspace_id` — never the
+   * routed segment. `resolveRoutedPmo` has already proven the two equal by the
+   * time a caller can render a trail, so this is a statement of where the value
+   * must come from rather than a second check.
+   */
+  workspaceId: string;
   pmoName: string;
   pmoId: string;
 }): BreadcrumbNode[] {
   return [
     { label: input.workspaceLabel, href: LEGACY_WORKSPACE_HOME_PATH },
-    { label: input.pmoName, href: legacyPmoHomePath(input.pmoId) },
+    // The PMO ancestor is its canonical Home. Before this slice it pointed at
+    // the legacy `/pmos/[pmoId]`, which was a real seam: the trail's middle node
+    // left the canonical family, and the legacy route could not even be told
+    // which workspace it belonged to. Both ids travel together now.
+    { label: input.pmoName, href: pmoHomePath(input.workspaceId, input.pmoId) },
     { label: "PMO Command Center", href: null },
   ];
 }
