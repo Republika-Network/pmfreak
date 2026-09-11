@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import {
-  LEGACY_WORKSPACE_HOME_PATH,
   PMOS_NAV_HREF,
   isPmoCommandCenterPath,
   parsePmoRouteFromPath,
@@ -15,6 +14,12 @@ import {
 // breadcrumb's PMO ancestor now points at a canonical route and needs the
 // workspace id. `legacyPmoHomePath` is gone with the seam it described.
 import { pmoHomePath } from "../src/lib/pmos/pmo-paths";
+// MIGRATED by the canonical Workspace route-family slice: the trail's WORKSPACE
+// ancestor was the last placeholder in it. PR #606 could not point it at the
+// singular `/workspace` (quarantined to a Command Center) and PR #607 left it at
+// `/workspaces`, the chooser, because no per-workspace Home existed. Workspace
+// Home now does, so `LEGACY_WORKSPACE_HOME_PATH` is gone with the seam it named.
+import { workspaceHomePath } from "../src/lib/workspaces/workspace-paths";
 import { decideRoutedPmoAccess, type RoutedPmoAccess } from "../src/lib/pmos/routed-pmo";
 import {
   CLOSED_RAID_STATUSES,
@@ -171,7 +176,9 @@ test("every ancestor links to a Home, never to a Command Center", () => {
       `${node.href} redirects to a Command Center, so it cannot be an ancestor node`,
     );
   }
-  assert.equal(ancestors[0].href, LEGACY_WORKSPACE_HOME_PATH);
+  // MIGRATED: the Workspace ancestor is that workspace's own canonical Home, not
+  // the chooser and not a path that redirects into a Command Center.
+  assert.equal(ancestors[0].href, workspaceHomePath(WS));
   // MIGRATED: the PMO ancestor is its canonical Home, not the legacy seam.
   assert.equal(ancestors[1].href, pmoHomePath(WS, PMO));
 });

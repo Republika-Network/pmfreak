@@ -21,9 +21,28 @@
  * Keeping the literal in one module is what makes the route flip reversible:
  * reverting this slice is reverting the callers of this function, not hunting
  * string literals across 35 files (ADR-PMF-068 rule 5).
+ *
+ * WHERE THE LITERALS LIVE NOW
+ * ---------------------------
+ * `workspace-paths.ts` owns the canonical Workspace route FAMILY — Home, this
+ * screen, Settings, their one parser and the `/workspaces` nav identity. This
+ * module consumes it and keeps only what is genuinely Command-Center-specific:
+ * the legacy entry point, the forwarded query keys, this screen's own
+ * one-surface narrowing of the family parser, and the shell's active-state rule.
+ * The canonical builder is re-exported rather than re-implemented so PR #604's
+ * callers and tests keep one import site while there is exactly one definition
+ * of the path and exactly one regex that recognizes it.
  */
 
 import { isCanonicalPmoRoutePath, PMOS_NAV_HREF } from "@/lib/pmos/pmo-paths";
+import { parseCanonicalWorkspaceRoute } from "@/lib/workspaces/workspace-paths";
+
+/**
+ * One row of `workspaceSurfacePath`'s table, re-exported for PR #604's callers.
+ * The definition — including the query handling the onboarding hand-off depends
+ * on — lives in the family module.
+ */
+export { workspaceCommandCenterPath } from "@/lib/workspaces/workspace-paths";
 
 export const WORKSPACE_COMMAND_CENTER_LEGACY_PATH = "/command-center";
 
@@ -43,25 +62,18 @@ export const COMMAND_CENTER_FORWARDED_QUERY_KEYS = [
   "invited",
 ] as const;
 
-export function workspaceCommandCenterPath(
-  workspaceId: string,
-  query?: Record<string, string | number | boolean | null | undefined>,
-): string {
-  const base = `/workspaces/${encodeURIComponent(workspaceId)}/command-center`;
-  if (!query) return base;
-  const search = new URLSearchParams();
-  for (const [key, value] of Object.entries(query)) {
-    if (value === null || value === undefined || value === "") continue;
-    search.set(key, String(value));
-  }
-  const qs = search.toString();
-  return qs ? `${base}?${qs}` : base;
-}
-
-const WORKSPACE_COMMAND_CENTER_PATTERN = /^\/workspaces\/[^/]+\/command-center(?:\/|$)/;
-
+/**
+ * Is this pathname the Workspace Command Center specifically?
+ *
+ * Narrower than `isCanonicalWorkspaceRoutePath` on purpose: this predicate
+ * answers "is the user looking at the WORKSPACE's Command Center", which is a
+ * question about ONE surface — it is what keeps the two Command Centers' and the
+ * three Workspace surfaces' identities apart. It shares the family's single
+ * pattern, so it cannot drift from the builder above, and it is deliberately NOT
+ * widened to claim a PMO route (a different entity scope — ADR-PMF-014 Rule 1).
+ */
 export function isWorkspaceCommandCenterPath(pathname: string): boolean {
-  return WORKSPACE_COMMAND_CENTER_PATTERN.test(pathname);
+  return parseCanonicalWorkspaceRoute(pathname)?.surface === "command-center";
 }
 
 /**
@@ -96,6 +108,14 @@ export function isWorkspaceCommandCenterPath(pathname: string): boolean {
  * the Workspace screen's own predicate, and `/workspaces/<id>/command-center`
  * still resolves to it unchanged because the family predicate requires a `/pmos/`
  * segment.
+ *
+ * Workspace Home (`/workspaces/<id>`) and Workspace Settings
+ * (`/workspaces/<id>/settings`) need NO branch of their own: they fall through to
+ * the `startsWith` default and light up "Workspaces", which is the truthful
+ * answer — they are that entry's own entity surfaces, not a second place the PM
+ * is simultaneously in. The Workspace Command Center keeps its separate nav
+ * identity because `/command-center` is a real, separately-labelled entry; that
+ * is PR #604's behaviour and this slice does not re-open it.
  */
 export function navEntryMatchesPathname(navHref: string, pathname: string): boolean {
   if (isCanonicalPmoRoutePath(pathname)) {
@@ -139,11 +159,6 @@ export function firstQueryValue(value: string | string[] | undefined): string | 
  * still put it through `resolveRoutedWorkspace` before acting on it.
  */
 export function parseWorkspaceIdFromPath(pathname: string): string | null {
-  const match = /^\/workspaces\/([^/]+)\/command-center(?:\/|$)/.exec(pathname);
-  if (!match) return null;
-  try {
-    return decodeURIComponent(match[1]) || null;
-  } catch {
-    return null;
-  }
+  const parsed = parseCanonicalWorkspaceRoute(pathname);
+  return parsed?.surface === "command-center" ? parsed.workspaceId : null;
 }

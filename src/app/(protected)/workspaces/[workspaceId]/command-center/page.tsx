@@ -162,7 +162,7 @@ export default async function WorkspaceCommandCenterPage({
     );
     return (
       <div className="space-y-4">
-        <WorkspaceContextBanner lens="Command Center" />
+        <WorkspaceContextBanner lens="Command Center" workspaceId={workspace.workspaceId} />
         <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-6">
           <p className="text-sm font-semibold text-amber-900">We couldn&apos;t load your projects</p>
           <p className="mt-1 text-xs text-amber-700/80">
@@ -192,7 +192,7 @@ export default async function WorkspaceCommandCenterPage({
     const archivedProjects = (projects ?? []) as { id: string; name: string }[];
     return (
       <div className="space-y-4">
-        <WorkspaceContextBanner lens="Command Center" />
+        <WorkspaceContextBanner lens="Command Center" workspaceId={workspace.workspaceId} />
         <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-6">
           <p className="text-sm font-semibold text-amber-900">This workspace is archived</p>
           <p className="mt-1 text-xs text-amber-700/80">
@@ -236,7 +236,7 @@ export default async function WorkspaceCommandCenterPage({
   if ((projects ?? []).length === 0) {
     return (
       <div className="space-y-4">
-        <WorkspaceContextBanner lens="Command Center" />
+        <WorkspaceContextBanner lens="Command Center" workspaceId={workspace.workspaceId} />
         <CommandCenterEmptyState
           activateAction={activateContextAction.bind(null, workspace.workspaceId)}
           errorMessage={params.error}
@@ -253,7 +253,7 @@ export default async function WorkspaceCommandCenterPage({
   if (resolution.invalidId) {
     return (
       <div className="space-y-4">
-        <WorkspaceContextBanner lens="Command Center" />
+        <WorkspaceContextBanner lens="Command Center" workspaceId={workspace.workspaceId} />
         <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-6">
           <p className="text-sm font-semibold text-amber-900">Project not found in this workspace</p>
           <p className="mt-1 text-xs text-amber-700/80">
@@ -310,7 +310,7 @@ export default async function WorkspaceCommandCenterPage({
 
   return (
     <div className="space-y-4">
-      <WorkspaceContextBanner lens="Command Center" />
+      <WorkspaceContextBanner lens="Command Center" workspaceId={workspace.workspaceId} />
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white/80 px-4 py-3">
         <p className="text-xs text-slate-600">
           {portfolio.status === "available" ? (
