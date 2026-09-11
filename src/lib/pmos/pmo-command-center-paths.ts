@@ -67,6 +67,7 @@
  */
 
 import { pmoHomePath, parseCanonicalPmoRoute } from "@/lib/pmos/pmo-paths";
+import { workspaceHomePath } from "@/lib/workspaces/workspace-paths";
 
 /**
  * Re-exported so PR #606's callers and tests keep one import site while the
@@ -77,38 +78,30 @@ import { pmoHomePath, parseCanonicalPmoRoute } from "@/lib/pmos/pmo-paths";
 export { PMOS_NAV_HREF, pmoCommandCenterPath } from "@/lib/pmos/pmo-paths";
 
 /**
- * The Workspace-level ancestor node's destination.
+ * THE WORKSPACE ANCESTOR SEAM IS CLOSED.
  *
- * The PMO ancestor above it is now canonical: this slice shipped PMO Home at
- * `/workspaces/[workspaceId]/pmos/[pmoId]`, so the breadcrumb's PMO node points
- * at a real canonical route instead of the legacy `/pmos/[pmoId]` seam PR #606
- * had to leave open. The Workspace node is one level up and still has a trap.
- * The canonical map
- * names `/workspaces/[workspaceId]` for Workspace Home, and only
- * `/workspaces/[workspaceId]/command-center` exists beneath that segment today,
- * so there is no per-workspace Home to point at yet.
+ * PR #606 had to point this node at the singular `/workspace` alternative's only
+ * safe substitute, and PR #607 left it at the plural `/workspaces` — the workspace
+ * CHOOSER — because no per-workspace Home existed yet. Both were placeholders for
+ * a node that `03-navigation-contracts.md` §2.3 rule 1 says must navigate to the
+ * ancestor's own Home:
  *
- * The obvious substitute, the singular `/workspace`, is WRONG here and the
- * mistake is invisible from the href: `src/proxy.ts` quarantines that path and
- * bounces every authenticated request to `/command-center`, which resolves on
- * to the Workspace Command Center. A breadcrumb node pointing there would
- * navigate an ancestor to a Command Center, which
- * `03-navigation-contracts.md` §2.3 rule 1 forbids outright ("never its
- * Command Center") and §2.3 rule 4 / ADR-PMF-014 Rule 4 forbid structurally,
- * since it puts a Command Center mid-trail.
+ *   - `/workspace` is quarantined by `src/proxy.ts` straight to `/command-center`,
+ *     so an ancestor pointing there navigates to a Command Center — forbidden
+ *     outright by rule 1 and structurally by §2.3 rule 4 / ADR-PMF-014 Rule 4,
+ *     which keep a Command Center at the END of a trail and nowhere else. The
+ *     mistake was invisible from the href, which is why the PMO tests pin the
+ *     quarantine itself rather than only the link.
+ *   - `/workspaces` was clickable and was not a Command Center, but it is the
+ *     LIST rather than one workspace's Home: a real if minor imprecision, chosen
+ *     because between "clickable but one level broad" and "clickable straight
+ *     into a Command Center" only the first is compatible with the rules above.
  *
- * `/workspaces` is the shipped workspace-level surface — it describes itself as
- * "Level 1 of the Workspace → PMO → Project hierarchy", is not quarantined, and
- * is not a Command Center. It is the workspace LIST rather than one workspace's
- * Home, which is a real if minor imprecision: rule 1 also wants every node
- * clickable, and between "clickable but one level broad" and "clickable
- * straight into a Command Center" only the first is compatible with the rule
- * that Command Center is never an intermediate node.
- *
- * Repoint this at `/workspaces/[workspaceId]` when Workspace Home lands in the
- * route family's own migration (`07-frontend-migration-strategy.md` §7 Phase 1).
+ * Workspace Home now exists at `/workspaces/[workspaceId]`, so the node points at
+ * the actual parent entity, built from the AUTHORITATIVE workspace the caller
+ * already holds. No constant is needed for it: `workspaceHomePath` is the one
+ * definition, in the Workspace family's own module.
  */
-export const LEGACY_WORKSPACE_HOME_PATH = "/workspaces";
 
 /**
  * Is this pathname the PMO Command Center specifically?
@@ -172,7 +165,7 @@ export function pmoCommandCenterBreadcrumb(input: {
   pmoId: string;
 }): BreadcrumbNode[] {
   return [
-    { label: input.workspaceLabel, href: LEGACY_WORKSPACE_HOME_PATH },
+    { label: input.workspaceLabel, href: workspaceHomePath(input.workspaceId) },
     // The PMO ancestor is its canonical Home. Before this slice it pointed at
     // the legacy `/pmos/[pmoId]`, which was a real seam: the trail's middle node
     // left the canonical family, and the legacy route could not even be told

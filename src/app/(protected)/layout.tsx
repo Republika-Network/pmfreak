@@ -13,6 +13,7 @@ import { shouldRedirectForOnboarding } from "@/lib/auth/onboarding-gate";
 import { resolveCapabilityProfile } from "@/lib/workspace/pilot-capability-set";
 import { parseWorkspaceIdFromPath } from "@/lib/workspace/command-center-paths";
 import { parseCanonicalPmoRoute } from "@/lib/pmos/pmo-paths";
+import { parseCanonicalWorkspaceRoute } from "@/lib/workspaces/workspace-paths";
 import { resolveRoutedWorkspace } from "@/lib/workspaces/routed-workspace";
 
 export default async function ProtectedLayout({ children }: { children: React.ReactNode }) {
@@ -69,6 +70,15 @@ export default async function ProtectedLayout({ children }: { children: React.Re
    * being bounced by A's onboarding state on Chat as on the Command Center. The
    * family parser is what makes that one rule rather than five.
    *
+   * The same is now true one level up. The canonical WORKSPACE family is three
+   * surfaces, not one — Workspace Home `/workspaces/<id>`, the Command Center,
+   * and Workspace Settings — and a deep link to any of them names its workspace
+   * just as explicitly. `parseWorkspaceIdFromPath` is the Command Center's own
+   * narrowing of `parseCanonicalWorkspaceRoute`, kept first because it is the
+   * reading that surface owns; the family parser answers for Home and Settings.
+   * Both read the one pattern in `workspace-paths.ts`, so the two lines cannot
+   * disagree about which id a path names.
+   *
    * The page's own resolver additionally checks this segment against
    * `pmos.workspace_id` and refuses a mismatch; the layout only needs enough
    * context to stop answering from the cookie, and cannot widen access on its own
@@ -77,6 +87,7 @@ export default async function ProtectedLayout({ children }: { children: React.Re
   const routedHeaders = await headers();
   const routedWorkspaceId =
     parseWorkspaceIdFromPath(routedHeaders.get("x-pathname") ?? "") ??
+    parseCanonicalWorkspaceRoute(routedHeaders.get("x-pathname") ?? "")?.workspaceId ??
     parseCanonicalPmoRoute(routedHeaders.get("x-pathname") ?? "")?.workspaceId ??
     null;
   const routedAccess = routedWorkspaceId ? await resolveRoutedWorkspace(user.id, routedWorkspaceId) : null;

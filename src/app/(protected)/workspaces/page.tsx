@@ -2,6 +2,7 @@ import Link from "next/link";
 import { requireAuthUser } from "@/lib/auth";
 import { getUserWorkspaces } from "@/lib/workspaces";
 import { resolvePreferredWorkspace } from "@/lib/workspaces/preferred-workspace";
+import { workspaceHomePath } from "@/lib/workspaces/workspace-paths";
 import { switchWorkspaceAction } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -11,6 +12,24 @@ type Props = { searchParams: Promise<{ error?: string }> };
 /**
  * Workspace list — every organization the user belongs to. Level 1 of the
  * Workspace → PMO → Project hierarchy.
+ *
+ * This is the CHOOSER, and it stays the chooser. It is deliberately not Workspace
+ * Home: it addresses no single workspace, and IA Principle 5 (One Entity One
+ * Home) gives each workspace exactly one Home, at `/workspaces/[workspaceId]`.
+ * What changed with the Workspace route family is where an ENTRY leads — each row
+ * now opens that workspace's own canonical Home rather than depending on which
+ * workspace the preferred-workspace cookie happens to name.
+ *
+ * Every id below comes from `getUserWorkspaces(user.id)`, i.e. from this user's
+ * own membership rows, so a link built here can only ever address a workspace the
+ * caller is already a member of. That is not what authorizes the destination —
+ * `resolveRoutedWorkspace` re-authorizes the segment on arrival with no fallback,
+ * exactly as it would for a link pasted from anywhere else.
+ *
+ * The "Switch" form is untouched. It is the sanctioned Workspace switcher
+ * (`07-route…` §5 rule 4) and it changes the SESSION's preferred workspace, which
+ * is a different act from opening one workspace's Home — an explicit canonical
+ * route needs no cookie, and the cookie may not decide an explicit route.
  */
 export default async function WorkspacesPage({ searchParams }: Props) {
   const user = await requireAuthUser();
@@ -49,7 +68,9 @@ export default async function WorkspacesPage({ searchParams }: Props) {
             <article key={workspace.id} className={`rounded-2xl border p-4 ${isActive ? "border-cyan-300/40 bg-cyan-400/[0.06]" : "border-slate-200 bg-slate-50"}`}>
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <h2 className="text-lg font-semibold text-slate-900">{workspace.name}</h2>
+                  <h2 className="text-lg font-semibold text-slate-900">
+                    <Link href={workspaceHomePath(workspace.id)} className="hover:text-cyan-900">{workspace.name}</Link>
+                  </h2>
                   {isActive ? <p className="text-[11px] uppercase tracking-[0.14em] text-cyan-800">Active workspace</p> : null}
                 </div>
                 {!isActive ? (
@@ -60,8 +81,8 @@ export default async function WorkspacesPage({ searchParams }: Props) {
                     </button>
                   </form>
                 ) : (
-                  <Link href="/pmos" className="rounded-xl border border-slate-200 px-3.5 py-2 text-sm text-slate-800 hover:border-cyan-300/40">
-                    Open PMOs
+                  <Link href={workspaceHomePath(workspace.id)} className="rounded-xl border border-slate-200 px-3.5 py-2 text-sm text-slate-800 hover:border-cyan-300/40">
+                    Open workspace
                   </Link>
                 )}
               </div>
