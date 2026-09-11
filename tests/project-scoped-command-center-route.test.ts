@@ -6,6 +6,7 @@ import {
   isProjectCommandCenterPath,
   projectCommandCenterBreadcrumb,
   projectCommandCenterPath,
+  resolveProjectPmoAncestry,
 } from "../src/lib/projects/project-command-center-paths";
 import {
   PROJECTS_NAV_HREF,
@@ -18,6 +19,7 @@ import {
 } from "../src/lib/projects/project-paths";
 import {
   PROJECT_COMMAND_CENTER_ZONES,
+  PROJECT_RECOMMENDATION_COLUMNS,
   PROPOSED_RECOMMENDATION_STATUS,
   ZONE_ROW_LIMIT,
   countRaidByCategory,
@@ -29,10 +31,12 @@ import {
   selectProjectGovernanceFacts,
   selectProjectRaid,
   selectProjectRecommendations,
+  selectRecommendationDisclosure,
   type ProjectRaidRow,
   type ProjectRecommendationRow,
 } from "../src/lib/projects/project-command-center-projection";
 import { CLOSED_RAID_STATUSES } from "../src/lib/pmos/pmo-command-center-rollup";
+import { RECOMMENDED_ACTION_SELECTABLE_COLUMNS } from "../src/lib/db/database-contract";
 import { decideRoutedProjectAccess, type RoutedProjectAccess } from "../src/lib/projects/routed-project";
 import type { RoutedWorkspaceAccess } from "../src/lib/workspaces/routed-workspace";
 import { isCanonicalPmoRoutePath, pmoCommandCenterPath, pmoHomePath, PMOS_NAV_HREF } from "../src/lib/pmos/pmo-paths";
@@ -409,6 +413,8 @@ const recRow = (over: Partial<ProjectRecommendationRow> = {}): ProjectRecommenda
   status: "proposed",
   confidence_score: 70,
   impact_level: "medium",
+  rationale: null,
+  evidence_summary: null,
   recommended_owner: null,
   recommended_due_window: null,
   created_at: "2026-09-01T00:00:00Z",
@@ -632,7 +638,6 @@ test("the assurance payload is discarded unless it is about THIS project", () =>
   const ok = { scope: "project", workspaceId: WS, projectId: PROJECT, totalGovernanceEvents: 3, decisionRequiredCount: 1, violationsCount: 0 };
   assert.deepEqual(selectProjectGovernanceFacts(ok, WS, PROJECT), {
     totalGovernanceEvents: 3,
-    decisionRequiredCount: 1,
     violationsCount: 0,
   });
   assert.equal(selectProjectGovernanceFacts({ ...ok, projectId: OTHER_PROJECT }, WS, PROJECT), null);
@@ -651,7 +656,7 @@ test("a malformed or missing assurance payload yields NO facts, never zeroes", (
       WS,
       PROJECT,
     ),
-    { totalGovernanceEvents: 0, decisionRequiredCount: 0, violationsCount: 0 },
+    { totalGovernanceEvents: 0, violationsCount: 0 },
   );
 });
 
@@ -803,10 +808,9 @@ test("no health score, no band, no fabricated health state", () => {
   ]) {
     assert.equal(body.includes(forbidden), false, `Execution Health must not introduce ${forbidden}`);
   }
-  // Zone 4's facts are exactly three counted values plus the stored status.
+  // Zone 4's facts are exactly two counted values plus the stored status.
   assert.match(route, /label: "Project status", value: project\.status/);
   assert.match(route, /label: "Governance events recorded", value: governance\.totalGovernanceEvents/);
-  assert.match(route, /label: "Awaiting a governance decision", value: governance\.decisionRequiredCount/);
   assert.match(route, /label: "Governance violations recorded", value: governance\.violationsCount/);
   // And the two deliberately-omitted metrics stay omitted.
   assert.equal(body.includes("unresolvedRisksIssues"), false, "risk_issue_records would conflict with Zone 1");
@@ -1048,7 +1052,7 @@ test("the breadcrumb is fed resolved ancestry, not the URL", () => {
   // The PMO node is only claimed when `pmo_id` answers inside the AUTHORIZED
   // workspace; the workspace label comes from a read of the authorized id.
   assert.match(route, /\.from\("pmos"\)[\s\S]{0,200}\.eq\("id", project\.pmo_id\)[\s\S]{0,80}\.eq\("workspace_id", workspaceId\)/);
-  assert.match(route, /const pmo: ProjectBreadcrumbPmo = pmoRow \?\? null;/);
+  assert.match(route, /const pmo: ProjectBreadcrumbPmo = ancestry\.pmo;/);
   assert.match(route, /workspaceLabel: workspace\?\.name \?\? "Workspace"/);
   assert.match(route, /workspaceId,\s*\n\s*pmo,/);
 });
@@ -1235,4 +1239,296 @@ test("no canonical Project path is hand-typed anywhere this slice touched", () =
   for (const surface of PROJECT_SURFACES) {
     assert.equal(isCanonicalProjectRoutePath(projectSurfacePath(WS, PROJECT, surface)), true);
   }
+});
+
+// ─── 11. PR #610 review corrections (Codex P2 #1, #2, #3) ─────────────────
+//
+// Three unresolved P2 findings from the merged Project Command Center PR. Each
+// is a DATA-HONESTY defect rather than a layout one, so each is pinned by the
+// property that was violated, not by the pixel that changed.
+
+// P2 #1 — a historical governance-event classification is never presented as
+//         work currently awaiting a person.
+
+test("Execution Health no longer restates a historical governance-event count", () => {
+  // `decisionRequiredCount` counts `governance_events.governance_status =
+  // 'decision_required'` — the classification the event was RAISED under.
+  // `record_operational_decision` writes an `operational_decision_records` row
+  // and moves `recommended_actions.status` off `proposed`; it never rewrites the
+  // event's classification. Pinned against the shipped SQL so this stays a fact
+  // about the database rather than a claim in a comment.
+  const loop = readFileSync("supabase/migrations/20260611000000_operational_evidence_decision_loop.sql", "utf8");
+  const decisionFn = loop.slice(loop.indexOf("function public.record_operational_decision"));
+  const body = decisionFn.slice(0, decisionFn.indexOf("create or replace function public.get_operational_assurance_summary"));
+  assert.ok(body.includes("update public.recommended_actions set status=target_status"));
+  assert.equal(
+    /update\s+public\.governance_events\s+set[^;]*governance_status/.test(body),
+    false,
+    "a recorded decision does not reclassify the governance event, so the count does not fall",
+  );
+
+  // So the projection does not carry it, and the screen cannot render it.
+  assert.equal(withoutComments(projection).includes("decisionRequiredCount"), false);
+  assert.equal(withoutComments(route).includes("decisionRequiredCount"), false);
+  const facts = selectProjectGovernanceFacts(
+    { scope: "project", workspaceId: WS, projectId: PROJECT, totalGovernanceEvents: 9, decisionRequiredCount: 4, violationsCount: 1 },
+    WS,
+    PROJECT,
+  );
+  assert.deepEqual(facts, { totalGovernanceEvents: 9, violationsCount: 1 });
+  assert.equal("decisionRequiredCount" in (facts as object), false, "the historical count is dropped, not renamed");
+});
+
+test("a decided recommendation leaves no copy claiming a decision is still awaited", () => {
+  // The scenario the finding describes, end to end: the governance event keeps
+  // its `decision_required` classification forever, while the recommendation it
+  // produced has been accepted. Zone 3 — the authoritative CURRENT population —
+  // is empty, and Execution Health states only counted facts, so nothing on the
+  // screen can be sourced from the stale classification.
+  const decided = recRow({ governance_event_id: "g1", status: "accepted" });
+  assert.deepEqual(selectProjectRecommendations([decided], WS, PROJECT, true), [], "a decided row leaves Zone 3");
+
+  const stillClassifiedDecisionRequired = selectProjectGovernanceFacts(
+    { scope: "project", workspaceId: WS, projectId: PROJECT, totalGovernanceEvents: 1, decisionRequiredCount: 1, violationsCount: 0 },
+    WS,
+    PROJECT,
+  );
+  assert.deepEqual(stillClassifiedDecisionRequired, { totalGovernanceEvents: 1, violationsCount: 0 });
+
+  // Every Execution Health tile label, and the value each is bound to. The zone
+  // may only ever say what it counted.
+  const zone4 = route.slice(route.indexOf("zone={ZONE_HEALTH}"));
+  const tiles = [...zone4.matchAll(/label: "([^"]+)", value: ([A-Za-z.]+)/g)].map((m) => [m[1], m[2]]);
+  assert.deepEqual(tiles, [
+    ["Project status", "project.status"],
+    ["Governance events recorded", "governance.totalGovernanceEvents"],
+    ["Governance violations recorded", "governance.violationsCount"],
+  ]);
+  for (const [label] of tiles) {
+    for (const forbidden of ["awaiting", "pending", "needs decision", "requires action", "outstanding", "unresolved"]) {
+      assert.equal(label.toLowerCase().includes(forbidden), false, `Execution Health tile "${label}" must not claim "${forbidden}"`);
+    }
+  }
+
+  // "awaiting a decision" survives in exactly one place — Zone 3, whose count and
+  // rows come from the live `status='proposed'` predicate.
+  const zone3 = route.slice(route.indexOf("zone={ZONE_DECISIONS}"), route.indexOf("zone={ZONE_HEALTH}"));
+  assert.match(zone3, /\{pendingDecisionsTotal\} awaiting a decision/);
+  assert.equal(projectPendingDecisionsQuery(WS, PROJECT).status, PROPOSED_RECOMMENDATION_STATUS);
+  assert.equal(projectPendingDecisionsQuery(WS, PROJECT).governed, true);
+  assert.equal(zone4.toLowerCase().includes("awaiting"), false, "Execution Health claims nothing is awaited");
+});
+
+// P2 #2 — a failed PMO lookup is a different state from a project with no PMO.
+
+test("a null pmo_id is a legitimate absence, not a failure", () => {
+  assert.deepEqual(resolveProjectPmoAncestry({ pmoId: null, row: null, error: null }), { state: "none", pmo: null });
+  // And with no `pmo_id` the route issues no read at all, so there is nothing
+  // that could have failed.
+  assert.match(route, /const pmoLookup = project\.pmo_id\s*\n\s*\? await supabase/);
+  assert.match(route, /: \{ data: null, error: null \};/);
+});
+
+test("a failed PMO lookup is its own state and never claims the project has no PMO", () => {
+  const failed = resolveProjectPmoAncestry({ pmoId: PMO, row: null, error: { message: "connection reset" } });
+  assert.deepEqual(failed, { state: "unavailable", pmo: null });
+  assert.notEqual(failed.state, "none", "an unanswered question is not a recorded absence");
+
+  // A succeeded read with no accessible row is a third state again — kept apart
+  // so it can never be silently re-labelled as "this project has no PMO".
+  assert.deepEqual(resolveProjectPmoAncestry({ pmoId: PMO, row: null, error: null }), { state: "not-visible", pmo: null });
+
+  // Four distinguishable outcomes, four distinct states.
+  const states = [
+    resolveProjectPmoAncestry({ pmoId: null, row: null, error: null }).state,
+    resolveProjectPmoAncestry({ pmoId: PMO, row: { id: PMO, name: "Delivery PMO" }, error: null }).state,
+    resolveProjectPmoAncestry({ pmoId: PMO, row: null, error: null }).state,
+    resolveProjectPmoAncestry({ pmoId: PMO, row: null, error: { message: "x" } }).state,
+  ];
+  assert.equal(new Set(states).size, 4);
+});
+
+test("a failed PMO lookup fabricates no ancestry", () => {
+  // The error is checked BEFORE the row, so a driver that returns both cannot
+  // have its row adopted.
+  const both = resolveProjectPmoAncestry({ pmoId: PMO, row: { id: PMO, name: "Delivery PMO" }, error: { message: "timeout" } });
+  assert.equal(both.state, "unavailable");
+  assert.equal(both.pmo, null);
+
+  // Only `resolved` carries a pmo, so no failure path can reach the trail.
+  for (const ancestry of [
+    resolveProjectPmoAncestry({ pmoId: null, row: null, error: null }),
+    resolveProjectPmoAncestry({ pmoId: PMO, row: null, error: null }),
+    resolveProjectPmoAncestry({ pmoId: PMO, row: null, error: { message: "x" } }),
+  ]) {
+    assert.equal(ancestry.pmo, null);
+    const nodes = projectCommandCenterBreadcrumb({
+      workspaceLabel: "Acme",
+      workspaceId: WS,
+      pmo: ancestry.pmo,
+      projectName: "Apollo",
+      projectId: PROJECT,
+    });
+    assert.deepEqual(nodes.map((n) => n.label), ["Acme", "Apollo", "Project Command Center"]);
+  }
+
+  // No stand-in name, no borrowed workspace, no other PMO.
+  const degraded = withoutComments(route).slice(withoutComments(route).indexOf("resolveProjectPmoAncestry({"));
+  for (const forbidden of ["Unknown PMO", "resolvePreferredWorkspace", "preferredWorkspace", "firstPmo", '.from("pmos").select("id, name").limit']) {
+    assert.equal(degraded.includes(forbidden), false, `ancestry degradation must not reach ${forbidden}`);
+  }
+  // Exactly one `pmos` read on the whole screen, and it is scoped by both ids.
+  assert.equal(withoutComments(route).match(/\.from\("pmos"\)/g)?.length, 1);
+});
+
+test("a failed PMO lookup does not blank the Project Command Center", () => {
+  const afterAncestry = route.slice(route.indexOf("resolveProjectPmoAncestry({"));
+  // The degraded branch logs and falls through — it introduces no early return,
+  // so the single final `return (` is still the only one left in the component.
+  assert.equal(afterAncestry.match(/^  return \(/gm)?.length, 1, "ancestry degradation adds no early exit");
+  assert.equal(/return <ProjectNotAvailable/.test(afterAncestry), false);
+  assert.equal(/notFound\(|redirect\(/.test(afterAncestry), false);
+
+  // The notice is non-blocking: it sits inside the same tree as all four zones,
+  // between the breadcrumb and the heading, and replaces no crumb.
+  const notice = route.indexOf("PMO ancestry is temporarily unavailable.");
+  assert.ok(notice > -1, "the degraded state is stated, not swallowed");
+  assert.ok(notice > route.indexOf('<nav aria-label="Breadcrumb"'));
+  assert.ok(notice < route.indexOf("zone={ZONE_ATTENTION}"));
+  assert.match(route, /\{ancestry\.state === "unavailable" \? \(\s*\n\s*<p[^>]*>PMO ancestry is temporarily unavailable\.<\/p>/);
+  assert.equal(route.match(/<Zone\s/g)?.length, 4, "all four zones still render");
+
+  // Logged with scoped identifiers only — and never the unresolved pmo_id.
+  const log = route.slice(route.indexOf("project_command_center.pmo_ancestry_unavailable"));
+  const fields = log.slice(0, log.indexOf("}),"));
+  assert.match(fields, /workspaceId,/);
+  assert.match(fields, /projectId,/);
+  assert.equal(fields.includes("pmo_id"), false, "the unverified ancestry id is not logged");
+  assert.equal(fields.includes("project.name"), false);
+});
+
+test("a foreign-workspace PMO still cannot appear in the trail", () => {
+  // The read is filtered by the AUTHORIZED workspace, so a PMO in another
+  // workspace comes back as no row — `not-visible`, never `resolved`.
+  assert.match(
+    route,
+    /\.from\("pmos"\)[\s\S]{0,200}\.eq\("id", project\.pmo_id\)[\s\S]{0,80}\.eq\("workspace_id", workspaceId\)/,
+  );
+  assert.deepEqual(resolveProjectPmoAncestry({ pmoId: PMO, row: null, error: null }), { state: "not-visible", pmo: null });
+  // And `not-visible` says nothing on screen: reporting "a PMO exists but you
+  // cannot see it" would be the existence oracle this route refuses to be.
+  assert.equal(withoutComments(route).includes('ancestry.state === "not-visible"'), false);
+});
+
+// P2 #3 — an AI Recommendation carries its stored Why, Evidence and Confidence.
+
+test("Zone 2 selects the stored rationale and evidence_summary", () => {
+  for (const column of ["rationale", "evidence_summary"]) {
+    assert.ok(PROJECT_RECOMMENDATION_COLUMNS.split(", ").includes(column), `${column} must be selected`);
+    assert.ok(
+      RECOMMENDED_ACTION_SELECTABLE_COLUMNS.includes(column as (typeof RECOMMENDED_ACTION_SELECTABLE_COLUMNS)[number]),
+      `${column} must be an existing database-contract column, not a new one`,
+    );
+  }
+  // The descriptors both zones use carry it to the database.
+  for (const query of [projectRecommendationsQuery(WS, PROJECT), projectPendingDecisionsQuery(WS, PROJECT)]) {
+    assert.equal(query.columns, PROJECT_RECOMMENDATION_COLUMNS);
+  }
+});
+
+test("stored disclosure is read out, never composed", () => {
+  // The shapes the two shipped producers actually write.
+  assert.deepEqual(
+    selectRecommendationDisclosure({ trigger: "approval_dependency_detected", raidCategory: "risk" }),
+    [
+      { label: "Trigger", value: "approval_dependency_detected" },
+      { label: "Raid category", value: "risk" },
+    ],
+  );
+  assert.deepEqual(
+    selectRecommendationDisclosure({ evidenceItemId: "e1", evidenceVersion: 2 }),
+    [
+      { label: "Evidence item id", value: "e1" },
+      { label: "Evidence version", value: "2" },
+    ],
+  );
+  // Absent, unreadable or empty stored values yield NOTHING — never a stand-in.
+  for (const empty of [null, undefined, [], "text", 7, {}, { nested: { a: 1 } }, { list: [1] }, { blank: "   " }, { missing: null }]) {
+    assert.deepEqual(selectRecommendationDisclosure(empty), [], "an unavailable field is omitted, not invented");
+  }
+  // Values pass through untouched.
+  assert.deepEqual(selectRecommendationDisclosure({ riskText: "Vendor sign-off is late" }), [
+    { label: "Risk text", value: "Vendor sign-off is late" },
+  ]);
+});
+
+test("Zone 2 renders Why, then Evidence, then Confidence", () => {
+  const zone2 = route.slice(route.indexOf("zone={ZONE_RECOMMENDATIONS}"), route.indexOf("zone={ZONE_DECISIONS}"));
+  const why = zone2.indexOf('<RecommendationDisclosure label="Why" entries={selectRecommendationDisclosure(item.rationale)} />');
+  const evidence = zone2.indexOf(
+    '<RecommendationDisclosure label="Evidence" entries={selectRecommendationDisclosure(item.evidence_summary)} />',
+  );
+  const confidence = zone2.indexOf("Confidence {Math.round(item.confidence_score)}%");
+  assert.ok(why > -1, "Why is rendered from the stored rationale");
+  assert.ok(evidence > why, "Evidence follows Why");
+  assert.ok(confidence > evidence, "Confidence follows Evidence");
+  // The directive still leads, and the stored basis sits under it.
+  assert.ok(zone2.indexOf("{item.title}") < why);
+  // Both lines vanish together with their stored value rather than rendering empty.
+  assert.match(route, /function RecommendationDisclosure\(\{ label, entries \}[\s\S]{0,160}if \(entries\.length === 0\) return null;/);
+  // Confidence stays visible, and its absence is stated rather than implied.
+  assert.match(zone2, /item\.confidence_score !== null \? \(/);
+  assert.match(zone2, /Confidence not recorded/);
+});
+
+test("Zone 2 makes no claim it cannot source, and stays read-only", () => {
+  const zone2 = withoutComments(route).slice(
+    withoutComments(route).indexOf("zone={ZONE_RECOMMENDATIONS}"),
+    withoutComments(route).indexOf("zone={ZONE_DECISIONS}"),
+  );
+  // No bare directive presentation, and no rationale synthesized from the text
+  // the rationale is supposed to justify.
+  for (const forbidden of ["AI says", "AI recommends", "Based on project data", "item.description}\", ", "summariz"]) {
+    assert.equal(zone2.toLowerCase().includes(forbidden.toLowerCase()), false, `Zone 2 must not present "${forbidden}"`);
+  }
+  // The selector reads its argument and nothing else — it cannot see, and so
+  // cannot borrow from, the recommendation's own title or description.
+  const selector = withoutComments(projection).slice(
+    withoutComments(projection).indexOf("export function selectRecommendationDisclosure"),
+  );
+  const selectorBody = selector.slice(0, selector.indexOf("\n}") + 2);
+  for (const name of ["title", "description", "recommended_action_type"]) {
+    assert.equal(selectorBody.includes(name), false, `disclosure must not read ${name}`);
+  }
+  // Still read-only: the decision controls arrive in a later slice.
+  for (const forbidden of ["Accept", "Reject", "Defer", "<form", "<button", "action=", "use server", "onClick"]) {
+    assert.equal(zone2.includes(forbidden), false, `Zone 2 must not gain ${forbidden}`);
+  }
+});
+
+test("Zone 2 stays project-scoped and ungoverned-only", () => {
+  const query = projectRecommendationsQuery(WS, PROJECT);
+  assert.equal(query.table, "recommended_actions");
+  assert.equal(query.workspaceId, WS);
+  assert.equal(query.projectId, PROJECT);
+  assert.equal(query.governed, false, "governance_event_id IS NULL");
+  assert.equal(query.status, PROPOSED_RECOMMENDATION_STATUS);
+  // And the in-memory guard still rejects everything the predicate excludes,
+  // disclosure columns or not.
+  const withDisclosure = { rationale: { trigger: "t" }, evidence_summary: { raidItemId: "r1" } };
+  assert.deepEqual(
+    selectProjectRecommendations(
+      [
+        recRow({ id: "keep", ...withDisclosure }),
+        recRow({ id: "governed", governance_event_id: "g1", ...withDisclosure }),
+        recRow({ id: "decided", status: "accepted", ...withDisclosure }),
+        recRow({ id: "sibling", project_id: OTHER_PROJECT, ...withDisclosure }),
+        recRow({ id: "foreign", workspace_id: OTHER_WS, ...withDisclosure }),
+      ],
+      WS,
+      PROJECT,
+      false,
+    ).map((r) => r.id),
+    ["keep"],
+  );
 });

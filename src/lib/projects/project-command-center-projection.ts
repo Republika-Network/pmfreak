@@ -116,6 +116,8 @@ export type ProjectRecommendationRow = Pick<
   | "status"
   | "confidence_score"
   | "impact_level"
+  | "rationale"
+  | "evidence_summary"
   | "recommended_owner"
   | "recommended_due_window"
   | "created_at"
@@ -125,7 +127,7 @@ export const PROJECT_RAID_COLUMNS =
   "id, workspace_id, project_id, category, title, description, status, confidence_score, occurrence_count, auto_generated, last_detected_at";
 
 export const PROJECT_RECOMMENDATION_COLUMNS =
-  "id, workspace_id, project_id, governance_event_id, title, description, recommended_action_type, status, confidence_score, impact_level, recommended_owner, recommended_due_window, created_at";
+  "id, workspace_id, project_id, governance_event_id, title, description, recommended_action_type, status, confidence_score, impact_level, rationale, evidence_summary, recommended_owner, recommended_due_window, created_at";
 
 /**
  * The one status a Recommendation must be in to appear in Zone 2 or Zone 3.
@@ -321,6 +323,66 @@ export function selectProjectRecommendations(
 }
 
 /**
+ * The stored "Why" and "Evidence" behind one Recommendation, read out verbatim.
+ *
+ * `08-ai-interaction-patterns.md` §2 fixes the disclosure shape every rendered
+ * Recommendation carries — Why → Evidence → Confidence — and states plainly that
+ * "a Recommendation rendered as a bare directive ('AI says: do X') is a defect,
+ * not a simplification: an unexplained directive cannot be evaluated". Zone 2
+ * selected the directive and the confidence and dropped the two stored columns
+ * that answer WHY, which left a PM with a suggestion and no basis on which to
+ * agree or disagree with it.
+ *
+ * `recommended_actions.rationale` and `recommended_actions.evidence_summary` are
+ * both `jsonb`, written by the two producers that create these rows:
+ * `generate-recommended-actions.ts` for the ungoverned, RAID-derived rows Zone 2
+ * lists, and `materialize_operational_chain` for the governed ones. Neither
+ * stores prose — they store named, machine-written keys — so this function
+ * READS THEM OUT and does nothing else:
+ *
+ *   - only own keys whose stored value is a string, a finite number or a boolean
+ *     become entries. A nested object or array is dropped rather than flattened,
+ *     summarized or serialized into a sentence, because a summary of stored
+ *     evidence is a new claim and this zone is not allowed to make one.
+ *   - values are passed through untouched (a string only trimmed), so nothing a
+ *     PM reads here was composed by this screen.
+ *   - a key's LABEL is the stored key with its word boundaries spaced. That is
+ *     formatting of a stored name, not a description of it.
+ *   - a null column, a non-object, or an object with no readable value yields an
+ *     EMPTY list, and the caller omits the line entirely. Nothing is substituted
+ *     for absent disclosure and nothing is derived from the recommendation's own
+ *     title or description — synthesizing a rationale out of the directive it is
+ *     supposed to justify would be the exact fabrication §2 forbids.
+ */
+export type RecommendationDisclosureEntry = { label: string; value: string };
+
+/** A stored key, spaced at its word boundaries. Formatting only — no renaming. */
+function labelForStoredKey(key: string): string {
+  const spaced = key
+    .replace(/_/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .trim();
+  if (spaced.length === 0) return key;
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1).toLowerCase();
+}
+
+export function selectRecommendationDisclosure(stored: unknown): RecommendationDisclosureEntry[] {
+  if (typeof stored !== "object" || stored === null || Array.isArray(stored)) return [];
+  const entries: RecommendationDisclosureEntry[] = [];
+  for (const [key, value] of Object.entries(stored as Record<string, unknown>)) {
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed.length > 0) entries.push({ label: labelForStoredKey(key), value: trimmed });
+    } else if (typeof value === "number" && Number.isFinite(value)) {
+      entries.push({ label: labelForStoredKey(key), value: String(value) });
+    } else if (typeof value === "boolean") {
+      entries.push({ label: labelForStoredKey(key), value: String(value) });
+    }
+  }
+  return entries;
+}
+
+/**
  * Counts per RAID category, for the visible-scope summary line.
  *
  * `raid_items.category` is CHECK-constrained to
@@ -371,13 +433,31 @@ export function resolveVisibleTotal(returnedCount: number, keptCount: number, to
  *
  * WHY THESE THREE AND NOTHING ELSE
  * --------------------------------
- * The RPC computes eight numbers in one statement. Slice 1 renders the three
+ * The RPC computes eight numbers in one statement. Slice 1 renders the two
  * whose meaning can be stated exactly to a PM in one line, and omits the rest:
  *
  *   totalGovernanceEvents  → "Governance events recorded"      ✓ counted rows
- *   decisionRequiredCount  → "Awaiting a governance decision"  ✓ governance_status='decision_required'
  *   violationsCount        → "Governance violations recorded"  ✓ governance_status='violation'
  *
+ *   decisionRequiredCount  OMITTED — and this is the correction PR #610's review
+ *                          asked for. It counts `governance_events` rows whose
+ *                          `governance_status = 'decision_required'`, which is the
+ *                          CLASSIFICATION THE EVENT WAS RAISED UNDER and stays
+ *                          that way forever: `record_operational_decision` writes
+ *                          an `operational_decision_records` row and moves
+ *                          `recommended_actions.status` off `proposed`, and it
+ *                          never rewrites `governance_events.governance_status`.
+ *                          So the number does not fall when the decision is made,
+ *                          and any copy calling it awaiting, pending, needed or
+ *                          required-now is false the moment a PM acts. Zone 3 is
+ *                          the authoritative CURRENT population — proposed
+ *                          recommendations with a governance event, for this
+ *                          workspace and project — and it is counted there, from
+ *                          its own statement. Restating a historical
+ *                          classification beside it under a second label would
+ *                          put two contradicting "decisions outstanding" numbers
+ *                          on one screen, so Execution Health states the facts it
+ *                          can state exactly and leaves the queue to Zone 3.
  *   openRecommendations    OMITTED — it is Zone 3's population exactly, and
  *                          Zone 3 already counts it from its own statement.
  *                          Printing the same number twice from two different
@@ -406,7 +486,6 @@ export function resolveVisibleTotal(returnedCount: number, keptCount: number, to
  */
 export type ProjectGovernanceFacts = {
   totalGovernanceEvents: number;
-  decisionRequiredCount: number;
   violationsCount: number;
 };
 
@@ -442,11 +521,10 @@ export function selectProjectGovernanceFacts(
   if (record.projectId !== projectId) return null;
 
   const totalGovernanceEvents = readCount(record, "totalGovernanceEvents");
-  const decisionRequiredCount = readCount(record, "decisionRequiredCount");
   const violationsCount = readCount(record, "violationsCount");
 
-  if (totalGovernanceEvents === null || decisionRequiredCount === null || violationsCount === null) return null;
-  return { totalGovernanceEvents, decisionRequiredCount, violationsCount };
+  if (totalGovernanceEvents === null || violationsCount === null) return null;
+  return { totalGovernanceEvents, violationsCount };
 }
 
 // ─── Execution ─────────────────────────────────────────────────────────────
