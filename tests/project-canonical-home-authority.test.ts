@@ -200,12 +200,16 @@ test("5. blank and whitespace-only ids fail closed", () => {
 });
 
 test("6. an extra segment is not mistaken for Project Home", () => {
-  // Home is the ONLY surface that exists. Every future sibling in the ratified map
-  // is refused today rather than truncated to its prefix — a nav entry must not
-  // light up for a page that 404s, and a layout must not derive workspace context
-  // from a route this app does not serve.
+  // Home and the Project Command Center are the surfaces that exist. Every OTHER
+  // sibling in the ratified map is refused today rather than truncated to its
+  // prefix — a nav entry must not light up for a page that 404s, and a layout
+  // must not derive workspace context from a route this app does not serve.
+  //
+  // `command-center` left this list in the slice that shipped its screen, and it
+  // is asserted positively in `tests/project-scoped-command-center-route.test.ts`
+  // instead. That is the growth the surface table was designed for: one row, one
+  // parser, no second regex.
   for (const deeper of [
-    "command-center",
     "tasks",
     "milestones",
     "risks",
@@ -228,16 +232,19 @@ test("6. an extra segment is not mistaken for Project Home", () => {
     assert.equal(parseCanonicalProjectRoute(path), null, `${path} is not Project Home`);
     assert.equal(isCanonicalProjectRoutePath(path), false, `${path} is not in the family`);
   }
-  // Two extra segments, likewise.
+  // Two extra segments, likewise — including under the one surface that DOES
+  // exist, which is what keeps the Command Center terminal (§4 rule 3).
   assert.equal(parseCanonicalProjectRoute(`${CANONICAL_HOME}/tasks/t1`), null);
-  // And the surface table claims exactly one member.
-  assert.deepEqual([...PROJECT_SURFACES], ["home"]);
+  assert.equal(parseCanonicalProjectRoute(`${CANONICAL_HOME}/command-center/anything`), null);
+  // And the surface table claims exactly the two members whose screens ship.
+  assert.deepEqual([...PROJECT_SURFACES], ["home", "command-center"]);
 });
 
-test("6b. the family is designed to grow without a competing regex", () => {
-  // The next slice adds "command-center" to PROJECT_SURFACES and SURFACE_SEGMENTS.
-  // That is the extension point, and it is one table rather than a second pattern
-  // that could disagree with this one about which paths are Project routes.
+test("6b. the family grew without a competing regex", () => {
+  // "command-center" was added to PROJECT_SURFACES and SURFACE_SEGMENTS and
+  // inherited the parser below. That is the extension point working as designed:
+  // one table rather than a second pattern that could disagree with this one
+  // about which paths are Project routes.
   assert.match(paths, /const SURFACE_SEGMENTS: Record<ProjectSurface, string>/);
   assert.match(paths, /const SEGMENT_SURFACES = new Map<string, ProjectSurface>/);
   assert.equal(paths.match(/^const CANONICAL_PROJECT_ROUTE_PATTERN/gm)?.length, 1, "exactly one pattern");
@@ -816,7 +823,8 @@ test("24. ProjectTabNav's Overview link is canonical", () => {
 
 test("25. the other Project tabs are NOT falsely canonicalized", () => {
   // No dead routes, and no aspirational links masquerading as shipped product.
-  // Every non-Overview tab still points where its screen actually is.
+  // Every tab other than Overview and the Project Command Center — the two whose
+  // canonical screens exist — still points where its screen actually is.
   const expected: [string, string][] = [
     ["Chat", "`/projects/${projectId}/chat`"],
     ["Execution", "`/command-center?projectId=${projectId}`"],
@@ -830,8 +838,11 @@ test("25. the other Project tabs are NOT falsely canonicalized", () => {
   for (const [label, href] of expected) {
     assert.ok(tabNav.includes(`{ label: "${label}", href: ${href}`), `${label} must keep its shipped destination`);
   }
-  // The ratified map's Project children do not exist, so no tab may claim them.
-  for (const unbuilt of ["tasks", "milestones", "risks", "issues", "documents", "feed", "memory", "command-center"]) {
+  // The rest of the ratified map's Project children do not exist, so no tab may
+  // claim them. `command-center` is deliberately absent from this list now: its
+  // screen ships, and the tab pointing at it is asserted positively in
+  // `tests/project-scoped-command-center-route.test.ts`.
+  for (const unbuilt of ["tasks", "milestones", "risks", "issues", "documents", "feed", "memory"]) {
     assert.equal(
       tabNav.includes(`/projects/\${projectId}/${unbuilt}`),
       false,
@@ -839,8 +850,9 @@ test("25. the other Project tabs are NOT falsely canonicalized", () => {
     );
     assert.equal(isCanonicalProjectRoutePath(`${CANONICAL_HOME}/${unbuilt}`), false);
   }
-  assert.match(tabNav, /WHY ONLY OVERVIEW IS CANONICAL/);
-  // Exactly one canonical builder call in the strip: Overview's.
+  assert.match(tabNav, /WHY ONLY OVERVIEW AND THE COMMAND CENTER ARE CANONICAL/);
+  // Exactly one canonical Home builder call in the strip: Overview's. The
+  // Command Center tab uses its own builder, never a second Home link.
   assert.equal(tabNav.match(/projectHomePath\(/g)?.length, 1);
 });
 
