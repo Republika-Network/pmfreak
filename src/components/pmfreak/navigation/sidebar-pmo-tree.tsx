@@ -4,8 +4,20 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { parseCanonicalPmoRoute, pmoHomePath, PMOS_NAV_HREF } from "@/lib/pmos/pmo-paths";
+import { parseCanonicalProjectRoute, projectHomePath } from "@/lib/projects/project-paths";
 
-type TreeProject = { id: string; name: string; status: string };
+type TreeProject = {
+  id: string;
+  /**
+   * The project's own parent workspace, from its `projects` row via
+   * `GET /api/pmos`. Deliberately not the shell's current workspace and not the
+   * PMO's: a project's link must be a property of the project, the same rule the
+   * PMO links below already follow.
+   */
+  workspace_id: string;
+  name: string;
+  status: string;
+};
 type TreePmo = {
   id: string;
   /**
@@ -57,6 +69,10 @@ export function SidebarPmoTree({
   }, [pathname]);
 
   const routedPmo = parseCanonicalPmoRoute(pathname);
+  // Which project the viewer is actually on, when they are on a canonical
+  // Project route. The legacy `/projects/<id>` prefix test below stays as well,
+  // because that path is still routable while it drains.
+  const routedProject = parseCanonicalProjectRoute(pathname);
 
   return (
     <div>
@@ -116,11 +132,14 @@ export function SidebarPmoTree({
                       <p className="px-1 text-[10px] text-zinc-400">No projects</p>
                     ) : (
                       pmo.projects.map((project) => {
-                        const isActive = project.id === activeProjectId || pathname.startsWith(`/projects/${project.id}`);
+                        const isActive =
+                          project.id === activeProjectId ||
+                          routedProject?.projectId === project.id ||
+                          pathname.startsWith(`/projects/${project.id}`);
                         return (
                           <Link
                             key={project.id}
-                            href={`/projects/${project.id}`}
+                            href={projectHomePath(project.workspace_id, project.id)}
                             onClick={() => onSelectProject?.(project.id)}
                             className={`block truncate rounded px-1.5 py-1 text-[11px] transition-colors ${
                               isActive ? "bg-cyan-300/[0.08] text-cyan-900" : "text-slate-600 hover:bg-white hover:text-slate-800"

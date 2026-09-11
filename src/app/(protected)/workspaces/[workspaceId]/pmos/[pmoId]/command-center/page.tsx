@@ -4,6 +4,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { resolveRoutedPmo } from "@/lib/pmos/routed-pmo";
 import { pmoCommandCenterBreadcrumb, pmoCommandCenterPath } from "@/lib/pmos/pmo-command-center-paths";
 import { pmoHomePath } from "@/lib/pmos/pmo-paths";
+import { projectHomePath } from "@/lib/projects/project-paths";
 import { PmoNotAvailable } from "@/components/pmfreak/pmos/pmo-route-states";
 import {
   pmoProjectsQuery,
@@ -363,9 +364,13 @@ export default async function PmoCommandCenterPage({
             <h2 className="text-lg font-semibold text-slate-900">Portfolio</h2>
             <div className="mt-4 grid gap-3 md:grid-cols-2">
               {projects.map((project) => (
+                /* Canonical Project Home, from the same authorized workspace this
+                   Command Center rolled up. A link correction only: nothing about
+                   what this screen projects, or which entity it projects over,
+                   changes in this slice. */
                 <Link
                   key={project.id}
-                  href={`/projects/${encodeURIComponent(project.id)}`}
+                  href={projectHomePath(workspaceId, project.id)}
                   className="group rounded-2xl border border-slate-200 bg-slate-50 p-4 transition hover:border-cyan-200/35"
                   style={{ borderLeftColor: project.color ?? undefined, borderLeftWidth: project.color ? 3 : undefined }}
                 >

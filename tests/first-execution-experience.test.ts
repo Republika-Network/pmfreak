@@ -354,14 +354,34 @@ test("onboarding activation rules are unmodified by the CTA wiring change (still
 // ─── Project landing / first execution view ────────────────────────────────
 
 const projectTaskList = read("src/components/pmfreak/tasks/project-task-list.tsx");
-const projectDetailPage = read("src/app/(protected)/projects/[id]/page.tsx");
+// Project Home is the canonical, workspace-rooted route; `/projects/[id]` now
+// holds no screen and resolves into it (canonical Project Home slice).
+const projectDetailPage = read("src/app/(protected)/workspaces/[workspaceId]/projects/[projectId]/page.tsx");
 
 test("project landing page renders the real task list, not a new board route", () => {
   assert.match(projectDetailPage, /ProjectTaskList/);
 });
 
-test("project landing computes canCreateTask from real membership role, same pattern as the projects list page", () => {
-  assert.match(projectDetailPage, /role !== null && workspaceResolution\.role !== "viewer"/);
+test("project landing computes canCreateTask from real membership role in the PROJECT's workspace", () => {
+  // Still a real membership role, and still only a UI gate — the server actions,
+  // `requireProjectAccess` and RLS remain the enforcement. What changed is WHICH
+  // workspace's membership is read.
+  //
+  // It used to be `resolvePreferredWorkspace(user.id)` — the COOKIE — "the same
+  // pattern as the projects list page". That comparison was the defect: the list
+  // page asks a workspace-scoped question (may I create a project in the
+  // workspace I am in?), while Project Home asks a project-scoped one (may I add
+  // work to THIS project?), and this project lives in whatever workspace owns it.
+  // When the two differed the page authorized one workspace and gated its controls
+  // against another. The role now comes from the same verdict that established the
+  // project's parent, so the two cannot disagree.
+  assert.match(projectDetailPage, /const canCreateTask = access\.role !== null && access\.role !== "viewer";/);
+  // Comments stripped: the page RECORDS the defect it replaced, which means naming
+  // the cookie resolver. A check that cannot tell an explanation from a call would
+  // push that reasoning out of the code.
+  const projectDetailCode = projectDetailPage.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  assert.doesNotMatch(projectDetailCode, /resolvePreferredWorkspace/);
+  assert.match(projectDetailPage, /resolveRoutedProject\(user\.id, requestedWorkspaceId, requestedProjectId\)/);
 });
 
 test("project task list distinguishes empty, loading, and error states (never silently downgrades error to empty)", () => {

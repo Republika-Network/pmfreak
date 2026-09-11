@@ -19,10 +19,20 @@ const ROOT = process.cwd();
 
 const saveProject = readFileSync(join(ROOT, "src/lib/projects/save-project-onboarding.ts"), "utf8");
 const wizard = readFileSync(join(ROOT, "src/components/pmfreak/projects/create-project-wizard.tsx"), "utf8");
+// Project Home is now the canonical, workspace-rooted route; `/projects/[id]`
+// holds no screen and resolves into it (canonical Project Home slice). The
+// property these tests guard — a project detail screen never renders for a
+// project that is not in the database — is asserted on both halves of that seam
+// below.
 const projectDetailPage = readFileSync(
+  join(ROOT, "src/app/(protected)/workspaces/[workspaceId]/projects/[projectId]/page.tsx"),
+  "utf8"
+);
+const legacyProjectDetailRoute = readFileSync(
   join(ROOT, "src/app/(protected)/projects/[id]/page.tsx"),
   "utf8"
 );
+const routedProjectResolver = readFileSync(join(ROOT, "src/lib/projects/routed-project.ts"), "utf8");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. success — explicit contract
@@ -302,12 +312,28 @@ test("saveProjectOnboarding does not return a projectId on any failure path", ()
 // 14. command center blocked without persisted projectId
 // ─────────────────────────────────────────────────────────────────────────────
 
-test("project detail page performs notFound() check before rendering command center", () => {
+test("project detail page refuses before rendering when the project is not in DB", () => {
+  // The refusal is no longer `notFound()`. Canonical Project Home shares ONE
+  // refusal component with the legacy resolver, so a missing project, a deleted
+  // one, one the caller has no membership for, and one whose routed workspace
+  // disagrees with `projects.workspace_id` are indistinguishable — a distinct 404
+  // path would be a second, distinguishable reply and turn the route into an
+  // existence oracle. The guarantee this test exists for is unchanged: nothing
+  // renders until a real project row has been read.
   assert.match(
     projectDetailPage,
-    /notFound\(\)/,
-    "project detail page must call notFound() if project is not in DB"
+    /return <ProjectNotAvailable \/>;/,
+    "canonical project detail page must refuse if the project is not in DB"
   );
+  assert.match(
+    projectDetailPage,
+    /if \(!project\) return <ProjectNotAvailable \/>;/,
+    "the refusal must be gated on the absent project row itself"
+  );
+  // And the legacy entry point refuses the same way rather than redirecting into
+  // a screen for a project that does not resolve.
+  assert.match(legacyProjectDetailRoute, /access\.access === "denied"/);
+  assert.match(legacyProjectDetailRoute, /return <ProjectNotAvailable \/>;/);
 });
 
 test("project detail page fetches project from DB before rendering", () => {
@@ -316,6 +342,11 @@ test("project detail page fetches project from DB before rendering", () => {
     /\.from\("projects"\)|from\('projects'\)/,
     "project detail page must query DB to verify project exists"
   );
+  // The legacy route holds no screen, so it queries through the shared routed
+  // resolver — which reads the project row before anything is authorized or
+  // redirected.
+  assert.match(routedProjectResolver, /\.from\("projects"\)/);
+  assert.match(legacyProjectDetailRoute, /resolveLegacyProjectRoute\(user\.id, id\)/);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

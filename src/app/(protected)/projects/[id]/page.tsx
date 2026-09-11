@@ -1,122 +1,81 @@
-import Link from "next/link";
-import { notFound } from "next/navigation";
-import { requireAuthUser } from "@/lib/auth";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { evaluateCapabilityAccess } from "@/lib/security/capability-flow";
-import { resolveCanonicalProject } from "@/lib/projects/canonical-project-resolver";
 import { redirect } from "next/navigation";
-import { ProjectPMAssignment } from "@/components/pmfreak/ProjectPMAssignment";
-import { ProjectTaskList } from "@/components/pmfreak/tasks/project-task-list";
-import { resolvePreferredWorkspace } from "@/lib/workspaces/preferred-workspace";
-import { ProjectTabNav } from "./project-tab-nav";
-import { PMOS_NAV_HREF, pmoHomePath } from "@/lib/pmos/pmo-paths";
+import { requireAuthUser } from "@/lib/auth";
+import { resolveLegacyProjectRoute } from "@/lib/projects/routed-project";
+import { projectHomePath } from "@/lib/projects/project-paths";
+import { ProjectNotAvailable } from "@/components/pmfreak/projects/project-route-states";
+
+export const dynamic = "force-dynamic";
 
 type Props = { params: Promise<{ id: string }> };
 
-export default async function ProjectDetailPage({ params }: Props) {
+/**
+ * Legacy Project Home entry point — a resolver, not a screen.
+ *
+ * Project Home moved to `/workspaces/[workspaceId]/projects/[projectId]`. This
+ * path stays because a great deal already points at it: bookmarks, pasted links,
+ * the "Add first task" button after a create, the `router.push` after a
+ * duplicate, and the breadcrumbs on Project Chat and Project Settings. Per
+ * ADR-PMF-068 a legacy route keeps serving until its replacement is verified.
+ * What it does NOT keep is a copy of the screen: one implementation, one
+ * destination, so the two cannot drift (ADR-PMF-068 rule 2). That is the whole
+ * point of a strangler seam — if this file still rendered a task list, an
+ * analysis form and a PM assignment panel, there would be two Project Homes to
+ * fix every time one of them changed.
+ *
+ * Only HOME redirects. `/projects/[id]/chat`, `/projects/[id]/settings` and
+ * `/projects/[id]/follow-up` are untouched and keep rendering their own screens:
+ * `07-route-layout-and-navigation-architecture.md` §2's ratified Project family
+ * contains no `chat`, `settings` or `follow-up` member, so there is no canonical
+ * destination to send them to, and inventing one would be inventing
+ * architecture.
+ *
+ * WHERE `W` COMES FROM, AND WHERE IT MUST NOT
+ * -------------------------------------------
+ * A legacy URL names only a project, so the redirect has to discover its
+ * workspace. `resolveLegacyProjectRoute` reads it from `projects.workspace_id` —
+ * the authority, and a NOT NULL column — and from nowhere else. Not from the
+ * preferred-workspace cookie, not from the caller's first membership, not from
+ * the shell's current context, not from the previous page. The consequence is the
+ * property the old route did not have: `/projects/P` resolves to ONE canonical
+ * URL, the same one for every caller and every session. A client-controlled
+ * cookie cannot steer where this redirect goes.
+ *
+ * And it never substitutes a different project. The screen this file used to hold
+ * called `resolveCanonicalProject(project.workspace_id, id)`, which listed the
+ * workspace's fifty most recent projects and redirected to the FIRST one when the
+ * requested id was not among them — so on any workspace with more than fifty
+ * projects, a valid link to project A landed the user on project B, announced
+ * only by a `?recoveredFrom=invalidProject` query nothing read. There is no
+ * fallback on this path at all.
+ *
+ * MISSING AND UNAUTHORIZED ARE THE SAME ANSWER
+ * --------------------------------------------
+ * A project that does not exist, one that was deleted, and one whose workspace
+ * the caller has no membership in all arrive here as `denied` and render the
+ * identical refusal. This route must not become an existence oracle: "redirect"
+ * versus "refusal" is the only signal it emits, and it is the same signal the
+ * canonical route emits, so nothing is learned by trying the legacy path instead.
+ * In particular the refusal never names the project's real workspace or PMO.
+ *
+ * An ARCHIVED project redirects normally. Archival is a read-only state, not a
+ * deletion (`07-route…` §7), so its identity stays routable and the canonical
+ * screen is what explains the state.
+ */
+export default async function LegacyProjectHomeRedirectPage({ params }: Props) {
   const user = await requireAuthUser();
   const { id } = await params;
-  const supabase = await createSupabaseServerClient();
 
-  const { data: project } = await supabase
-    .from("projects")
-    .select("id, workspace_id, pmo_id, name, description, status, methodology, icon, color")
-    .eq("id", id)
-    .maybeSingle();
-
-  if (!project) notFound();
-
-  // `workspace_id` is selected because the breadcrumb links to the PMO's
-  // canonical Home, which is workspace-rooted. It comes from the PMO's own row —
-  // the authority for its parent — not from the project's workspace and not from
-  // the preferred-workspace cookie.
-  const { data: pmo } = project.pmo_id
-    ? await supabase.from("pmos").select("id, workspace_id, name, icon").eq("id", project.pmo_id).maybeSingle()
-    : { data: null };
-
-  const canonicalProject = await resolveCanonicalProject(project.workspace_id, id);
-  if (canonicalProject.status === "invalid" && canonicalProject.projectId) {
-    redirect(`/projects/${canonicalProject.projectId}?recoveredFrom=invalidProject`);
+  const access = await resolveLegacyProjectRoute(user.id, id);
+  if (access.access === "denied") {
+    console.error(
+      JSON.stringify({ event: "legacy_project_home.project_not_accessible", userId: user.id, requestedProjectId: id }),
+    );
+    return <ProjectNotAvailable />;
   }
 
-  await evaluateCapabilityAccess({ workspaceId: project.workspace_id, projectId: project.id, permission: "read" });
-
-  // Real membership role drives whether the task CTAs render — a viewer sees
-  // who can add work instead of a dead-end button (same pattern as
-  // src/app/(protected)/projects/page.tsx's canCreateProjects).
-  const workspaceResolution = await resolvePreferredWorkspace(user.id);
-  const canCreateTask = workspaceResolution.role !== null && workspaceResolution.role !== "viewer";
-
-  const { data: analyses } = await supabase
-    .from("onboarding_analyses")
-    .select("id, analysis, created_at")
-    .eq("project_id", id)
-    .order("created_at", { ascending: false })
-    .limit(10);
-
-  return (
-    <main className="rounded-3xl border border-slate-200 bg-white p-8 shadow-2xl backdrop-blur-xl md:p-10 space-y-6">
-      <div>
-        {pmo ? (
-          <p className="text-xs uppercase tracking-[0.2em] text-cyan-800">
-            <Link href={PMOS_NAV_HREF} className="hover:text-cyan-900">PMOs</Link>
-            {" / "}
-            <Link href={pmoHomePath(pmo.workspace_id, pmo.id)} className="hover:text-cyan-900">{pmo.icon ? `${pmo.icon} ` : ""}{pmo.name}</Link>
-            {" / "}
-            {project.name}
-          </p>
-        ) : null}
-        <h1 className="mt-2 text-3xl font-semibold tracking-tight">
-          {project.icon ? <span className="mr-2">{project.icon}</span> : null}
-          {project.name}
-        </h1>
-        <p className="mt-2 text-sm text-slate-700">{project.description ?? "No description provided."}</p>
-        <p className="mt-2 text-xs uppercase tracking-wide text-slate-600">
-          Status: {project.status}
-          {project.methodology ? ` · Methodology: ${project.methodology}` : ""}
-        </p>
-        <div className="mt-4">
-          <ProjectTabNav projectId={project.id} active="overview" />
-        </div>
-      </div>
-
-      <section className="space-y-3">
-        <h2 className="text-lg font-semibold text-slate-900">Execution</h2>
-        <ProjectTaskList projectId={project.id} canCreateTask={canCreateTask} />
-      </section>
-
-      <section className="rounded-2xl border border-slate-200 bg-slate-50 p-5 space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold">Run PMFreak AI</h2>
-          <Link
-            href={`/upload?projectId=${project.id}`}
-            className="rounded-xl border border-cyan-300/50 px-4 py-2 text-sm font-semibold text-cyan-900 hover:bg-cyan-500/10"
-          >
-            Upload documents for this project
-          </Link>
-        </div>
-        <form action="/api/analyze-ai" method="post" className="mt-3 space-y-3">
-          <input type="hidden" name="projectId" value={project.id} />
-          <input name="projectName" defaultValue={project.name} required className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
-          <textarea name="extractedScopeText" required placeholder="Paste scope text to analyze" rows={6} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
-          <button type="submit" className="rounded-xl border border-cyan-300/50 px-4 py-2 text-sm font-semibold">Analyze</button>
-        </form>
-      </section>
-
-      <ProjectPMAssignment projectId={project.id} />
-
-      <section>
-        <h2 className="text-lg font-semibold">Previous analyses</h2>
-        <ul className="mt-3 space-y-3">
-          {(analyses ?? []).length === 0 ? <li className="text-sm text-slate-700">No analyses yet for this project.</li> : null}
-          {(analyses ?? []).map((row) => (
-            <li key={row.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-xs text-slate-600">{new Date(row.created_at).toLocaleString()}</p>
-              <p className="mt-2 whitespace-pre-wrap text-sm text-slate-800">{row.analysis}</p>
-            </li>
-          ))}
-        </ul>
-      </section>
-    </main>
-  );
+  // A temporary redirect, which is what `redirect()` issues for a Server
+  // Component render (307). Appropriate for a strangler migration: the legacy URL
+  // is not permanently gone, it is being drained, and a cached 308 in a user's
+  // browser would outlive any decision to revert this slice.
+  redirect(projectHomePath(access.workspaceId, access.projectId));
 }

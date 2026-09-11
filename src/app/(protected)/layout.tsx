@@ -13,6 +13,7 @@ import { shouldRedirectForOnboarding } from "@/lib/auth/onboarding-gate";
 import { resolveCapabilityProfile } from "@/lib/workspace/pilot-capability-set";
 import { parseWorkspaceIdFromPath } from "@/lib/workspace/command-center-paths";
 import { parseCanonicalPmoRoute } from "@/lib/pmos/pmo-paths";
+import { parseCanonicalProjectRoute } from "@/lib/projects/project-paths";
 import { parseCanonicalWorkspaceRoute } from "@/lib/workspaces/workspace-paths";
 import { resolveRoutedWorkspace } from "@/lib/workspaces/routed-workspace";
 
@@ -79,16 +80,25 @@ export default async function ProtectedLayout({ children }: { children: React.Re
    * Both read the one pattern in `workspace-paths.ts`, so the two lines cannot
    * disagree about which id a path names.
    *
+   * And the same, again, for the canonical PROJECT family
+   * (`/workspaces/<id>/projects/<id>`). A shared link to a project in workspace B
+   * is exactly as capable of loading A's chrome and being bounced by A's
+   * onboarding state, and this is the level where it bites hardest: a project is
+   * the entity people actually paste links to. One more parser, one more line, the
+   * same rule.
+   *
    * The page's own resolver additionally checks this segment against
-   * `pmos.workspace_id` and refuses a mismatch; the layout only needs enough
-   * context to stop answering from the cookie, and cannot widen access on its own
-   * because `resolveRoutedWorkspace` authorizes the hint before it is used.
+   * `pmos.workspace_id` / `projects.workspace_id` and refuses a mismatch; the
+   * layout only needs enough context to stop answering from the cookie, and
+   * cannot widen access on its own because `resolveRoutedWorkspace` authorizes
+   * the hint before it is used.
    */
   const routedHeaders = await headers();
   const routedWorkspaceId =
     parseWorkspaceIdFromPath(routedHeaders.get("x-pathname") ?? "") ??
     parseCanonicalWorkspaceRoute(routedHeaders.get("x-pathname") ?? "")?.workspaceId ??
     parseCanonicalPmoRoute(routedHeaders.get("x-pathname") ?? "")?.workspaceId ??
+    parseCanonicalProjectRoute(routedHeaders.get("x-pathname") ?? "")?.workspaceId ??
     null;
   const routedAccess = routedWorkspaceId ? await resolveRoutedWorkspace(user.id, routedWorkspaceId) : null;
   const routedWorkspaceArchived = routedAccess?.access === "archived";

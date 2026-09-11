@@ -5,7 +5,16 @@ import { PMO_SELECTABLE_COLUMNS } from "@/lib/db/database-contract";
 export type { PmoRow, PmoStatus, PmoType };
 
 export type PmoWithProjects = PmoRow & {
-  projects: Pick<ProjectRow, "id" | "name" | "status">[];
+  /**
+   * `workspace_id` is carried on each project so a consumer can build the
+   * project's canonical route — `/workspaces/[workspaceId]/projects/[projectId]`
+   * — from the PROJECT's own authoritative parent. The query below already scopes
+   * every row by this workspace, so it would also be derivable transitively from
+   * the PMO's `workspace_id`; selecting it explicitly means the link states an
+   * ancestry it actually read, rather than one inferred from the grouping, and it
+   * cannot quietly become wrong if that grouping is ever loosened.
+   */
+  projects: Pick<ProjectRow, "id" | "workspace_id" | "name" | "status">[];
 };
 
 const PMO_COLUMNS = PMO_SELECTABLE_COLUMNS.join(", ");
@@ -42,12 +51,12 @@ export async function listPmosWithProjects(workspaceId: string, opts?: { include
 
   const { data: projects, error } = await supabase
     .from("projects")
-    .select("id, name, status, pmo_id")
+    .select("id, workspace_id, name, status, pmo_id")
     .eq("workspace_id", workspaceId)
     .order("created_at", { ascending: true });
   if (error) throw new Error(`Unable to list projects for PMOs: ${error.message}`);
 
-  type ProjectSlice = { id: string; name: string; status: ProjectRow["status"]; pmo_id: string | null };
+  type ProjectSlice = { id: string; workspace_id: string; name: string; status: ProjectRow["status"]; pmo_id: string | null };
   const byPmo = new Map<string, ProjectSlice[]>();
   for (const project of (projects ?? []) as ProjectSlice[]) {
     if (!project.pmo_id) continue;
@@ -58,7 +67,7 @@ export async function listPmosWithProjects(workspaceId: string, opts?: { include
 
   return pmos.map((pmo) => ({
     ...pmo,
-    projects: (byPmo.get(pmo.id) ?? []).map(({ id, name, status }) => ({ id, name, status })),
+    projects: (byPmo.get(pmo.id) ?? []).map(({ id, workspace_id, name, status }) => ({ id, workspace_id, name, status })),
   }));
 }
 
