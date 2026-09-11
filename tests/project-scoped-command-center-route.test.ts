@@ -31,12 +31,16 @@ import {
   selectProjectGovernanceFacts,
   selectProjectRaid,
   selectProjectRecommendations,
-  selectRecommendationDisclosure,
+  GOVERNED_RAID_CATEGORY_LABELS,
+  projectEvidenceRepositoryPath,
+  selectRaidRecommendationEvidence,
+  selectRaidRecommendationWhy,
   type ProjectRaidRow,
   type ProjectRecommendationRow,
 } from "../src/lib/projects/project-command-center-projection";
 import { CLOSED_RAID_STATUSES } from "../src/lib/pmos/pmo-command-center-rollup";
 import { RECOMMENDED_ACTION_SELECTABLE_COLUMNS } from "../src/lib/db/database-contract";
+import { generateRecommendedActions } from "../src/lib/recommended-actions/generate-recommended-actions";
 import { decideRoutedProjectAccess, type RoutedProjectAccess } from "../src/lib/projects/routed-project";
 import type { RoutedWorkspaceAccess } from "../src/lib/workspaces/routed-workspace";
 import { isCanonicalPmoRoutePath, pmoCommandCenterPath, pmoHomePath, PMOS_NAV_HREF } from "../src/lib/pmos/pmo-paths";
@@ -1436,49 +1440,248 @@ test("Zone 2 selects the stored rationale and evidence_summary", () => {
   }
 });
 
-test("stored disclosure is read out, never composed", () => {
-  // The shapes the two shipped producers actually write.
-  assert.deepEqual(
-    selectRecommendationDisclosure({ trigger: "approval_dependency_detected", raidCategory: "risk" }),
-    [
-      { label: "Trigger", value: "approval_dependency_detected" },
-      { label: "Raid category", value: "risk" },
-    ],
-  );
-  assert.deepEqual(
-    selectRecommendationDisclosure({ evidenceItemId: "e1", evidenceVersion: 2 }),
-    [
-      { label: "Evidence item id", value: "e1" },
-      { label: "Evidence version", value: "2" },
-    ],
-  );
-  // Absent, unreadable or empty stored values yield NOTHING — never a stand-in.
-  for (const empty of [null, undefined, [], "text", 7, {}, { nested: { a: 1 } }, { list: [1] }, { blank: "   " }, { missing: null }]) {
-    assert.deepEqual(selectRecommendationDisclosure(empty), [], "an unavailable field is omitted, not invented");
+/**
+ * The REAL stored shape, from the real producer.
+ *
+ * Zone 2 lists ungoverned `proposed` rows, and in this repository those have
+ * exactly one writer: `generate-recommended-actions.ts`, persisted verbatim by
+ * `materialize-recommended-actions.ts` (`rationale: action.rationale`,
+ * `evidence_summary: action.evidenceSummary`). Generating the fixture rather
+ * than hand-copying it is the point — if the producer's schema moves, these
+ * assertions move with it instead of testing a stale transcription.
+ */
+const RAID_ITEM_ID = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+const SOURCE_SIGNAL_ID = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+const PRODUCED = generateRecommendedActions({
+  id: RAID_ITEM_ID,
+  workspaceId: WS,
+  projectId: PROJECT,
+  category: "risk",
+  title: "Vendor approval may delay launch",
+  description: "Vendor sign-off on the integration contract is still outstanding.",
+  confidenceScore: 82,
+  owner: "Dana",
+  sourceSignalId: SOURCE_SIGNAL_ID,
+})[0];
+const STORED_RATIONALE = PRODUCED.rationale;
+const STORED_EVIDENCE = PRODUCED.evidenceSummary;
+
+test("the producer really does persist the machine-contract fields this mapper must hide", () => {
+  // Without this, every assertion below would pass vacuously.
+  assert.equal(STORED_RATIONALE.trigger, "approval_dependency_detected");
+  assert.equal(STORED_RATIONALE.raidCategory, "risk");
+  assert.equal(STORED_RATIONALE.riskText, "Vendor approval may delay launch");
+  assert.equal(STORED_EVIDENCE.raidItemId, RAID_ITEM_ID);
+  assert.equal(STORED_EVIDENCE.raidCategory, "risk");
+  assert.equal(STORED_EVIDENCE.raidTitle, "Vendor approval may delay launch");
+  assert.equal(STORED_EVIDENCE.raidConfidenceScore, 82);
+  assert.equal(STORED_EVIDENCE.discoveryOrigin, "project_discovery");
+  assert.equal(STORED_EVIDENCE.sourceSignalId, SOURCE_SIGNAL_ID);
+});
+
+/** Everything a user could read out of the two selectors, as one string. */
+const disclosureText = (rationale: unknown, evidenceSummary: unknown) =>
+  JSON.stringify({
+    why: selectRaidRecommendationWhy(rationale, evidenceSummary),
+    evidence: selectRaidRecommendationEvidence(rationale, evidenceSummary, PROJECT),
+  });
+
+test("no internal producer vocabulary survives into the disclosure", () => {
+  const shown = disclosureText(STORED_RATIONALE, STORED_EVIDENCE);
+  for (const internal of [
+    // Rule-engine enums. The stored Risk and its title already say what was
+    // detected; the trigger explains PMFreak's implementation instead.
+    "approval_dependency_detected",
+    "trigger",
+    // A pipeline classification the producer hard-codes.
+    "project_discovery",
+    "discoveryOrigin",
+    // Opaque identifiers. A uuid is not evidence copy.
+    RAID_ITEM_ID,
+    "raidItemId",
+    SOURCE_SIGNAL_ID,
+    "sourceSignalId",
+  ]) {
+    assert.equal(shown.includes(internal), false, `${internal} must not reach a user`);
   }
-  // Values pass through untouched.
-  assert.deepEqual(selectRecommendationDisclosure({ riskText: "Vendor sign-off is late" }), [
-    { label: "Risk text", value: "Vendor sign-off is late" },
-  ]);
+  // Nor may a prettified pseudo-label for any of them appear in the screen's copy.
+  for (const label of ["Trigger:", "Discovery origin:", "Raid item id:", "Source signal id:", "Raid category:"]) {
+    assert.equal(withoutComments(route).includes(label), false, `${label} must not be rendered`);
+  }
+});
+
+test("an arbitrary future producer key cannot start rendering on its own", () => {
+  // This is the forward-facing half of the finding: a generic Object.entries()
+  // mapper renders whatever a producer adds, with nobody having decided it should.
+  const widened = {
+    ...STORED_EVIDENCE,
+    someFutureFlag: true,
+    newProducerKey: "a value nobody reviewed",
+    modelTemperature: 0.7,
+    promptVersion: "v42",
+  };
+  const shown = disclosureText({ ...STORED_RATIONALE, internalRuleId: "rule-1189" }, widened);
+  for (const unknownKey of [
+    "someFutureFlag",
+    "newProducerKey",
+    "a value nobody reviewed",
+    "modelTemperature",
+    "0.7",
+    "promptVersion",
+    "v42",
+    "internalRuleId",
+    "rule-1189",
+  ]) {
+    assert.equal(shown.includes(unknownKey), false, `${unknownKey} is not an allowlisted disclosure fact`);
+  }
+  // And the disclosure is unchanged by the extra keys — allowlist, not filter-list.
+  assert.equal(shown, disclosureText(STORED_RATIONALE, STORED_EVIDENCE));
+  // Structurally: neither selector iterates the stored object at all.
+  const body = withoutComments(projection);
+  for (const generic of ["Object.entries", "Object.keys", "Object.values", "selectRecommendationDisclosure"]) {
+    assert.equal(body.includes(generic), false, `the generic JSON presentation must be gone (${generic})`);
+  }
+});
+
+test("Why is the stored detected condition, in governed RAID vocabulary", () => {
+  assert.deepEqual(selectRaidRecommendationWhy(STORED_RATIONALE, STORED_EVIDENCE), {
+    category: "Risk",
+    condition: "Vendor approval may delay launch",
+  });
+  // The four nouns `02-canonical-product-language.md` ratifies — exactly the four
+  // values `raid_items.category` is CHECK-constrained to, and nothing else.
+  assert.deepEqual(GOVERNED_RAID_CATEGORY_LABELS, {
+    risk: "Risk",
+    issue: "Issue",
+    dependency: "Dependency",
+    assumption: "Assumption",
+  });
+  assert.match(
+    readFileSync("supabase/migrations/20260602020000_raid_auto_extraction.sql", "utf8"),
+    /category text not null check \(category in \('risk', 'assumption', 'issue', 'dependency'\)\)/,
+  );
+  // `rationale.riskText` is the SAME stored string the producer writes as
+  // `raidTitle`, so it is a fallback and never a second, duplicated line.
+  assert.deepEqual(selectRaidRecommendationWhy(STORED_RATIONALE, { raidCategory: "risk" }), {
+    category: "Risk",
+    condition: "Vendor approval may delay launch",
+  });
+  // A category the enum does not name is dropped rather than prettified.
+  assert.deepEqual(selectRaidRecommendationWhy({}, { raidCategory: "raid_unknown", raidTitle: "Integration testing is blocked" }), {
+    category: null,
+    condition: "Integration testing is blocked",
+  });
+  // Every other stored category still reads as its governed noun.
+  for (const [stored, label] of Object.entries(GOVERNED_RAID_CATEGORY_LABELS)) {
+    assert.equal(selectRaidRecommendationWhy({}, { raidCategory: stored, raidTitle: "x" })?.category, label);
+  }
+  // No stored human condition — no Why at all. Nothing is composed from the
+  // Recommendation's own title or description.
+  for (const empty of [null, undefined, [], "text", 7, {}, { raidTitle: "   " }, { raidTitle: 7 }, { raidCategory: "risk" }]) {
+    assert.equal(selectRaidRecommendationWhy(null, empty), null, "an absent condition is omitted, never invented");
+    assert.equal(selectRaidRecommendationWhy(empty, null), null);
+  }
+});
+
+test("Evidence names the stored RAID item and never its identifiers", () => {
+  assert.deepEqual(selectRaidRecommendationEvidence(STORED_RATIONALE, STORED_EVIDENCE, PROJECT), {
+    inputs: [{ category: "Risk", name: "Vendor approval may delay launch", detectedConfidence: 82 }],
+    repositoryHref: `/evidence?projectId=${PROJECT}`,
+  });
+  // §2 forbids "based on project data": with nothing NAMED there is no Evidence
+  // section, not a vague one.
+  for (const empty of [null, undefined, [], "text", 7, {}, { raidItemId: RAID_ITEM_ID }, { raidTitle: "  " }]) {
+    assert.equal(selectRaidRecommendationEvidence(null, empty, PROJECT), null);
+  }
+  // The RAID item's own recorded confidence is provenance, and it is only read
+  // when it is a real 0–100 percentage.
+  for (const bad of [-1, 101, Number.NaN, Number.POSITIVE_INFINITY, "82"]) {
+    assert.equal(
+      selectRaidRecommendationEvidence(null, { raidTitle: "t", raidConfidenceScore: bad }, PROJECT)?.inputs[0]
+        .detectedConfidence,
+      null,
+    );
+  }
+});
+
+test("the evidence link is truthful: the collection, never a fabricated item route", () => {
+  const evidence = selectRaidRecommendationEvidence(STORED_RATIONALE, STORED_EVIDENCE, PROJECT);
+  assert.ok(evidence);
+
+  // NO per-input href exists, because no destination does. Audited, not assumed:
+  //   - no page or API route under src/app addresses a `raid_items` row by id;
+  //   - `03-canonical-information-architecture.md` §5.8's Risks / Issues /
+  //     Dependencies screens are unbuilt, which is why `project-paths.ts` refuses
+  //     to list them in PROJECT_SURFACES;
+  //   - `/evidence?projectId=` lists `project_evidence` documents — a different
+  //     table from `raid_items`, with no item selector.
+  // This assertion is the implementation gap, recorded rather than hidden behind
+  // a link that lands somewhere else while claiming to be this item.
+  assert.equal("href" in evidence.inputs[0], false, "a per-RAID-item destination does not exist yet");
+  assert.deepEqual(PROJECT_SURFACES.filter((s) => ["risks", "issues", "dependencies", "documents"].includes(s)), []);
+  assert.equal(existsSync("src/app/(protected)/risks/page.tsx"), false);
+  assert.equal(existsSync("src/app/(protected)/raid/page.tsx"), false);
+
+  // The one destination offered DOES exist, IS protected, and enforces the same
+  // project scope the user arrived with.
+  assert.equal(projectEvidenceRepositoryPath(PROJECT), `/evidence?projectId=${PROJECT}`);
+  assert.equal(evidence.repositoryHref, projectEvidenceRepositoryPath(PROJECT));
+  assert.ok(existsSync("src/app/(protected)/evidence/page.tsx"));
+  assert.equal(isProtectedPageRoute("/evidence"), true);
+  assert.match(
+    readFileSync("src/app/api/project-evidence/route.ts", "utf8"),
+    /await requireProjectAccess\(projectId, "read"\)/,
+  );
+  // Query-string ids are encoded — an id carrying `&` must not become a second
+  // parameter, and must never address another project.
+  assert.equal(projectEvidenceRepositoryPath("a&projectId=b"), "/evidence?projectId=a%26projectId%3Db");
+
+  // And the copy says what the link opens, so it cannot be read as this item.
+  assert.match(route, /Open project evidence/);
+  assert.match(route, /the project&apos;s evidence collection, not this specific item\./);
 });
 
 test("Zone 2 renders Why, then Evidence, then Confidence", () => {
   const zone2 = route.slice(route.indexOf("zone={ZONE_RECOMMENDATIONS}"), route.indexOf("zone={ZONE_DECISIONS}"));
-  const why = zone2.indexOf('<RecommendationDisclosure label="Why" entries={selectRecommendationDisclosure(item.rationale)} />');
-  const evidence = zone2.indexOf(
-    '<RecommendationDisclosure label="Evidence" entries={selectRecommendationDisclosure(item.evidence_summary)} />',
-  );
-  const confidence = zone2.indexOf("Confidence {Math.round(item.confidence_score)}%");
-  assert.ok(why > -1, "Why is rendered from the stored rationale");
+  const why = zone2.indexOf("<RecommendationWhy why={selectRaidRecommendationWhy(item.rationale, item.evidence_summary)} />");
+  const evidence = zone2.indexOf("selectRaidRecommendationEvidence(item.rationale, item.evidence_summary, projectId)");
+  const confidence = zone2.indexOf("Recommendation confidence {Math.round(item.confidence_score)}%");
+  assert.ok(why > -1, "Why is mapped from the stored disclosure");
   assert.ok(evidence > why, "Evidence follows Why");
   assert.ok(confidence > evidence, "Confidence follows Evidence");
   // The directive still leads, and the stored basis sits under it.
   assert.ok(zone2.indexOf("{item.title}") < why);
-  // Both lines vanish together with their stored value rather than rendering empty.
-  assert.match(route, /function RecommendationDisclosure\(\{ label, entries \}[\s\S]{0,160}if \(entries\.length === 0\) return null;/);
-  // Confidence stays visible, and its absence is stated rather than implied.
+  // Both sections vanish with their stored basis rather than rendering empty.
+  assert.match(route, /function RecommendationWhy\(\{ why \}[\s\S]{0,140}if \(why === null\) return null;/);
+  assert.match(route, /function RecommendationEvidence\(\{ evidence \}[\s\S]{0,160}if \(evidence === null\) return null;/);
+  // Evidence is scoped to the AUTHORIZED project id, never a routed segment.
+  assert.equal(zone2.includes("requestedProjectId"), false);
+});
+
+test("the two confidences stay distinct, visible and adjacent to their basis", () => {
+  const zone2 = route.slice(route.indexOf("zone={ZONE_RECOMMENDATIONS}"), route.indexOf("zone={ZONE_DECISIONS}"));
+  // §2.1: never a bare number, never colour-only. The Recommendation's own
+  // confidence stays visible, and its absence is stated rather than implied.
   assert.match(zone2, /item\.confidence_score !== null \? \(/);
-  assert.match(zone2, /Confidence not recorded/);
+  assert.match(zone2, /Recommendation confidence \{Math\.round\(item\.confidence_score\)\}%/);
+  assert.match(zone2, /Recommendation confidence not recorded/);
+  // The RAID item's recorded confidence is provenance and is labelled as a
+  // different number about a different thing — never as the Recommendation's.
+  assert.match(route, /detection confidence \{input\.detectedConfidence\}%/);
+  assert.notEqual("detection confidence", "Recommendation confidence");
+  // It comes from `evidence_summary.raidConfidenceScore`, not from
+  // `recommended_actions.confidence_score` — the two are never conflated.
+  assert.match(withoutComments(projection), /storedPercentage\(evidence, "raidConfidenceScore"\)/);
+  assert.equal(
+    selectRaidRecommendationEvidence(null, { raidTitle: "t", raidConfidenceScore: 40 }, PROJECT)?.inputs[0]
+      .detectedConfidence,
+    40,
+  );
+  assert.equal(recRow({ confidence_score: 70 }).confidence_score, 70, "and the Recommendation's own stays its own");
+  // No band, no threshold, no colour-only meaning introduced.
+  for (const forbidden of ["low confidence", "high confidence", "band", "threshold", "text-red-", "text-green-"]) {
+    assert.equal(zone2.toLowerCase().includes(forbidden.toLowerCase()), false, `Zone 2 must not introduce ${forbidden}`);
+  }
 });
 
 test("Zone 2 makes no claim it cannot source, and stays read-only", () => {
@@ -1491,14 +1694,15 @@ test("Zone 2 makes no claim it cannot source, and stays read-only", () => {
   for (const forbidden of ["AI says", "AI recommends", "Based on project data", "item.description}\", ", "summariz"]) {
     assert.equal(zone2.toLowerCase().includes(forbidden.toLowerCase()), false, `Zone 2 must not present "${forbidden}"`);
   }
-  // The selector reads its argument and nothing else — it cannot see, and so
-  // cannot borrow from, the recommendation's own title or description.
-  const selector = withoutComments(projection).slice(
-    withoutComments(projection).indexOf("export function selectRecommendationDisclosure"),
-  );
-  const selectorBody = selector.slice(0, selector.indexOf("\n}") + 2);
-  for (const name of ["title", "description", "recommended_action_type"]) {
-    assert.equal(selectorBody.includes(name), false, `disclosure must not read ${name}`);
+  // The selectors read their arguments and nothing else — they cannot see, and
+  // so cannot borrow from, the recommendation's own title or description.
+  const body = withoutComments(projection);
+  for (const selector of ["export function selectRaidRecommendationWhy", "export function selectRaidRecommendationEvidence"]) {
+    const from = body.slice(body.indexOf(selector));
+    const selectorBody = from.slice(0, from.indexOf("\n}") + 2);
+    for (const name of ["title", "description", "recommended_action_type"]) {
+      assert.equal(selectorBody.includes(name), false, `${selector} must not read ${name}`);
+    }
   }
   // Still read-only: the decision controls arrive in a later slice.
   for (const forbidden of ["Accept", "Reject", "Defer", "<form", "<button", "action=", "use server", "onClick"]) {

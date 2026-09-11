@@ -322,64 +322,258 @@ export function selectProjectRecommendations(
   );
 }
 
-/**
- * The stored "Why" and "Evidence" behind one Recommendation, read out verbatim.
- *
- * `08-ai-interaction-patterns.md` §2 fixes the disclosure shape every rendered
- * Recommendation carries — Why → Evidence → Confidence — and states plainly that
- * "a Recommendation rendered as a bare directive ('AI says: do X') is a defect,
- * not a simplification: an unexplained directive cannot be evaluated". Zone 2
- * selected the directive and the confidence and dropped the two stored columns
- * that answer WHY, which left a PM with a suggestion and no basis on which to
- * agree or disagree with it.
- *
- * `recommended_actions.rationale` and `recommended_actions.evidence_summary` are
- * both `jsonb`, written by the two producers that create these rows:
- * `generate-recommended-actions.ts` for the ungoverned, RAID-derived rows Zone 2
- * lists, and `materialize_operational_chain` for the governed ones. Neither
- * stores prose — they store named, machine-written keys — so this function
- * READS THEM OUT and does nothing else:
- *
- *   - only own keys whose stored value is a string, a finite number or a boolean
- *     become entries. A nested object or array is dropped rather than flattened,
- *     summarized or serialized into a sentence, because a summary of stored
- *     evidence is a new claim and this zone is not allowed to make one.
- *   - values are passed through untouched (a string only trimmed), so nothing a
- *     PM reads here was composed by this screen.
- *   - a key's LABEL is the stored key with its word boundaries spaced. That is
- *     formatting of a stored name, not a description of it.
- *   - a null column, a non-object, or an object with no readable value yields an
- *     EMPTY list, and the caller omits the line entirely. Nothing is substituted
- *     for absent disclosure and nothing is derived from the recommendation's own
- *     title or description — synthesizing a rationale out of the directive it is
- *     supposed to justify would be the exact fabrication §2 forbids.
- */
-export type RecommendationDisclosureEntry = { label: string; value: string };
+// ─── Zone 2 disclosure: Why → Evidence, in governed vocabulary ─────────────
 
-/** A stored key, spaced at its word boundaries. Formatting only — no renaming. */
-function labelForStoredKey(key: string): string {
-  const spaced = key
-    .replace(/_/g, " ")
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .trim();
-  if (spaced.length === 0) return key;
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1).toLowerCase();
+/**
+ * The user-facing Why and Evidence behind one RAID-derived Recommendation.
+ *
+ * WHY THIS IS A NARROW MAPPER AND NOT A JSON RENDERER
+ * ---------------------------------------------------
+ * `08-ai-interaction-patterns.md` §2 fixes the disclosure shape every rendered
+ * Recommendation carries — Why → Evidence → Confidence — and is specific about
+ * what each part IS:
+ *
+ *   Why      "the detected condition, in the same governed vocabulary the
+ *             Risk/Issue it responds to uses (`02-canonical-product-language.md`),
+ *             never a raw model rationalization."
+ *   Evidence "an enumerated, NAMED list of inputs … never a vague 'based on
+ *             project data.'"
+ *
+ * The first attempt at this satisfied the shape structurally and failed it
+ * semantically: it walked `Object.entries()` over the two `jsonb` columns and
+ * printed every scalar under its own key, spaced. That is FORMATTING AN INTERNAL
+ * KEY, which is not the same act as mapping it into product language, and it put
+ * the producer's machine contract on screen — `trigger:
+ * "approval_dependency_detected"`, `discoveryOrigin: "project_discovery"`, and
+ * the raw `raidItemId` / `sourceSignalId` uuids. None of those is governed
+ * vocabulary, a named evidence input, or a fact a PM can evaluate; the uuids are
+ * not even readable. A generic mapper also fails FORWARD: the day a producer adds
+ * a key, that key starts rendering to users with nobody having decided it should.
+ *
+ * So this is an ALLOWLIST over one known producer schema, not a presentation
+ * framework. Zone 2 lists exactly the ungoverned, `proposed` rows, and in this
+ * repository those have exactly one writer —
+ * `recommended-actions/generate-recommended-actions.ts`, persisted by
+ * `materialize-recommended-actions.ts` — whose stored shape is:
+ *
+ *   evidence_summary  raidItemId, raidCategory, raidTitle, raidConfidenceScore,
+ *                     discoveryOrigin, sourceSignalId
+ *   rationale         trigger, raidCategory, riskText?, riskType?
+ *
+ * Of those, exactly three are facts about the PROJECT rather than about the rule
+ * engine, and those three are the only ones read below:
+ *
+ *   raidCategory          → the governed noun (Risk / Issue / Dependency /
+ *                           Assumption), the vocabulary `02-…` §"RAID" ratifies.
+ *   raidTitle             → the human sentence a person or an extraction wrote
+ *                           for the detected condition. `rationale.riskText` is
+ *                           the SAME stored value (`riskText: item.title`) and is
+ *                           read only as a fallback, never as a second line.
+ *   raidConfidenceScore   → the RAID item's OWN recorded confidence, which is a
+ *                           different number from `recommended_actions.
+ *                           confidence_score` and is labelled as such at the
+ *                           point of use.
+ *
+ * DELIBERATELY NOT READ, and why each stays off screen:
+ *   trigger          the rule-engine enum that fired. `approval_dependency_detected`
+ *                    adds no fact the stored Risk and its title do not already
+ *                    state; rendering it explains PMFreak's implementation to a
+ *                    PM instead of describing their project.
+ *   discoveryOrigin  a constant the producer hard-codes. It classifies the
+ *                    pipeline, not the project.
+ *   riskType         "vendor" / "schedule", a keyword match over the title —
+ *                    a derived guess, not a stored governed fact.
+ *   raidItemId       an opaque uuid. See the navigability note below.
+ *   sourceSignalId   an opaque uuid, and null for every project-discovery RAID
+ *                    item anyway (`project-discovery/raid-materialization.ts`
+ *                    writes `sourceSignalId: null`).
+ *
+ * NAVIGABILITY — THE GAP, STATED RATHER THAN PAPERED OVER
+ * ------------------------------------------------------
+ * §2 wants each named evidence input to be a link into the Evidence Panel (§5),
+ * and §5 wants that panel to link into the canonical Document/Evidence screen
+ * (`03-canonical-information-architecture.md` §5.8). The repository cannot do
+ * that for a RAID item today, and this was verified rather than assumed:
+ *
+ *   - No page or API route anywhere under `src/app` addresses a `raid_items` row
+ *     by id. `03-…` §5.8 lists Risks / Issues / Dependencies as required
+ *     Execution Layer screens; none of them is built, which is also why
+ *     `project-paths.ts` refuses to list them in `PROJECT_SURFACES`.
+ *   - The shipped `/evidence?projectId=…` screen reads `project_evidence` and
+ *     `project_evidence_content`. Those are UPLOADED DOCUMENTS — a different
+ *     table and a different population from `raid_items`. It has no item
+ *     selector, so `/evidence?projectId=P` cannot identify one RAID item and
+ *     pretending it does would be a lie in a link.
+ *   - `raid_items.source_signal_id` references `vault_operational_signals`
+ *     (`20260602020000`), which has no user-facing surface at all.
+ *
+ * So a named input carries NO href. `03-…` §5.8's Risks/Issues/Dependencies
+ * screens are the destination this wants, and it becomes reachable in the slice
+ * that builds one — not before. What IS offered, separately and plainly labelled
+ * as the collection rather than as this item, is the project's evidence
+ * repository, because that destination is real and authorized.
+ */
+
+/**
+ * The four RAID nouns `02-canonical-product-language.md` ratifies, in the exact
+ * casing a user reads them in. `raid_items.category` is CHECK-constrained to
+ * these four lowercase values (`20260602020000`), so this is a translation of a
+ * closed stored enum into its governed label — not a prettifier that would
+ * accept whatever string arrived.
+ */
+export const GOVERNED_RAID_CATEGORY_LABELS = {
+  risk: "Risk",
+  issue: "Issue",
+  dependency: "Dependency",
+  assumption: "Assumption",
+} as const;
+
+type GovernedRaidCategory = keyof typeof GOVERNED_RAID_CATEGORY_LABELS;
+
+/** A stored category, or `null` if it is not one of the four ratified nouns. */
+function governedCategoryLabel(stored: unknown): string | null {
+  if (typeof stored !== "string") return null;
+  const key = stored.trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(GOVERNED_RAID_CATEGORY_LABELS, key)
+    ? GOVERNED_RAID_CATEGORY_LABELS[key as GovernedRaidCategory]
+    : null;
 }
 
-export function selectRecommendationDisclosure(stored: unknown): RecommendationDisclosureEntry[] {
-  if (typeof stored !== "object" || stored === null || Array.isArray(stored)) return [];
-  const entries: RecommendationDisclosureEntry[] = [];
-  for (const [key, value] of Object.entries(stored as Record<string, unknown>)) {
-    if (typeof value === "string") {
-      const trimmed = value.trim();
-      if (trimmed.length > 0) entries.push({ label: labelForStoredKey(key), value: trimmed });
-    } else if (typeof value === "number" && Number.isFinite(value)) {
-      entries.push({ label: labelForStoredKey(key), value: String(value) });
-    } else if (typeof value === "boolean") {
-      entries.push({ label: labelForStoredKey(key), value: String(value) });
-    }
-  }
-  return entries;
+function storedObject(column: unknown): Record<string, unknown> | null {
+  if (typeof column !== "object" || column === null || Array.isArray(column)) return null;
+  return column as Record<string, unknown>;
+}
+
+/**
+ * One NAMED key, read as human text. The key is always a literal at the call
+ * site — there is no iteration over the object, so a key this module does not
+ * name cannot reach a user however a producer changes.
+ */
+function storedText(source: Record<string, unknown> | null, key: string): string | null {
+  const value = source?.[key];
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/** One NAMED key, read as a 0–100 percentage. Anything else is "not recorded". */
+function storedPercentage(source: Record<string, unknown> | null, key: string): number | null {
+  const value = source?.[key];
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  if (value < 0 || value > 100) return null;
+  return Math.round(value);
+}
+
+/**
+ * The DETECTED CONDITION this Recommendation responds to.
+ *
+ * `condition` is stored human text, passed through untouched — this function
+ * composes no sentence, and nothing here is derived from the Recommendation's
+ * own title or description, which would be synthesizing a rationale out of the
+ * directive it is supposed to justify.
+ *
+ * `null` when no stored human-readable condition exists. The caller then renders
+ * NO Why line — an absent basis is stated by omission, never by a stand-in.
+ */
+export type RecommendationWhyDisclosure = {
+  /** The governed RAID noun, or `null` if the stored category is unrecognized. */
+  category: string | null;
+  /** The stored, human-written detected condition. */
+  condition: string;
+};
+
+export function selectRaidRecommendationWhy(
+  rationale: unknown,
+  evidenceSummary: unknown,
+): RecommendationWhyDisclosure | null {
+  const evidence = storedObject(evidenceSummary);
+  const reason = storedObject(rationale);
+
+  // `raidTitle` and `rationale.riskText` are the same stored string written
+  // twice by the producer, so this is a fallback, never a second entry.
+  const condition = storedText(evidence, "raidTitle") ?? storedText(reason, "riskText");
+  if (condition === null) return null;
+
+  return {
+    category: governedCategoryLabel(evidence?.raidCategory) ?? governedCategoryLabel(reason?.raidCategory),
+    condition,
+  };
+}
+
+/**
+ * The NAMED evidence inputs behind this Recommendation.
+ *
+ * One input today — the RAID item the producer derived the Recommendation from,
+ * named by its stored title and qualified by its governed category. It carries
+ * no href, for the reason stated at length above: this repository has no surface
+ * that addresses a RAID item, and a link that lands somewhere else while
+ * claiming to be this item is worse than no link.
+ *
+ * `detectedConfidence` is `raid_items.confidence_score` as the producer copied
+ * it — the confidence that this CONDITION was correctly detected. It is NOT
+ * `recommended_actions.confidence_score`, and the caller labels the two
+ * differently so they cannot be read as one number.
+ *
+ * `null` when nothing names an input. Evidence is then omitted entirely rather
+ * than degraded to "based on project data", which §2 names as the failure.
+ */
+export type RecommendationEvidenceInput = {
+  category: string | null;
+  /** The stored NAME of the input. Never an identifier. */
+  name: string;
+  /** The RAID item's own recorded detection confidence, 0–100, or `null`. */
+  detectedConfidence: number | null;
+};
+
+export type RecommendationEvidenceDisclosure = {
+  inputs: RecommendationEvidenceInput[];
+  /**
+   * The project's evidence COLLECTION — offered as a separate, differently
+   * labelled destination, never as this input's own link.
+   */
+  repositoryHref: string;
+};
+
+export function selectRaidRecommendationEvidence(
+  rationale: unknown,
+  evidenceSummary: unknown,
+  projectId: string,
+): RecommendationEvidenceDisclosure | null {
+  const evidence = storedObject(evidenceSummary);
+  const reason = storedObject(rationale);
+
+  const name = storedText(evidence, "raidTitle");
+  if (name === null) return null;
+
+  return {
+    inputs: [
+      {
+        category: governedCategoryLabel(evidence?.raidCategory) ?? governedCategoryLabel(reason?.raidCategory),
+        name,
+        detectedConfidence: storedPercentage(evidence, "raidConfidenceScore"),
+      },
+    ],
+    repositoryHref: projectEvidenceRepositoryPath(projectId),
+  };
+}
+
+/**
+ * The project's evidence repository, on the shipped `/evidence` screen.
+ *
+ * NOT a member of the canonical Project route family and deliberately not added
+ * to `project-paths.ts`: `PROJECT_SURFACES` describes the ratified
+ * `/workspaces/[w]/projects/[p]/…` family, and `/evidence` is a flat surface
+ * that takes the project as a query parameter. It is linked because it EXISTS
+ * and is authorized — the page sits under `(protected)` and every read behind it
+ * runs `requireProjectAccess(projectId, "read")`
+ * (`src/app/api/project-evidence/route.ts`) — so the project scope a user
+ * arrives with is the project scope the destination enforces.
+ *
+ * The id is percent-encoded: it lands in a query string, and an id carrying `&`
+ * or `#` would otherwise silently become a different request.
+ */
+export function projectEvidenceRepositoryPath(projectId: string): string {
+  return `/evidence?projectId=${encodeURIComponent(projectId)}`;
 }
 
 /**
