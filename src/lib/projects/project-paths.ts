@@ -36,18 +36,21 @@
  *
  * WHAT IS DELIBERATELY NOT HERE
  * -----------------------------
- * The Project Command Center and the Execution Layer children (`/tasks`,
- * `/milestones`, `/risks`, `/issues`, `/dependencies`, `/stakeholders`,
- * `/documents`, `/recommendations`, `/decisions`, `/actions`, `/outcomes`,
- * `/feed`, `/memory`) are all in the ratified map, and NONE of them is in
- * `PROJECT_SURFACES` — because none of them exists yet. A surface listed here
- * becomes a link somewhere, and a link to a route with no page is a 404 wearing
- * a product's clothes. They arrive one row at a time, each with its own screen,
- * which is exactly why this module is shaped as a table over an enum rather than
- * as a home-only string builder: the next slice adds `"command-center"` to
- * `PROJECT_SURFACES` and `SURFACE_SEGMENTS` and inherits this parser, rather
- * than introducing a second regex that can disagree with this one about which
- * paths are Project routes.
+ * The Execution Layer children (`/tasks`, `/milestones`, `/risks`, `/issues`,
+ * `/dependencies`, `/stakeholders`, `/documents`, `/recommendations`,
+ * `/decisions`, `/actions`, `/outcomes`, `/feed`, `/memory`) are all in the
+ * ratified map, and NONE of them is in `PROJECT_SURFACES` — because none of them
+ * exists yet. A surface listed here becomes a link somewhere, and a link to a
+ * route with no page is a 404 wearing a product's clothes. They arrive one row at
+ * a time, each with its own screen, which is exactly why this module is shaped as
+ * a table over an enum rather than as a home-only string builder.
+ *
+ * `command-center` is the first row this design was written for, and it arrived
+ * exactly as predicted: one row in `PROJECT_SURFACES` and one in
+ * `SURFACE_SEGMENTS`, inheriting the single parser below, rather than a second
+ * regex that could disagree with this one about which paths are Project routes.
+ * Its screen ships in the same slice, so the table still lists only surfaces that
+ * exist.
  *
  * `/projects` (plural, no id) is also not a member. It is the project CHOOSER
  * and addresses no single project, which is what a family member must do. It
@@ -59,16 +62,25 @@
  *
  * `home` is the family's root and has no trailing segment. Exhaustive on
  * purpose — the parser refuses any segment that is not in this list, so
- * `/workspaces/<w>/projects/<p>/command-center` is not read as a Project route
- * until the slice that actually ships that screen adds it here.
+ * `/workspaces/<w>/projects/<p>/tasks` is not read as a Project route until the
+ * slice that actually ships that screen adds it here.
+ *
+ * `command-center` is the Project Command Center
+ * (`07-route-layout-and-navigation-architecture.md` §2). §4 rule 3 makes it a
+ * TERMINAL segment: it has no children beneath it, mirroring the breadcrumb rule
+ * that an entity-qualified Command Center is only ever a trail's last node
+ * (`03-navigation-contracts.md` §2.3 rule 4, ADR-PMF-014 Rule 4). The parser
+ * enforces that structurally — `…/command-center/anything` is refused, because
+ * the pattern below admits at most one segment after the project id.
  */
-export const PROJECT_SURFACES = ["home"] as const;
+export const PROJECT_SURFACES = ["home", "command-center"] as const;
 
 export type ProjectSurface = (typeof PROJECT_SURFACES)[number];
 
 /** The path segment each surface adds after the project id. `home` adds none. */
 const SURFACE_SEGMENTS: Record<ProjectSurface, string> = {
   home: "",
+  "command-center": "command-center",
 };
 
 const SEGMENT_SURFACES = new Map<string, ProjectSurface>(
@@ -132,13 +144,17 @@ export type CanonicalProjectRoute = {
 /**
  * Exactly the family, and nothing adjacent to it.
  *
- * The optional third segment is what will distinguish Home from its future
- * siblings. Today every one of them is refused, because none of them is built —
- * and refusing is what stops a nav entry lighting up for a page that 404s.
+ * The optional third segment is what distinguishes Home from its siblings. Today
+ * exactly one sibling resolves — `command-center` — and every other segment is
+ * still refused, because none of the rest is built, and refusing is what stops a
+ * nav entry lighting up for a page that 404s.
+ *
  * Anything deeper is refused rather than truncated to its prefix, for the same
  * reason the Workspace and PMO parsers refuse it: a path with an extra segment
  * is not a route this app serves, and reading it as its own parent makes the
- * shell claim the user is somewhere they are not.
+ * shell claim the user is somewhere they are not. That is also what keeps the
+ * Command Center terminal (§4 rule 3) without a second rule: there is no way to
+ * express a child of it in this pattern.
  */
 const CANONICAL_PROJECT_ROUTE_PATTERN = /^\/workspaces\/([^/]+)\/projects\/([^/]+)(?:\/([^/]+))?\/?$/;
 

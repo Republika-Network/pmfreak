@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { projectHomePath } from "@/lib/projects/project-paths";
+import { projectCommandCenterPath } from "@/lib/projects/project-command-center-paths";
 
 /**
  * Project section navigation. The project opens on Overview; the chat is one
@@ -11,12 +12,22 @@ import { projectHomePath } from "@/lib/projects/project-paths";
  * generic workspace-wide modules that do not read a projectId param at all —
  * passing one would falsely imply per-project scoping that doesn't exist yet.
  *
- * WHY ONLY OVERVIEW IS CANONICAL
- * ------------------------------
- * Overview now points at canonical Project Home,
- * `/workspaces/[workspaceId]/projects/[projectId]`, because that route exists and
- * is where the screen lives. NOTHING ELSE in this strip is rewritten, and that is
- * the honest state of the product rather than a half-finished migration:
+ * WHY ONLY OVERVIEW AND THE COMMAND CENTER ARE CANONICAL
+ * ------------------------------------------------------
+ * Overview points at canonical Project Home,
+ * `/workspaces/[workspaceId]/projects/[projectId]`, and Project Command Center at
+ * `/workspaces/[workspaceId]/projects/[projectId]/command-center` — because those
+ * two routes exist and are where those screens live. The Command Center entry is
+ * labeled "Project Command Center", not a bare "Command Center": ADR-PMF-014
+ * Rule 1 requires every user-facing appearance of the phrase to name the entity
+ * it projects over, and Rule 3 blesses exactly this "[Entity] Command Center"
+ * form as a navigation label. Sitting inside a nav labeled "Project sections" is
+ * context, not qualification — the rule is literal and checkable on purpose,
+ * because "obvious from context" is how the ambiguity accumulated in the first
+ * place.
+ *
+ * NOTHING ELSE in this strip is rewritten, and that is the honest state of the
+ * product rather than a half-finished migration:
  *
  *   - Chat and Settings still point at `/projects/[id]/chat` and
  *     `/projects/[id]/settings`. `07-route-layout-and-navigation-architecture.md`
@@ -45,10 +56,11 @@ export function ProjectTabNav({
    */
   workspaceId: string;
   projectId: string;
-  active: "overview" | "chat" | "settings";
+  active: "overview" | "command-center" | "chat" | "settings";
 }) {
   const tabs: { label: string; href: string; key?: string }[] = [
     { label: "Overview", href: projectHomePath(workspaceId, projectId), key: "overview" },
+    { label: "Project Command Center", href: projectCommandCenterPath(workspaceId, projectId), key: "command-center" },
     { label: "Chat", href: `/projects/${projectId}/chat`, key: "chat" },
     { label: "Execution", href: `/command-center?projectId=${projectId}` },
     { label: "Timeline", href: `/dashboard?projectId=${projectId}` },

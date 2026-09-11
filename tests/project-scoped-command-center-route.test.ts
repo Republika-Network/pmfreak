@@ -1,0 +1,1238 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync, existsSync } from "node:fs";
+
+import {
+  isProjectCommandCenterPath,
+  projectCommandCenterBreadcrumb,
+  projectCommandCenterPath,
+} from "../src/lib/projects/project-command-center-paths";
+import {
+  PROJECTS_NAV_HREF,
+  PROJECT_SURFACES,
+  isCanonicalProjectRoutePath,
+  legacyProjectHomePath,
+  parseCanonicalProjectRoute,
+  projectHomePath,
+  projectSurfacePath,
+} from "../src/lib/projects/project-paths";
+import {
+  PROJECT_COMMAND_CENTER_ZONES,
+  PROPOSED_RECOMMENDATION_STATUS,
+  ZONE_ROW_LIMIT,
+  countRaidByCategory,
+  projectPendingDecisionsQuery,
+  projectRaidQuery,
+  projectRecommendationsQuery,
+  resolveVisibleTotal,
+  runProjectScopedQuery,
+  selectProjectGovernanceFacts,
+  selectProjectRaid,
+  selectProjectRecommendations,
+  type ProjectRaidRow,
+  type ProjectRecommendationRow,
+} from "../src/lib/projects/project-command-center-projection";
+import { CLOSED_RAID_STATUSES } from "../src/lib/pmos/pmo-command-center-rollup";
+import { decideRoutedProjectAccess, type RoutedProjectAccess } from "../src/lib/projects/routed-project";
+import type { RoutedWorkspaceAccess } from "../src/lib/workspaces/routed-workspace";
+import { isCanonicalPmoRoutePath, pmoCommandCenterPath, pmoHomePath, PMOS_NAV_HREF } from "../src/lib/pmos/pmo-paths";
+import { workspaceHomePath, workspaceSettingsPath } from "../src/lib/workspaces/workspace-paths";
+import {
+  WORKSPACE_COMMAND_CENTER_LEGACY_PATH,
+  isWorkspaceCommandCenterPath,
+  navEntryMatchesPathname,
+  workspaceCommandCenterPath,
+} from "../src/lib/workspace/command-center-paths";
+import { NAVIGATION_HIERARCHY } from "../src/lib/workspace/navigation-hierarchy";
+import { getRouteAccessPolicy, isProtectedPageRoute } from "../src/lib/auth/route-policy-registry";
+import { isSafeContinuationRoute } from "../src/lib/auth/validate-continuation-route";
+import { PM_OPERATIONS_PATH } from "../src/lib/pm-operations/pm-operations-paths";
+
+/**
+ * Project Command Center — Slice 1.
+ *
+ * The canonical, entity-qualified route
+ * `/workspaces/[workspaceId]/projects/[projectId]/command-center`
+ * (`07-route-layout-and-navigation-architecture.md` §2), composed of the four
+ * zones ADR-PMF-070 fixes, over Project-scoped data only.
+ *
+ * The properties this file exists to pin, in the order the sections run:
+ *
+ *   1. the path is exactly the ratified one, and one parser family recognizes it
+ *   2. project identity is exact — no substitution, no fallback of any kind
+ *   3. workspace ancestry is checked and REFUSED on mismatch, never corrected
+ *   4. every projection is scoped by BOTH ids, twice, and Zone 2/Zone 3 are disjoint
+ *   5. no cross-scope source is reachable from any new file
+ *   6. four zones, in order, present when empty, Health last, no invented health
+ *   7. archived stays readable and no mutation exists to withhold
+ *   8. missing / unauthorized / mismatched are one indistinguishable refusal
+ *   9. breadcrumb, tab and nav integration
+ *  10. nothing else moved
+ */
+
+const WS = "11111111-2222-3333-4444-555555555555";
+const OTHER_WS = "99999999-8888-7777-6666-555555555555";
+const PROJECT = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+const OTHER_PROJECT = "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb";
+const PMO = "12121212-3434-5656-7878-909090909090";
+const CANONICAL = `/workspaces/${WS}/projects/${PROJECT}/command-center`;
+const CANONICAL_HOME = `/workspaces/${WS}/projects/${PROJECT}`;
+
+const ROUTE_FILE = "src/app/(protected)/workspaces/[workspaceId]/projects/[projectId]/command-center/page.tsx";
+const route = readFileSync(ROUTE_FILE, "utf8");
+const paths = readFileSync("src/lib/projects/project-command-center-paths.ts", "utf8");
+const projection = readFileSync("src/lib/projects/project-command-center-projection.ts", "utf8");
+const familyPaths = readFileSync("src/lib/projects/project-paths.ts", "utf8");
+const tabNav = readFileSync("src/components/pmfreak/projects/project-tab-nav.tsx", "utf8");
+const projectHome = readFileSync("src/app/(protected)/workspaces/[workspaceId]/projects/[projectId]/page.tsx", "utf8");
+const legacyProjectRoute = readFileSync("src/app/(protected)/projects/[id]/page.tsx", "utf8");
+const bareCommandCenter = readFileSync("src/app/(protected)/command-center/page.tsx", "utf8");
+const legacyPmoCommandCenter = readFileSync("src/app/(protected)/pmo-command-center/page.tsx", "utf8");
+const workspaceCommandCenter = readFileSync(
+  "src/app/(protected)/workspaces/[workspaceId]/command-center/page.tsx",
+  "utf8",
+);
+const pmoCommandCenter = readFileSync(
+  "src/app/(protected)/workspaces/[workspaceId]/pmos/[pmoId]/command-center/page.tsx",
+  "utf8",
+);
+const protectedLayout = readFileSync("src/app/(protected)/layout.tsx", "utf8");
+const sidebarTree = readFileSync("src/components/pmfreak/navigation/sidebar-pmo-tree.tsx", "utf8");
+const routeStates = readFileSync("src/components/pmfreak/projects/project-route-states.tsx", "utf8");
+
+/** Every file this slice adds or rewrites, for the whole-slice prohibitions. */
+const NEW_SLICE_FILES: [string, string][] = [
+  ["route", route],
+  ["command-center paths", paths],
+  ["projection", projection],
+];
+
+/**
+ * Strip comments before checking copy and import rules.
+ *
+ * ADR-PMF-014 Rule 1 governs what a USER sees, and prose that explains a rule
+ * necessarily quotes the phrase it forbids. The same applies to the cross-scope
+ * import ban: these modules document exactly which sources they refuse, by name,
+ * and a check that cannot tell an explanation from an import would push the
+ * reasoning out of the code. Everything a user can read is a string literal or
+ * JSX text, and every import is a statement; both survive this.
+ */
+function withoutComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+}
+
+// ─── 1. The canonical path ────────────────────────────────────────────────
+
+test("the canonical path is the entity-qualified route named by the route map", () => {
+  assert.equal(projectCommandCenterPath(WS, PROJECT), CANONICAL);
+  // Terminal segment under the Project, per §4 rule 3 — mirroring the breadcrumb
+  // rule that a Command Center is only ever a trail's last node.
+  assert.ok(CANONICAL.endsWith("/command-center"));
+  // Workspace-rooted, never PMO-rooted: `projects.workspace_id` is the mandatory
+  // parent and `projects.pmo_id` is nullable (§1).
+  assert.ok(CANONICAL.startsWith(`/workspaces/${WS}/projects/${PROJECT}`));
+  assert.equal(CANONICAL.includes("/pmos/"), false);
+  // And it is exactly Project Home plus one segment.
+  assert.equal(CANONICAL, `${projectHomePath(WS, PROJECT)}/command-center`);
+});
+
+test("it is built from the family table, not from a hand-typed literal", () => {
+  assert.equal(projectCommandCenterPath(WS, PROJECT), projectSurfacePath(WS, PROJECT, "command-center"));
+  assert.deepEqual([...PROJECT_SURFACES], ["home", "command-center"]);
+  // One family, one pattern. A second regex could disagree with this one about
+  // which paths are Project routes.
+  assert.equal(familyPaths.match(/^const CANONICAL_PROJECT_ROUTE_PATTERN/gm)?.length, 1);
+  assert.doesNotMatch(paths, /new RegExp|\/\^\\\/workspaces/);
+  assert.match(paths, /projectSurfacePath\(workspaceId, projectId, "command-center"\)/);
+});
+
+test("both ids are encoded, so neither can escape its path segment", () => {
+  const built = projectCommandCenterPath("w/../evil", "p/../other");
+  assert.equal(built, "/workspaces/w%2F..%2Fevil/projects/p%2F..%2Fother/command-center");
+  // "", workspaces, <id>, projects, <id>, command-center — the ids added no
+  // segments of their own, so the path still addresses this route and no other.
+  assert.equal(built.split("/").length, 6);
+  assert.deepEqual(parseCanonicalProjectRoute(built), {
+    workspaceId: "w/../evil",
+    projectId: "p/../other",
+    surface: "command-center",
+  });
+});
+
+test("the parser recovers exactly the two ids and names the surface", () => {
+  const parsed = parseCanonicalProjectRoute(CANONICAL);
+  assert.deepEqual(parsed, { workspaceId: WS, projectId: PROJECT, surface: "command-center" });
+  assert.equal(isCanonicalProjectRoutePath(CANONICAL), true);
+  assert.equal(isProjectCommandCenterPath(CANONICAL), true);
+  // Round-trips through the encoder.
+  assert.deepEqual(parseCanonicalProjectRoute(projectCommandCenterPath("a b", "c d")), {
+    workspaceId: "a b",
+    projectId: "c d",
+    surface: "command-center",
+  });
+});
+
+test("the one-surface predicate does not claim Project Home or an unbuilt sibling", () => {
+  assert.equal(isProjectCommandCenterPath(CANONICAL_HOME), false);
+  for (const unbuilt of ["tasks", "milestones", "risks", "issues", "decisions", "feed", "memory"]) {
+    assert.equal(isProjectCommandCenterPath(`${CANONICAL_HOME}/${unbuilt}`), false);
+    assert.equal(isCanonicalProjectRoutePath(`${CANONICAL_HOME}/${unbuilt}`), false);
+  }
+});
+
+test("malformed and deeper paths are refused rather than guessed at", () => {
+  for (const bad of [
+    `${CANONICAL}/`.concat("anything"),
+    `${CANONICAL}/1`,
+    `/workspaces/${WS}/projects//command-center`,
+    `/workspaces//projects/${PROJECT}/command-center`,
+    `/workspaces/${WS}/projects/${PROJECT}/command-center/extra`,
+    "/workspaces/%E0%A4%A/projects/p/command-center",
+    `/workspaces/${WS}/project/${PROJECT}/command-center`,
+  ]) {
+    assert.equal(parseCanonicalProjectRoute(bad), null, `${bad} must not parse`);
+    assert.equal(isProjectCommandCenterPath(bad), false, `${bad} must not be the Command Center`);
+  }
+  // A trailing slash on the real path is still the real path.
+  assert.equal(isProjectCommandCenterPath(`${CANONICAL}/`), true);
+});
+
+test("adjacent Command Centers and legacy paths are not this route", () => {
+  for (const other of [
+    WORKSPACE_COMMAND_CENTER_LEGACY_PATH,
+    workspaceCommandCenterPath(WS),
+    workspaceSettingsPath(WS),
+    workspaceHomePath(WS),
+    pmoHomePath(WS, PMO),
+    pmoCommandCenterPath(WS, PMO),
+    "/pmo-command-center",
+    PM_OPERATIONS_PATH,
+    legacyProjectHomePath(PROJECT),
+    `${legacyProjectHomePath(PROJECT)}/command-center`,
+    "/projects",
+  ]) {
+    assert.equal(isProjectCommandCenterPath(other), false, `${other} must not be the Project Command Center`);
+  }
+  // And this route is not any of THEIR families.
+  assert.equal(isWorkspaceCommandCenterPath(CANONICAL), false);
+  assert.equal(isCanonicalPmoRoutePath(CANONICAL), false);
+});
+
+test("no second canonical Project Command Center route exists in the app tree", () => {
+  // `/projects/[projectId]/command-center` has no prior surface behind it, so it
+  // would not be a compatibility seam — it would be a second Project Command
+  // Center identity, which is the entity confusion ADR-PMF-007 ruled against.
+  assert.equal(existsSync("src/app/(protected)/projects/[id]/command-center"), false);
+  assert.equal(existsSync("src/app/(protected)/projects/[projectId]"), false);
+  assert.equal(existsSync(ROUTE_FILE), true);
+  assert.match(paths, /has NO LEGACY ENTRY POINT|no prior surface/i);
+});
+
+// ─── 2. Project identity is exact ─────────────────────────────────────────
+
+const grantedWs = (workspaceId: string): RoutedWorkspaceAccess => ({
+  access: "granted",
+  workspaceId,
+  role: "pm",
+  readOnly: false,
+});
+const archivedWs = (workspaceId: string): RoutedWorkspaceAccess => ({
+  access: "archived",
+  workspaceId,
+  role: "pm",
+  readOnly: true,
+});
+const deniedWs: RoutedWorkspaceAccess = { access: "denied", workspaceId: null, role: null, readOnly: true };
+
+function assertDenied(result: RoutedProjectAccess, why: string) {
+  assert.equal(result.access, "denied", why);
+  assert.equal(result.projectId, null, "a refusal must not carry a project id");
+  assert.equal(result.workspaceId, null, "a refusal must not carry a workspace id");
+  assert.equal(result.role, null, "a refusal must not carry a role");
+  assert.equal(result.readOnly, true);
+}
+
+test("the routed projectId is authoritative — the verdict echoes only what was asked for", () => {
+  for (const requested of [PROJECT, OTHER_PROJECT]) {
+    const result = decideRoutedProjectAccess({
+      routedWorkspaceId: WS,
+      projectId: requested,
+      project: { workspaceId: WS, status: "active" },
+      workspaceAccess: grantedWs(WS),
+    });
+    assert.equal(result.access, "granted");
+    assert.equal(result.projectId, requested);
+    assert.equal(result.workspaceId, WS);
+  }
+});
+
+test("Project A never becomes Project B — an absent project has no substitute", () => {
+  assertDenied(
+    decideRoutedProjectAccess({
+      routedWorkspaceId: WS,
+      projectId: PROJECT,
+      project: null,
+      workspaceAccess: grantedWs(WS),
+    }),
+    "an unresolvable project must not be replaced by another",
+  );
+});
+
+test("no fallback resolver, no picker and no query-param project reach this route", () => {
+  const body = withoutComments(route);
+  for (const forbidden of [
+    "resolveActiveProject",
+    "resolveCanonicalProject",
+    "resolvePreferredWorkspace",
+    "ensureUserWorkspace",
+    "resolveWriteWorkspace",
+    "getUserWorkspaces",
+    "searchParams",
+    // The QUERY form specifically. `projectId={...}` as a component prop is the
+    // authorized id being passed down, which is the opposite of a picker.
+    "?projectId=",
+    "projects[0]",
+    "selectedProject",
+    "onSelectProject",
+  ]) {
+    assert.equal(body.includes(forbidden), false, `the Project Command Center must not use ${forbidden}`);
+  }
+  // The screen takes `params` and nothing else — there is no query surface at all.
+  assert.match(route, /params: Promise<\{ workspaceId: string; projectId: string \}>/);
+  assert.equal(body.includes("firstQueryValue"), false);
+});
+
+test("the route authorizes the URL's project id, passing both routed segments", () => {
+  assert.match(route, /const access = await resolveRoutedProject\(user\.id, requestedWorkspaceId, requestedProjectId\)/);
+  // And every read afterwards uses the VERDICT's ids, never the segments again.
+  assert.match(route, /const \{ workspaceId, projectId \} = access;/);
+  const afterVerdict = route.slice(route.indexOf("const { workspaceId, projectId } = access;"));
+  assert.equal(
+    withoutComments(afterVerdict).includes("requestedWorkspaceId"),
+    false,
+    "the routed segment must not be used after the verdict",
+  );
+  assert.equal(withoutComments(afterVerdict).includes("requestedProjectId"), false);
+});
+
+test("authorization happens before any project data is read", () => {
+  const body = withoutComments(route);
+  const authIndex = body.indexOf("resolveRoutedProject(");
+  const capabilityIndex = body.indexOf("evaluateCapabilityAccess(");
+  const clientIndex = body.indexOf("createSupabaseServerClient(");
+  const firstRead = body.indexOf('.from("projects")');
+  assert.ok(authIndex > -1 && capabilityIndex > -1 && clientIndex > -1 && firstRead > -1);
+  assert.ok(authIndex < capabilityIndex, "the routed resolver runs before the capability gate");
+  assert.ok(capabilityIndex < clientIndex, "no client is created before authorization");
+  assert.ok(clientIndex < firstRead, "no project data is read before authorization");
+  // The capability gate is asked about the AUTHORIZED pair.
+  assert.match(route, /evaluateCapabilityAccess\(\{ workspaceId, projectId, permission: "read" \}\)/);
+});
+
+// ─── 3. Workspace ancestry ────────────────────────────────────────────────
+
+test("a routed workspace that disagrees with projects.workspace_id is REFUSED, not corrected", () => {
+  assertDenied(
+    decideRoutedProjectAccess({
+      routedWorkspaceId: OTHER_WS,
+      projectId: PROJECT,
+      project: { workspaceId: WS, status: "active" },
+      workspaceAccess: grantedWs(WS),
+    }),
+    "an ancestry mismatch must be refused",
+  );
+});
+
+test("a workspace verdict resolved for some other workspace cannot authorize this project", () => {
+  assertDenied(
+    decideRoutedProjectAccess({
+      routedWorkspaceId: WS,
+      projectId: PROJECT,
+      project: { workspaceId: WS, status: "active" },
+      workspaceAccess: grantedWs(OTHER_WS),
+    }),
+    "the authorized workspace must be the project's own",
+  );
+});
+
+test("no membership in the project's real workspace is denied", () => {
+  assertDenied(
+    decideRoutedProjectAccess({
+      routedWorkspaceId: WS,
+      projectId: PROJECT,
+      project: { workspaceId: WS, status: "active" },
+      workspaceAccess: deniedWs,
+    }),
+    "membership is required in the project's own workspace",
+  );
+});
+
+test("the preferred-workspace cookie cannot influence this route", () => {
+  // Not by import, and not by any other name. The resolver derives the parent
+  // from `projects.workspace_id`; the cookie is not consulted anywhere on the
+  // path, so the same URL resolves identically for every caller and session.
+  for (const [name, source] of NEW_SLICE_FILES) {
+    assert.equal(
+      withoutComments(source).includes("preferred-workspace"),
+      false,
+      `${name} must not reach for the preferred workspace`,
+    );
+    assert.equal(withoutComments(source).includes("resolvePreferredWorkspace"), false, name);
+  }
+});
+
+// ─── 4. Projection scope ──────────────────────────────────────────────────
+
+const raidRow = (over: Partial<ProjectRaidRow> = {}): ProjectRaidRow => ({
+  id: "r1",
+  workspace_id: WS,
+  project_id: PROJECT,
+  category: "risk",
+  title: "t",
+  description: "d",
+  status: "open",
+  confidence_score: 80,
+  occurrence_count: 1,
+  auto_generated: true,
+  last_detected_at: "2026-09-01T00:00:00Z",
+  ...over,
+});
+
+const recRow = (over: Partial<ProjectRecommendationRow> = {}): ProjectRecommendationRow => ({
+  id: "a1",
+  workspace_id: WS,
+  project_id: PROJECT,
+  governance_event_id: null,
+  title: "t",
+  description: "d",
+  recommended_action_type: "follow_up",
+  status: "proposed",
+  confidence_score: 70,
+  impact_level: "medium",
+  recommended_owner: null,
+  recommended_due_window: null,
+  created_at: "2026-09-01T00:00:00Z",
+  ...over,
+});
+
+test("every descriptor carries the authorized workspace AND the exact project", () => {
+  for (const query of [
+    projectRaidQuery(WS, PROJECT),
+    projectRecommendationsQuery(WS, PROJECT),
+    projectPendingDecisionsQuery(WS, PROJECT),
+  ]) {
+    assert.equal(query.workspaceId, WS);
+    assert.equal(query.projectId, PROJECT);
+    assert.equal(query.limit, ZONE_ROW_LIMIT);
+  }
+});
+
+test("the RAID descriptor excludes closed statuses using the SHARED definition", () => {
+  const query = projectRaidQuery(WS, PROJECT);
+  assert.equal(query.table, "raid_items");
+  assert.equal(query.excludeStatuses, CLOSED_RAID_STATUSES);
+  // Not a copy — the same reference, so the Project and PMO Command Centers
+  // cannot disagree about what "open" means for the same project.
+  assert.deepEqual([...CLOSED_RAID_STATUSES], ["closed", "resolved"]);
+  assert.equal(withoutComments(projection).includes('"closed"'), false, "open-ness must not be re-declared here");
+});
+
+test("workspace-scoped RAID with no project cannot enter the zone", () => {
+  const kept = selectProjectRaid([raidRow({ id: "keep" }), raidRow({ id: "drop", project_id: null })], WS, PROJECT);
+  assert.deepEqual(kept.map((r) => r.id), ["keep"]);
+});
+
+test("a sibling project's RAID cannot enter the zone", () => {
+  const kept = selectProjectRaid([raidRow({ id: "keep" }), raidRow({ id: "drop", project_id: OTHER_PROJECT })], WS, PROJECT);
+  assert.deepEqual(kept.map((r) => r.id), ["keep"]);
+});
+
+test("a foreign workspace's RAID cannot enter the zone", () => {
+  const kept = selectProjectRaid([raidRow({ id: "keep" }), raidRow({ id: "drop", workspace_id: OTHER_WS })], WS, PROJECT);
+  assert.deepEqual(kept.map((r) => r.id), ["keep"]);
+});
+
+test("closed RAID cannot enter the zone, by the shared definition", () => {
+  const rows = [raidRow({ id: "open", status: "open" }), raidRow({ id: "monitoring", status: "monitoring" })];
+  for (const closed of CLOSED_RAID_STATUSES) {
+    rows.push(raidRow({ id: `x-${closed}`, status: closed as ProjectRaidRow["status"] }));
+  }
+  assert.deepEqual(selectProjectRaid(rows, WS, PROJECT).map((r) => r.id), ["open", "monitoring"]);
+});
+
+test("a sibling project's or foreign workspace's Recommendation cannot enter Zone 2 or Zone 3", () => {
+  for (const governed of [false, true]) {
+    const gov = governed ? "g1" : null;
+    const rows = [
+      recRow({ id: "keep", governance_event_id: gov }),
+      recRow({ id: "sibling", project_id: OTHER_PROJECT, governance_event_id: gov }),
+      recRow({ id: "foreign", workspace_id: OTHER_WS, governance_event_id: gov }),
+    ];
+    assert.deepEqual(
+      selectProjectRecommendations(rows, WS, PROJECT, governed).map((r) => r.id),
+      ["keep"],
+      `governed=${governed}`,
+    );
+  }
+});
+
+test("only `proposed` Recommendations enter either zone", () => {
+  const rows = [
+    recRow({ id: "proposed", status: "proposed" }),
+    recRow({ id: "accepted", status: "accepted" }),
+    recRow({ id: "rejected", status: "rejected" }),
+    recRow({ id: "deferred", status: "deferred" }),
+    recRow({ id: "converted", status: "converted_to_task" }),
+  ];
+  assert.deepEqual(selectProjectRecommendations(rows, WS, PROJECT, false).map((r) => r.id), ["proposed"]);
+  assert.equal(PROPOSED_RECOMMENDATION_STATUS, "proposed");
+  assert.equal(projectRecommendationsQuery(WS, PROJECT).status, "proposed");
+  assert.equal(projectPendingDecisionsQuery(WS, PROJECT).status, "proposed");
+});
+
+test("Zone 2 and Zone 3 are provably disjoint, and together lose nothing", () => {
+  // The whole distinction is `governance_event_id`, which is either NULL or NOT
+  // NULL on every row — so the two selectors partition the proposed set exactly.
+  const rows = [
+    recRow({ id: "u1", governance_event_id: null }),
+    recRow({ id: "u2", governance_event_id: null }),
+    recRow({ id: "g1", governance_event_id: "ge-1" }),
+    recRow({ id: "g2", governance_event_id: "ge-2" }),
+  ];
+  const zone2 = selectProjectRecommendations(rows, WS, PROJECT, false).map((r) => r.id);
+  const zone3 = selectProjectRecommendations(rows, WS, PROJECT, true).map((r) => r.id);
+  assert.deepEqual(zone2, ["u1", "u2"]);
+  assert.deepEqual(zone3, ["g1", "g2"]);
+  assert.deepEqual(zone2.filter((id) => zone3.includes(id)), [], "the two zones must never share a row");
+  assert.equal(zone2.length + zone3.length, rows.length, "and together they must lose nothing");
+  // The descriptors say the same thing.
+  assert.equal(projectRecommendationsQuery(WS, PROJECT).governed, false);
+  assert.equal(projectPendingDecisionsQuery(WS, PROJECT).governed, true);
+});
+
+test("the Zone 3 count predicate is EXACTLY the Zone 3 item predicate", () => {
+  // The headline count and the rows are the same query — `count: "exact"` rides
+  // along on one request, so they are one predicate at one snapshot. This is
+  // stronger than matching the assurance RPC's `openRecommendations`, which was
+  // verified to carry the same predicate but is a separate statement.
+  const query = projectPendingDecisionsQuery(WS, PROJECT);
+  assert.deepEqual(
+    { table: query.table, workspaceId: query.workspaceId, projectId: query.projectId, governed: query.governed, status: query.status },
+    { table: "recommended_actions", workspaceId: WS, projectId: PROJECT, governed: true, status: "proposed" },
+  );
+  // The route reads the total from the SAME result object it reads the rows from.
+  assert.match(route, /const pendingDecisionsTotal = decisionsRead\s*\?\s*resolveVisibleTotal\(\s*decisionsRead\.rows\.length,\s*pendingDecisions\.length,\s*decisionsRead\.total,?\s*\)/);
+  // And it does NOT take the count from the assurance payload.
+  assert.equal(withoutComments(route).includes("openRecommendations"), false);
+  assert.equal(withoutComments(projection).includes("openRecommendations"), false);
+});
+
+test("a guard that drops anything withholds the total instead of contradicting the list", () => {
+  assert.equal(resolveVisibleTotal(8, 8, 40), 40);
+  assert.equal(resolveVisibleTotal(8, 7, 40), null, "a dropped row means the total no longer describes the list");
+  assert.equal(resolveVisibleTotal(8, 8, null), null, "no count read means no count claimed");
+});
+
+test("category counts count stored categories and invent no band", () => {
+  const counts = countRaidByCategory([
+    raidRow({ category: "risk" }),
+    raidRow({ category: "risk" }),
+    raidRow({ category: "issue" }),
+    raidRow({ category: "dependency" }),
+    raidRow({ category: "assumption" }),
+  ]);
+  assert.deepEqual(counts, { risk: 2, issue: 1, dependency: 1, assumption: 1 });
+});
+
+test("the query descriptor is what actually reaches the database", () => {
+  const applied: {
+    table?: string;
+    columns?: string;
+    options?: unknown;
+    eq: [string, unknown][];
+    is: [string, unknown][];
+    not: [string, string, unknown][];
+    order: [string, unknown][];
+    limit?: number;
+  } = { eq: [], is: [], not: [], order: [] };
+
+  const builder = {
+    eq(column: string, value: unknown) {
+      applied.eq.push([column, value]);
+      return builder;
+    },
+    is(column: string, value: unknown) {
+      applied.is.push([column, value]);
+      return builder;
+    },
+    not(column: string, operator: string, value: unknown) {
+      applied.not.push([column, operator, value]);
+      return builder;
+    },
+    order(column: string, options: unknown) {
+      applied.order.push([column, options]);
+      return builder;
+    },
+    limit(value: number) {
+      applied.limit = value;
+      return { then: (resolve: (r: unknown) => void) => resolve({ data: [], count: 0, error: null }) };
+    },
+  };
+  const fake = {
+    from(table: string) {
+      applied.table = table;
+      return {
+        select(columns: string, options: unknown) {
+          applied.columns = columns;
+          applied.options = options;
+          return builder;
+        },
+      };
+    },
+  };
+  const reset = () => {
+    applied.eq.length = 0;
+    applied.is.length = 0;
+    applied.not.length = 0;
+    applied.order.length = 0;
+  };
+
+  return (async () => {
+    type Client = Parameters<typeof runProjectScopedQuery>[0];
+
+    await runProjectScopedQuery(fake as unknown as Client, projectRaidQuery(WS, PROJECT));
+    assert.equal(applied.table, "raid_items");
+    assert.deepEqual(applied.options, { count: "exact" });
+    assert.deepEqual(applied.eq, [["workspace_id", WS], ["project_id", PROJECT]]);
+    assert.deepEqual(applied.not, [["status", "in", "(closed,resolved)"]]);
+    assert.deepEqual(applied.is, []);
+    assert.deepEqual(applied.order, [
+      ["last_detected_at", { ascending: false }],
+      ["id", { ascending: true }],
+    ]);
+    assert.equal(applied.limit, ZONE_ROW_LIMIT);
+
+    reset();
+    await runProjectScopedQuery(fake as unknown as Client, projectRecommendationsQuery(WS, PROJECT));
+    assert.equal(applied.table, "recommended_actions");
+    assert.deepEqual(applied.eq, [["workspace_id", WS], ["project_id", PROJECT], ["status", "proposed"]]);
+    assert.deepEqual(applied.is, [["governance_event_id", null]], "Zone 2 is the UNGOVERNED half");
+    assert.deepEqual(applied.not, []);
+
+    reset();
+    await runProjectScopedQuery(fake as unknown as Client, projectPendingDecisionsQuery(WS, PROJECT));
+    assert.equal(applied.table, "recommended_actions");
+    assert.deepEqual(applied.eq, [["workspace_id", WS], ["project_id", PROJECT], ["status", "proposed"]]);
+    assert.deepEqual(applied.not, [["governance_event_id", "is", null]], "Zone 3 is the GOVERNED half");
+    assert.deepEqual(applied.is, []);
+  })();
+});
+
+test("the assurance payload is discarded unless it is about THIS project", () => {
+  const ok = { scope: "project", workspaceId: WS, projectId: PROJECT, totalGovernanceEvents: 3, decisionRequiredCount: 1, violationsCount: 0 };
+  assert.deepEqual(selectProjectGovernanceFacts(ok, WS, PROJECT), {
+    totalGovernanceEvents: 3,
+    decisionRequiredCount: 1,
+    violationsCount: 0,
+  });
+  assert.equal(selectProjectGovernanceFacts({ ...ok, projectId: OTHER_PROJECT }, WS, PROJECT), null);
+  assert.equal(selectProjectGovernanceFacts({ ...ok, workspaceId: OTHER_WS }, WS, PROJECT), null);
+  assert.equal(selectProjectGovernanceFacts({ ...ok, scope: "workspace" }, WS, PROJECT), null);
+});
+
+test("a malformed or missing assurance payload yields NO facts, never zeroes", () => {
+  for (const bad of [null, undefined, [], "x", 3, {}, { scope: "project", workspaceId: WS, projectId: PROJECT }]) {
+    assert.equal(selectProjectGovernanceFacts(bad, WS, PROJECT), null);
+  }
+  // A genuine zero is a genuine zero.
+  assert.deepEqual(
+    selectProjectGovernanceFacts(
+      { scope: "project", workspaceId: WS, projectId: PROJECT, totalGovernanceEvents: 0, decisionRequiredCount: 0, violationsCount: 0 },
+      WS,
+      PROJECT,
+    ),
+    { totalGovernanceEvents: 0, decisionRequiredCount: 0, violationsCount: 0 },
+  );
+});
+
+// ─── 5. Cross-scope prohibition (ADR-PMF-020) ─────────────────────────────
+
+test("no new file imports a workspace-scoped Command Center surface", () => {
+  for (const [name, source] of NEW_SLICE_FILES) {
+    const body = withoutComments(source);
+    for (const forbidden of [
+      "@/modules/workspace",
+      "@/features/command-center",
+      "@/lib/command-center",
+      "@/lib/operational-command-center",
+      "@/lib/pmo-command-center",
+      "@/lib/personal-portfolio",
+    ]) {
+      assert.equal(body.includes(forbidden), false, `${name} must not import ${forbidden}`);
+    }
+  }
+});
+
+test("no new file reaches a cross-scope data source", () => {
+  for (const [name, source] of NEW_SLICE_FILES) {
+    const body = withoutComments(source);
+    for (const forbidden of [
+      "listPmosWithProjects",
+      "summarizePortfolio",
+      "portfolio-summary",
+      "pmo_command_center_snapshots",
+      "operational_command_centers",
+      "operational_focus_items",
+      "project_os_snapshots",
+      "pmo_attention_items",
+      "pmo_recommendations",
+      "pmo_executive_reports",
+      "personal-portfolio",
+      "getPMOCommandCenter",
+    ]) {
+      assert.equal(body.includes(forbidden), false, `${name} must not reach ${forbidden}`);
+    }
+  }
+});
+
+test("the route reads only the tables this slice is allowed to read", () => {
+  const tables = [...withoutComments(route).matchAll(/\.from\("([^"]+)"\)/g)].map((m) => m[1]);
+  assert.deepEqual([...new Set(tables)].sort(), ["projects", "pmos", "workspaces"].sort());
+  // RAID and Recommendations go through the descriptors, never inline.
+  assert.equal(withoutComments(route).includes('.from("raid_items")'), false);
+  assert.equal(withoutComments(route).includes('.from("recommended_actions")'), false);
+  const projectionTables = [...withoutComments(projection).matchAll(/"(raid_items|recommended_actions)"/g)].map((m) => m[1]);
+  assert.ok(projectionTables.length > 0);
+  assert.deepEqual([...new Set(projectionTables)].sort(), ["raid_items", "recommended_actions"]);
+});
+
+test("the only RPC is the project-scoped assurance summary", () => {
+  const rpcs = [...withoutComments(route).matchAll(/\.rpc\("([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(rpcs, ["get_operational_assurance_summary"]);
+  assert.match(route, /p_workspace_id: workspaceId, p_project_id: projectId/);
+});
+
+test("every read in the route is scoped by the authorized workspace", () => {
+  // Every `.from(...)` chain must constrain the workspace. `workspaces` is
+  // constrained by its own id, which IS the workspace.
+  assert.match(route, /\.from\("projects"\)[\s\S]{0,200}\.eq\("workspace_id", workspaceId\)[\s\S]{0,80}\.eq\("id", projectId\)/);
+  assert.match(route, /\.from\("pmos"\)[\s\S]{0,200}\.eq\("workspace_id", workspaceId\)/);
+  assert.match(route, /\.from\("workspaces"\)[\s\S]{0,160}\.eq\("id", workspaceId\)/);
+});
+
+// ─── 6. Four-zone grammar (ADR-PMF-070) ───────────────────────────────────
+
+test("the zone model is exactly the four ratified zones, in the ratified order", () => {
+  assert.deepEqual(
+    PROJECT_COMMAND_CENTER_ZONES.map((z) => z.title),
+    ["Attention Required", "AI Recommendations", "Pending Decisions", "Execution Health"],
+  );
+  assert.equal(PROJECT_COMMAND_CENTER_ZONES.length, 4, "no fifth zone, no missing zone");
+  // Execution Health is last — "always last, never the first or largest zone".
+  assert.equal(PROJECT_COMMAND_CENTER_ZONES[3].key, "execution-health");
+});
+
+test("the route renders all four zones, in that order, exactly once each", () => {
+  const order = ["ZONE_ATTENTION", "ZONE_RECOMMENDATIONS", "ZONE_DECISIONS", "ZONE_HEALTH"];
+  // Bound from the zone table in its own order, so the names cannot be shuffled
+  // relative to the ratified list without the destructure changing too.
+  assert.match(
+    route,
+    /const \[ZONE_ATTENTION, ZONE_RECOMMENDATIONS, ZONE_DECISIONS, ZONE_HEALTH\] = PROJECT_COMMAND_CENTER_ZONES;/,
+  );
+  const positions = order.map((name) => route.indexOf(`zone={${name}}`));
+  for (const [index, position] of positions.entries()) {
+    assert.ok(position > -1, `${order[index]} must be rendered`);
+    if (index > 0) assert.ok(position > positions[index - 1], `${order[index]} must follow ${order[index - 1]}`);
+  }
+  assert.equal(route.match(/<Zone\s/g)?.length, 4, "exactly four zones");
+});
+
+test("zone presence is structural — no zone is conditionally omitted", () => {
+  // Each `<Zone>` sits at the top level of the returned tree, never behind a
+  // guard. ADR-PMF-070 Frontend Rule 2: presence is structural, population is
+  // data-dependent. The conditionals live INSIDE each zone's body.
+  for (const zoneVar of ["ZONE_ATTENTION", "ZONE_RECOMMENDATIONS", "ZONE_DECISIONS", "ZONE_HEALTH"]) {
+    const at = route.indexOf(`zone={${zoneVar}}`);
+    const preceding = route.slice(Math.max(0, at - 260), at);
+    assert.equal(/\{\s*\w+\s*(&&|\?)[^}]*<Zone$/.test(preceding.trimEnd()), false, `${zoneVar} must not be conditional`);
+  }
+  // And every zone body has all three branches available to it.
+  assert.equal(route.match(/<ZoneDegraded /g)?.length, 4, "every zone can degrade on its own");
+  assert.equal(route.match(/<ZoneEmpty>/g)?.length, 3, "the three list zones have an Empty state");
+});
+
+test("empty and degraded are different statements, and a failed read is never a zero", () => {
+  assert.match(route, /No open risks, issues, assumptions or dependencies are recorded for this project\./);
+  assert.match(route, /No unreviewed recommendation has been produced for this project\./);
+  assert.match(route, /No governed recommendation is waiting on a decision for this project\./);
+  assert.match(route, /We couldn&apos;t load \{what\}/);
+  assert.match(route, /temporary problem reading this project, not a permissions issue/);
+  // The Empty copy must not claim a conclusion the source cannot support.
+  for (const forbidden of ["on track", "all clear", "everything is fine", "healthy"]) {
+    assert.equal(withoutComments(route).toLowerCase().includes(forbidden), false, `must not claim "${forbidden}"`);
+  }
+});
+
+test("one zone's failure removes no other zone and no header", () => {
+  // `allSettled`, never `all`: a rejection must not take three healthy zones and
+  // the header down with it.
+  assert.match(route, /await Promise\.allSettled\(\[/);
+  assert.equal(withoutComments(route).includes("Promise.all("), false, "Promise.all would blank the screen");
+  // Each zone's degraded branch is keyed on its OWN read.
+  assert.match(route, /raidRead === null \? \(\s*<ZoneDegraded/);
+  assert.match(route, /recommendationsRead === null \? \(\s*<ZoneDegraded/);
+  assert.match(route, /decisionsRead === null \? \(\s*<ZoneDegraded/);
+  assert.match(route, /governance === null \? \(\s*<ZoneDegraded/);
+});
+
+test("no health score, no band, no fabricated health state", () => {
+  const body = withoutComments(route) + withoutComments(projection);
+  for (const forbidden of [
+    "healthScore",
+    "health_score",
+    "detectedRaidOverview",
+    "loadLatestOperationalGovernanceBrief",
+    "operational_governance_briefs",
+    "Monitoring",
+    "at risk",
+    "off track",
+    "green",
+    "yellow",
+    "amber-rating",
+  ]) {
+    assert.equal(body.includes(forbidden), false, `Execution Health must not introduce ${forbidden}`);
+  }
+  // Zone 4's facts are exactly three counted values plus the stored status.
+  assert.match(route, /label: "Project status", value: project\.status/);
+  assert.match(route, /label: "Governance events recorded", value: governance\.totalGovernanceEvents/);
+  assert.match(route, /label: "Awaiting a governance decision", value: governance\.decisionRequiredCount/);
+  assert.match(route, /label: "Governance violations recorded", value: governance\.violationsCount/);
+  // And the two deliberately-omitted metrics stay omitted.
+  assert.equal(body.includes("unresolvedRisksIssues"), false, "risk_issue_records would conflict with Zone 1");
+  assert.equal(body.includes("incompleteChainCount"), false);
+});
+
+test("Zone 1 applies no severity gate and claims none", () => {
+  // `raid_items` has no severity column and no ratified Project threshold exists,
+  // so Slice 1 orders by recency and says so. Claiming a threshold would be
+  // inventing a governed semantic in a sort order.
+  assert.equal(projectRaidQuery(WS, PROJECT).orderBy, "last_detected_at");
+  const body = withoutComments(route) + withoutComments(projection);
+  for (const forbidden of ["severity", "threshold", "high priority", "critical attention", "above threshold"]) {
+    assert.equal(body.toLowerCase().includes(forbidden.toLowerCase()), false, `must not claim "${forbidden}"`);
+  }
+  // And no numeric score is derived from a field that is not one.
+  assert.equal(body.includes("categoryWeight"), false);
+  assert.equal(body.includes("severityOf"), false);
+  assert.match(route, /most recently detected first/);
+});
+
+test("extracted RAID is disclosed as extracted, not as certified fact", () => {
+  assert.match(route, /Detected automatically · confidence \{Math\.round\(confidence\)\}% · seen \{occurrences\}×/);
+  assert.match(route, /autoGenerated=\{item\.auto_generated\}/);
+  assert.match(route, /Generated by PMFreak/);
+});
+
+test('"+N more" is only claimed from a total taken with the rows', () => {
+  assert.match(route, /function MoreThanShown\(\{ shown, total \}/);
+  assert.match(route, /if \(total === null \|\| total <= shown\) return null;/);
+  assert.match(projection, /count: "exact"/);
+  assert.equal(route.match(/<MoreThanShown /g)?.length, 3);
+});
+
+// ─── 7. Archived ──────────────────────────────────────────────────────────
+
+test("an archived project stays readable — archived is not an access failure", () => {
+  const result = decideRoutedProjectAccess({
+    routedWorkspaceId: WS,
+    projectId: PROJECT,
+    project: { workspaceId: WS, status: "archived" },
+    workspaceAccess: grantedWs(WS),
+  });
+  assert.equal(result.access, "archived");
+  assert.equal(result.projectId, PROJECT);
+  assert.equal(result.readOnly, true);
+});
+
+test("an archived parent workspace makes an active project read-only too, and both is both", () => {
+  const workspaceOnly = decideRoutedProjectAccess({
+    routedWorkspaceId: WS,
+    projectId: PROJECT,
+    project: { workspaceId: WS, status: "active" },
+    workspaceAccess: archivedWs(WS),
+  });
+  assert.equal(workspaceOnly.access, "archived");
+  assert.deepEqual(workspaceOnly.access === "archived" ? workspaceOnly.archived : null, { project: false, workspace: true });
+
+  const both = decideRoutedProjectAccess({
+    routedWorkspaceId: WS,
+    projectId: PROJECT,
+    project: { workspaceId: WS, status: "archived" },
+    workspaceAccess: archivedWs(WS),
+  });
+  assert.deepEqual(both.access === "archived" ? both.archived : null, { project: true, workspace: true });
+});
+
+test("`completed` is a normal project state, not archival", () => {
+  const result = decideRoutedProjectAccess({
+    routedWorkspaceId: WS,
+    projectId: PROJECT,
+    project: { workspaceId: WS, status: "completed" },
+    workspaceAccess: grantedWs(WS),
+  });
+  assert.equal(result.access, "granted");
+  assert.equal(result.readOnly, false);
+});
+
+test("the archived notice is the shared one, and the zones still render beneath it", () => {
+  assert.match(route, /\{isArchived \? <ProjectArchivedNotice archived=\{access\.archived\} \/> : null\}/);
+  // The notice sits ABOVE the zones and gates none of them: archival is a
+  // read-only state, not a reason to hide last-known data (§7).
+  const noticeAt = route.indexOf("<ProjectArchivedNotice");
+  const firstZoneAt = route.indexOf("zone={ZONE_ATTENTION}");
+  assert.ok(noticeAt > -1 && firstZoneAt > noticeAt);
+  assert.equal(/isArchived\s*(\?|&&)[^\n]*<Zone\s/.test(route), false, "no zone is hidden when archived");
+});
+
+test("the route is read-only — there is no mutation to withhold", () => {
+  const body = withoutComments(route);
+  for (const mutation of [
+    '"use server"',
+    "<form",
+    "action=",
+    "method=",
+    'method: "POST"',
+    'method: "PATCH"',
+    'method: "PUT"',
+    'method: "DELETE"',
+    ".insert(",
+    ".update(",
+    ".upsert(",
+    ".delete(",
+    "revalidatePath",
+    "redirect(",
+    "onClick",
+    "useState",
+    "Accept",
+    "Reject",
+    "Defer",
+    "Record Decision",
+    "Approve",
+    "Recompute",
+    "Regenerate",
+  ]) {
+    assert.equal(body.includes(mutation), false, `Slice 1 must not contain ${mutation}`);
+  }
+  assert.equal(body.includes('"use client"'), false, "the screen is a server component");
+  // And the projection layer writes nothing either.
+  for (const mutation of [".insert(", ".update(", ".upsert(", ".delete("]) {
+    assert.equal(withoutComments(projection).includes(mutation), false, `the projection must not ${mutation}`);
+  }
+});
+
+// ─── 8. Leakage ───────────────────────────────────────────────────────────
+
+test("missing, unauthorized and mismatched render the one shared refusal", () => {
+  assert.match(route, /import \{ ProjectArchivedNotice, ProjectNotAvailable \} from "@\/components\/pmfreak\/projects\/project-route-states"/);
+  assert.equal(route.match(/<ProjectNotAvailable \/>/g)?.length, 2, "denied, and authorized-then-unreadable");
+  // The component itself reveals nothing — it is the same one Project Home uses.
+  // Comments stripped: the file EXPLAINS what it must not disclose, by name.
+  const rendered = withoutComments(routeStates);
+  assert.equal(rendered.includes("project.name"), false);
+  assert.doesNotMatch(rendered, /workspaceId|pmo_id|\bstatus\b/);
+});
+
+test("the refusal log carries only what the caller already supplied", () => {
+  const deniedBlock = route.slice(route.indexOf('event: "project_command_center.project_not_accessible"'));
+  const logged = deniedBlock.slice(0, deniedBlock.indexOf("}),"));
+  assert.match(logged, /userId: user\.id/);
+  assert.match(logged, /requestedWorkspaceId,/);
+  assert.match(logged, /requestedProjectId,/);
+  for (const derived of ["access.workspaceId", "project.name", "project.status", "pmo", "role"]) {
+    assert.equal(logged.includes(derived), false, `a refusal must not log ${derived}`);
+  }
+});
+
+test("the resolver collapses absent, unauthorized and mismatched into one answer", () => {
+  const outcomes = [
+    decideRoutedProjectAccess({ routedWorkspaceId: WS, projectId: PROJECT, project: null, workspaceAccess: grantedWs(WS) }),
+    decideRoutedProjectAccess({ routedWorkspaceId: WS, projectId: PROJECT, project: { workspaceId: WS, status: "active" }, workspaceAccess: deniedWs }),
+    decideRoutedProjectAccess({ routedWorkspaceId: OTHER_WS, projectId: PROJECT, project: { workspaceId: WS, status: "active" }, workspaceAccess: grantedWs(WS) }),
+    decideRoutedProjectAccess({ routedWorkspaceId: "", projectId: PROJECT, project: { workspaceId: WS, status: "active" }, workspaceAccess: grantedWs(WS) }),
+  ];
+  for (const outcome of outcomes) assertDenied(outcome, "every failure mode is the same answer");
+  // Byte-identical verdicts, so nothing is learned from the difference.
+  for (const outcome of outcomes) assert.deepEqual(outcome, outcomes[0]);
+});
+
+test("an archived project in a workspace the caller cannot reach is still denied", () => {
+  assertDenied(
+    decideRoutedProjectAccess({
+      routedWorkspaceId: WS,
+      projectId: PROJECT,
+      project: { workspaceId: WS, status: "archived" },
+      workspaceAccess: deniedWs,
+    }),
+    "archival is never a way around membership",
+  );
+});
+
+// ─── 9. Breadcrumb, tab and navigation ────────────────────────────────────
+
+test("the breadcrumb is Workspace → Project → Project Command Center", () => {
+  const nodes = projectCommandCenterBreadcrumb({
+    workspaceLabel: "Acme",
+    workspaceId: WS,
+    pmo: null,
+    projectName: "Apollo",
+    projectId: PROJECT,
+  });
+  assert.deepEqual(nodes, [
+    { label: "Acme", href: workspaceHomePath(WS) },
+    { label: "Apollo", href: projectHomePath(WS, PROJECT) },
+    { label: "Project Command Center", href: null },
+  ]);
+});
+
+test("a PMO ancestor appears between Workspace and Project when the project has one", () => {
+  const nodes = projectCommandCenterBreadcrumb({
+    workspaceLabel: "Acme",
+    workspaceId: WS,
+    pmo: { id: PMO, name: "Delivery PMO" },
+    projectName: "Apollo",
+    projectId: PROJECT,
+  });
+  assert.deepEqual(nodes.map((n) => n.label), ["Acme", "Delivery PMO", "Apollo", "Project Command Center"]);
+  assert.equal(nodes[1].href, pmoHomePath(WS, PMO));
+});
+
+test("the terminal node is not a link, and every ancestor links to a HOME", () => {
+  const nodes = projectCommandCenterBreadcrumb({
+    workspaceLabel: "Acme",
+    workspaceId: WS,
+    pmo: { id: PMO, name: "Delivery PMO" },
+    projectName: "Apollo",
+    projectId: PROJECT,
+  });
+  assert.equal(nodes[nodes.length - 1].href, null, "a Command Center is a trail's last node");
+  assert.equal(nodes.filter((n) => n.href === null).length, 1);
+  for (const node of nodes.slice(0, -1)) {
+    assert.ok(node.href);
+    // Never an ancestor's Command Center (§2.3 rule 1) — including the Project's
+    // own, which is this very screen.
+    assert.equal(isProjectCommandCenterPath(node.href!), false);
+    assert.equal(isWorkspaceCommandCenterPath(node.href!), false);
+    assert.equal(node.href!.endsWith("/command-center"), false);
+  }
+  // The Project ancestor is Project HOME: Home and Command Center are siblings.
+  assert.equal(nodes[2].href, projectHomePath(WS, PROJECT));
+});
+
+test("no Portfolio or Program ancestry is fabricated, because the schema has none", () => {
+  const body = withoutComments(paths) + withoutComments(route);
+  for (const absent of ["portfolio_id", "program_id", "portfolioId", "programId"]) {
+    assert.equal(body.includes(absent), false, `there is no ${absent} to build a node from`);
+  }
+  const nodes = projectCommandCenterBreadcrumb({
+    workspaceLabel: "Acme",
+    workspaceId: WS,
+    pmo: null,
+    projectName: "Apollo",
+    projectId: PROJECT,
+  });
+  assert.equal(nodes.length, 3, "no invented middle node for a direct project");
+});
+
+test("the breadcrumb is fed resolved ancestry, not the URL", () => {
+  // The PMO node is only claimed when `pmo_id` answers inside the AUTHORIZED
+  // workspace; the workspace label comes from a read of the authorized id.
+  assert.match(route, /\.from\("pmos"\)[\s\S]{0,200}\.eq\("id", project\.pmo_id\)[\s\S]{0,80}\.eq\("workspace_id", workspaceId\)/);
+  assert.match(route, /const pmo: ProjectBreadcrumbPmo = pmoRow \?\? null;/);
+  assert.match(route, /workspaceLabel: workspace\?\.name \?\? "Workspace"/);
+  assert.match(route, /workspaceId,\s*\n\s*pmo,/);
+});
+
+test("the Project tab strip gains exactly one canonical entry, built by the helper", () => {
+  assert.match(
+    tabNav,
+    /\{ label: "Project Command Center", href: projectCommandCenterPath\(workspaceId, projectId\), key: "command-center" \}/,
+  );
+  assert.match(tabNav, /active: "overview" \| "command-center" \| "chat" \| "settings"/);
+  // One entry, not two, and no hand-typed path anywhere in the strip.
+  assert.equal(tabNav.match(/projectCommandCenterPath\(/g)?.length, 1);
+  assert.doesNotMatch(withoutComments(tabNav), /["'`]\/workspaces\/[^"'`]*\/projects\//);
+});
+
+test("the tab label is entity-qualified — never a bare Command Center", () => {
+  // ADR-PMF-014 Rules 1 and 3.
+  for (const [name, source] of [["tab nav", tabNav], ["route", route]] as const) {
+    const copy = withoutComments(source);
+    const bare = [...copy.matchAll(/(\w+\s+)?Command Center/g)].filter((m) => {
+      const prefix = (m[1] ?? "").trim();
+      return prefix !== "Project" && prefix !== "PMO" && prefix !== "Workspace";
+    });
+    assert.deepEqual(bare.map((m) => m[0]), [], `${name} must qualify every Command Center mention`);
+  }
+  assert.match(route, /\{project\.name\} — Project Command Center/);
+});
+
+test("the route uses the shared tab strip and marks itself active", () => {
+  assert.match(route, /<ProjectTabNav workspaceId=\{workspaceId\} projectId=\{project\.id\} active="command-center" \/>/);
+});
+
+test("on the Project Command Center, Projects is the active nav entry", () => {
+  assert.equal(navEntryMatchesPathname(PROJECTS_NAV_HREF, CANONICAL), true);
+  assert.equal(navEntryMatchesPathname("/workspaces", CANONICAL), false, "Workspaces must not also light up");
+  assert.equal(navEntryMatchesPathname(WORKSPACE_COMMAND_CENTER_LEGACY_PATH, CANONICAL), false, "nor the Workspace Command Center");
+  assert.equal(navEntryMatchesPathname(PMOS_NAV_HREF, CANONICAL), false);
+  // Exactly one primary entry claims it.
+  const claiming = NAVIGATION_HIERARCHY.filter((node) => navEntryMatchesPathname(node.href, CANONICAL));
+  assert.deepEqual(claiming.map((n) => n.href), [PROJECTS_NAV_HREF]);
+});
+
+test("global navigation is unchanged — no new entry, no relabelled entry", () => {
+  assert.deepEqual(
+    NAVIGATION_HIERARCHY.filter((n) => n.tier === "primary").map((n) => `${n.label}|${n.href}`),
+    ["Command Center|/command-center", "Projects|/projects", "Execution|/execution", "Portfolio|/portfolio"],
+  );
+  assert.equal(
+    NAVIGATION_HIERARCHY.some((n) => n.href.includes("/projects/")),
+    false,
+    "a Project surface is reached from its Project, never from global nav",
+  );
+});
+
+test("the sidebar lights the routed project on the Command Center path", () => {
+  // It reads `parseCanonicalProjectRoute(pathname)?.projectId`, which is
+  // surface-agnostic — so this needed no edit and must keep needing none.
+  assert.match(sidebarTree, /const routedProject = parseCanonicalProjectRoute\(pathname\)/);
+  assert.match(sidebarTree, /routedProject\?\.projectId === project\.id/);
+  assert.equal(parseCanonicalProjectRoute(CANONICAL)?.projectId, PROJECT);
+});
+
+test("the protected layout derives workspace context from this route already", () => {
+  assert.match(protectedLayout, /parseCanonicalProjectRoute\(routedHeaders\.get\("x-pathname"\) \?\? ""\)\?\.workspaceId/);
+  assert.match(protectedLayout, /const routedProjectRoute = parseCanonicalProjectRoute\(/);
+  assert.equal(parseCanonicalProjectRoute(CANONICAL)?.workspaceId, WS);
+});
+
+test("route policy and session continuation accept it without widening any allowlist", () => {
+  assert.equal(isProtectedPageRoute(CANONICAL), true);
+  assert.equal(getRouteAccessPolicy(CANONICAL), "workspace-contextual");
+  assert.equal(isSafeContinuationRoute(CANONICAL), true);
+  // Both already cover it through the `/workspaces` prefix they had at base.
+  const registry = readFileSync("src/lib/auth/route-policy-registry.ts", "utf8");
+  const continuation = readFileSync("src/lib/auth/validate-continuation-route.ts", "utf8");
+  assert.equal(registry.includes("/projects/"), false, "no per-surface registry entry was added");
+  assert.equal(continuation.includes("command-center/"), false, "the allowlist was not widened");
+});
+
+// ─── 10. Nothing else moved ───────────────────────────────────────────────
+
+test("/command-center remains the Workspace Command Center's compatibility resolver", () => {
+  assert.match(bareCommandCenter, /redirect\(workspaceCommandCenterPath\(/);
+  assert.doesNotMatch(bareCommandCenter, /project-paths|projectHomePath|routed-project|projectCommandCenterPath/);
+  assert.equal(isProjectCommandCenterPath("/command-center"), false);
+  // The Execution tab still points there, because that destination screen has
+  // not moved. Truthful, not a half-finished migration.
+  assert.ok(tabNav.includes("`/command-center?projectId=${projectId}`"));
+});
+
+test("/pmo-command-center still redirects to PM Operations", () => {
+  assert.match(legacyPmoCommandCenter, /redirect\(PM_OPERATIONS_PATH\)/);
+  assert.doesNotMatch(legacyPmoCommandCenter, /project/i);
+});
+
+test("/projects/[id] remains the Project HOME resolver, not a Command Center one", () => {
+  assert.match(legacyProjectRoute, /resolveLegacyProjectRoute/);
+  assert.match(legacyProjectRoute, /redirect\(projectHomePath\(/);
+  assert.equal(withoutComments(legacyProjectRoute).includes("projectCommandCenterPath"), false);
+});
+
+test("the Workspace and PMO Command Centers are untouched by this slice", () => {
+  for (const [name, source] of [
+    ["Workspace Command Center", workspaceCommandCenter],
+    ["PMO Command Center", pmoCommandCenter],
+  ] as const) {
+    assert.equal(
+      withoutComments(source).includes("project-command-center"),
+      false,
+      `${name} must not import this slice`,
+    );
+    assert.equal(withoutComments(source).includes("projectCommandCenterPath"), false, name);
+  }
+  // The Workspace Command Center keeps its picker and its portfolio strip — this
+  // slice does not redesign it, and does not borrow from it either.
+  assert.match(workspaceCommandCenter, /resolveActiveProject/);
+  assert.match(workspaceCommandCenter, /listPmosWithProjects/);
+});
+
+test("Project Home keeps everything it had, and stays a different screen", () => {
+  for (const kept of [
+    "<ProjectTaskList",
+    "<ProjectPMAssignment",
+    "Run PMFreak AI",
+    "Previous analyses",
+    "onboarding_analyses",
+    "/api/analyze-ai",
+  ]) {
+    assert.ok(projectHome.includes(kept), `Project Home must keep ${kept}`);
+  }
+  // Home is not the Command Center, and the Command Center is not Home.
+  assert.equal(projectHome.includes("Project Command Center</h1>"), false);
+  assert.equal(withoutComments(route).includes("ProjectTaskList"), false);
+  assert.equal(withoutComments(route).includes("ProjectPMAssignment"), false);
+  assert.equal(withoutComments(route).includes("analyze-ai"), false);
+  assert.match(route, /It is NOT Project Home/);
+});
+
+test("this slice introduces no schema change and no migration", () => {
+  for (const [name, source] of NEW_SLICE_FILES) {
+    assert.equal(withoutComments(source).includes("supabase/migrations"), false, `${name} must not reference a migration`);
+    assert.equal(/create (table|policy|function)/i.test(withoutComments(source)), false, name);
+  }
+  // Every table and RPC this slice reads existed at base.
+  const baseMigration = readFileSync("supabase/migrations/20260602020000_raid_auto_extraction.sql", "utf8");
+  assert.match(baseMigration, /create table if not exists public\.raid_items/);
+  const loopMigration = readFileSync("supabase/migrations/20260908000000_p2_02_attention_membership_snapshot.sql", "utf8");
+  assert.match(loopMigration, /function public\.get_operational_assurance_summary/);
+});
+
+test("the assurance RPC's own SQL still carries the predicate Zone 3 relies on", () => {
+  // Zone 3 does not read `openRecommendations`, but the Phase 1 verification that
+  // the two predicates agree is worth pinning: if the RPC ever broadens, a future
+  // slice must not adopt it without noticing.
+  const sql = readFileSync("supabase/migrations/20260908000000_p2_02_attention_membership_snapshot.sql", "utf8");
+  assert.match(
+    sql,
+    /'openRecommendations',\(select count\(\*\) from public\.recommended_actions where workspace_id=p_workspace_id and project_id=p_project_id and governance_event_id is not null and status='proposed'\)/,
+  );
+});
+
+test("no file under src/modules/workspace is reachable from this slice", () => {
+  for (const [name, source] of [...NEW_SLICE_FILES, ["tab nav", tabNav] as [string, string]]) {
+    assert.equal(withoutComments(source).includes("modules/workspace"), false, `${name} must not reach the workspace module`);
+  }
+});
+
+test("no canonical Project path is hand-typed anywhere this slice touched", () => {
+  // One builder, one definition, so reverting the slice means reverting its
+  // callers rather than hunting literals (ADR-PMF-068 rule 5).
+  for (const [name, source] of [
+    ["route", route],
+    ["command-center paths", paths],
+    ["tab nav", tabNav],
+    ["project home", projectHome],
+  ] as const) {
+    assert.doesNotMatch(
+      withoutComments(source),
+      /["'`]\/workspaces\/[^"'`$]*\/projects\//,
+      `${name} must not re-type a canonical Project path`,
+    );
+  }
+  // And every surface in the table resolves.
+  for (const surface of PROJECT_SURFACES) {
+    assert.equal(isCanonicalProjectRoutePath(projectSurfacePath(WS, PROJECT, surface)), true);
+  }
+});

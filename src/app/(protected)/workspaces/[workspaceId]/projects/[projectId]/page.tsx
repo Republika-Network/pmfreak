@@ -21,10 +21,13 @@ type Props = { params: Promise<{ workspaceId: string; projectId: string }> };
  * execution/task list, the AI analysis entry point, PM assignment, and prior
  * analyses. What changed is WHO DECIDES which project it is about, and WHICH
  * WORKSPACE its role checks read. The screen itself is not redesigned, and it is
- * deliberately not turned into the Project Command Center — that is the next
- * slice, at `/workspaces/[workspaceId]/projects/[projectId]/command-center`, and
- * IA Principle 5 (One Entity One Home) is only worth anything if Home and
- * Command Center stay different screens.
+ * deliberately not the Project Command Center — that screen now exists at
+ * `/workspaces/[workspaceId]/projects/[projectId]/command-center`, reachable from
+ * the tab strip below. IA Principle 5 (One Entity One Home) is only worth
+ * anything if Home and Command Center stay different screens, and IA §15 rule 6
+ * makes them siblings reachable from each other directly, never nested: Home owns
+ * the project's identity and its execution CRUD, the Command Center composes a
+ * read-only projection over the same project. Nothing moved off this page.
  *
  * WHY THE PROJECT ID IS AUTHORIZED AND THE WORKSPACE ID IS ONLY A CLAIM
  * --------------------------------------------------------------------
