@@ -35,9 +35,15 @@
 # Binary artifacts — never pass through a text filter.
 #
 # `text=auto` already detects these by content, but the frozen upstream
-# tarballs are CHECKSUM-VERIFIED (check:tarball-purity, check:packaged-aoc-
-# artifacts pin @aoc/protocol 0.2.0-rc.0 and @aoc-enterprise/runtime 1.2.0 by
-# SHA-256). Their integrity must not rest on a heuristic, so it is declared.
+# tarballs are CHECKSUM-VERIFIED: check:tarball-purity and
+# check:packaged-aoc-artifacts pin every vendored artifact by SHA-256, reading
+# the identities from vendor/aoc-consumer.lock.json. Their integrity must not
+# rest on a heuristic, so it is declared here rather than inferred.
+#
+# This comment deliberately names no version. It previously spelled out
+# @aoc/protocol 0.2.0-rc.0 and @aoc-enterprise/runtime 1.2.0, and went stale
+# when P0-PKG-09 repinned both — the same duplicated-identity defect that made
+# those two gates stale, and which was fixed there by making them lock-driven.
 # ---------------------------------------------------------------------------
 *.tgz  binary
 *.png  binary
