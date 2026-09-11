@@ -39,9 +39,27 @@ type TreePmo = {
  * nested project list. Scales to many PMOs via per-group collapse.
  */
 export function SidebarPmoTree({
+  workspaceId,
   activeProjectId,
   onSelectProject,
 }: {
+  /**
+   * The workspace this shell is RENDERING — the one the protected layout
+   * authorized, which on a canonical route is the workspace named in the URL and
+   * not the preferred-workspace cookie's.
+   *
+   * Without it `GET /api/pmos` answers from that cookie, and on
+   * `/workspaces/B/projects/P` the tree came back holding workspace A's rows: the
+   * routed project was absent so no row could light, and every PMO and project
+   * link below pointed back into A. The tree is the navigation surface — chrome
+   * that disagrees with the page it wraps sends people out of the workspace they
+   * deliberately opened.
+   *
+   * It is only a SCOPE, never an authorization: the handler authorizes the id it
+   * is given, and RLS admits rows only for workspaces the caller belongs to, so
+   * passing one here can narrow the answer and can never widen it.
+   */
+  workspaceId?: string;
   activeProjectId?: string;
   onSelectProject?: (projectId: string) => void;
 }) {
@@ -54,7 +72,10 @@ export function SidebarPmoTree({
     let active = true;
     async function load() {
       try {
-        const res = await fetch("/api/pmos", { cache: "no-store" });
+        const res = await fetch(
+          workspaceId ? `/api/pmos?workspaceId=${encodeURIComponent(workspaceId)}` : "/api/pmos",
+          { cache: "no-store" },
+        );
         if (!res.ok) throw new Error();
         const data = (await res.json()) as { pmos?: TreePmo[] };
         if (active) setPmos(data.pmos ?? []);
@@ -66,7 +87,10 @@ export function SidebarPmoTree({
     }
     void load();
     return () => { active = false; };
-  }, [pathname]);
+    // Refetch when the rendered workspace changes as well as on navigation:
+    // moving between two workspaces' canonical routes must reload the tree, not
+    // keep showing the first one's PMOs.
+  }, [pathname, workspaceId]);
 
   const routedPmo = parseCanonicalPmoRoute(pathname);
   // Which project the viewer is actually on, when they are on a canonical

@@ -16,6 +16,7 @@ import { parseCanonicalPmoRoute } from "@/lib/pmos/pmo-paths";
 import { parseCanonicalProjectRoute } from "@/lib/projects/project-paths";
 import { parseCanonicalWorkspaceRoute } from "@/lib/workspaces/workspace-paths";
 import { resolveRoutedWorkspace } from "@/lib/workspaces/routed-workspace";
+import { resolveRoutedProject } from "@/lib/projects/routed-project";
 
 export default async function ProtectedLayout({ children }: { children: React.ReactNode }) {
   const continuity = await assertRuntimeAuthContinuity();
@@ -102,6 +103,10 @@ export default async function ProtectedLayout({ children }: { children: React.Re
     null;
   const routedAccess = routedWorkspaceId ? await resolveRoutedWorkspace(user.id, routedWorkspaceId) : null;
   const routedWorkspaceArchived = routedAccess?.access === "archived";
+  // Both ids of a canonical Project deep link, kept for the onboarding gate
+  // below. Parsing is free; the AUTHORIZATION this feeds is deliberately not
+  // performed here — see `routedProjectArchived`.
+  const routedProjectRoute = parseCanonicalProjectRoute(routedHeaders.get("x-pathname") ?? "");
   const resolvedWorkspace =
     routedAccess && routedAccess.access !== "denied"
       ? { workspaceId: routedAccess.workspaceId, role: routedAccess.role, bootstrapped: false }
@@ -132,6 +137,41 @@ export default async function ProtectedLayout({ children }: { children: React.Re
     await supabase.from("early_access_events").insert({ invite_id: trial?.invite_id ?? null, trial_license_id: trial?.id ?? null, workspace_id: trial?.workspace_id ?? null, event_type: "access_blocked_trial_inactive", event_payload: { userId: user.id } });
   }
 
+  /**
+   * Is this request standing on a canonical Project route whose project is
+   * AUTHORIZED and ARCHIVED?
+   *
+   * The archived-workspace exemption above does not cover the case PR #609's
+   * review found: an ACTIVE workspace whose only projects are archived still
+   * derives `needs_project`, because the evidence probe behind it is
+   * `projects … .neq("status", "archived")`. A deep link to
+   * `/workspaces/W/projects/P` was therefore redirected to `/projects/new` before
+   * `resolveRoutedProject` on Project Home ever ran, so the archived read-only
+   * render — `ProjectArchivedNotice` and the project's last-known data — could
+   * never be reached. §7 requires archival to be SHOWN, not hidden behind a
+   * redirect telling the viewer to create something else.
+   *
+   * Two properties make this safe, and both are why it is written exactly this
+   * way:
+   *
+   *   1. The URL is not the input. `resolveRoutedProject` is the same resolver
+   *      Project Home uses: it reads `projects.workspace_id` as the authority,
+   *      refuses an ancestry claim that disagrees with it, and refuses a project
+   *      the caller has no membership in — all as one indistinguishable `denied`.
+   *      An arbitrary project id in the URL yields `denied`, the flag stays
+   *      false, and the gate behaves exactly as it did before. A URL can never
+   *      bypass onboarding here; only an authorized archived project can.
+   *   2. It is only asked when the answer can change the decision — the
+   *      `needs_project` state. Every other state either redirects regardless
+   *      (`trial_blocked`, `no_workspace`) or already passes, so no other render
+   *      pays for this resolution and no other state can be affected by it.
+   */
+  const routedProjectArchived =
+    onboardingState === "needs_project" && routedProjectRoute
+      ? (await resolveRoutedProject(user.id, routedProjectRoute.workspaceId, routedProjectRoute.projectId)).access ===
+        "archived"
+      : false;
+
   // hasWorkspaceAccess (not isOnboardingComplete) gates general navigation:
   // a Project may exist — and a user may freely browse the rest of the app —
   // before Command Center is activated (ADR-PMF-006). Only no_workspace,
@@ -142,12 +182,14 @@ export default async function ProtectedLayout({ children }: { children: React.Re
   // evidence-derived WorkspaceOnboardingPanel/CommandCenterEmptyState.
   //
   // `shouldRedirectForOnboarding` replaces the bare `!hasWorkspaceAccess(...)`
-  // test so that ONE case can be exempted: an archived routed workspace deriving
-  // "needs_project". Instructing someone to create a project in a workspace that
-  // cannot accept one is a false instruction, and redirecting there hides the
-  // archival that §7 requires be shown. `trial_blocked` and `no_workspace` still
-  // redirect — see the function for why the exemption stops there.
-  if (shouldRedirectForOnboarding({ state: onboardingState, routedWorkspaceArchived })) {
+  // test so that TWO cases can be exempted, both of them "the entity this URL
+  // names is authorized and archived" deriving "needs_project": an archived
+  // routed workspace, and an archived routed project inside an active one.
+  // Instructing someone to create a project in a workspace that cannot accept
+  // one is a false instruction, and redirecting there hides the archival that §7
+  // requires be shown. `trial_blocked` and `no_workspace` still redirect — see
+  // the function for why the exemption stops there.
+  if (shouldRedirectForOnboarding({ state: onboardingState, routedWorkspaceArchived, routedProjectArchived })) {
     const headersList = await headers();
     const currentPath = headersList.get("x-pathname") ?? "";
     const dest = getOnboardingRedirect(onboardingState);

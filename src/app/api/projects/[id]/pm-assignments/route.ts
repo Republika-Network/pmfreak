@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { AccessDeniedError } from "@/aoc/runtime-consumer";
 import { denyFromAccessError, denyResponse } from "@/lib/security/deny-response";
 import { requireAuthenticatedUser, requireWorkspaceMember } from "@/lib/security/server-authorization";
-import { getUserWorkspaces } from "@/lib/workspaces";
 import {
   assignProjectManager,
   listProjectAssignments,
@@ -10,35 +9,60 @@ import {
 } from "@/lib/pm-registry";
 import type { PMAssignmentType } from "@/lib/pm-registry";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { getProjectWorkspaceId } from "@/lib/projects/project-admin-service";
 import { PROJECT_MANAGER_SELECTABLE_COLUMNS } from "@/lib/db/database-contract";
 import type { ProjectManagerRow } from "@/lib/db/database-contract";
 
+/**
+ * WHY THE WORKSPACE IS READ FROM THE PROJECT ROW
+ * ----------------------------------------------
+ * These handlers used to derive `workspaceId` from `getUserWorkspaces(user.id)[0]`
+ * — the caller's FIRST workspace, in whatever order that query returned. A PM
+ * assignment is a fact about ONE project, and a project carries its own workspace
+ * as a NOT NULL column, so "the first workspace this user happens to belong to"
+ * was never the authority for it. For anyone in more than one workspace it was a
+ * coin flip: canonical Project Home could correctly render a project in workspace
+ * B while every assignment read and write on the same page authorized against an
+ * unrelated workspace A — the project then failed the `.eq("workspace_id", …)`
+ * filter and answered 404 for a project the caller could plainly see, and the
+ * same derivation was handed to `assignProjectManager` /
+ * `unassignProjectManager`, so a write could be scoped to the wrong tenant.
+ *
+ * `getProjectWorkspaceId` is the existing lookup for exactly this ("the
+ * authoritative source for scope derivation — never trust a caller-supplied or
+ * cookie-derived workspaceId for an entity that carries its own"). Reusing it
+ * rather than re-querying here keeps project ancestry to one definition, the same
+ * rule `resolveRoutedProject` and `POST /api/execution-tasks` already follow.
+ *
+ * WHY A NULL ANSWER IS THE 404, AND WHY THAT IS THE BOUNDARY
+ * ---------------------------------------------------------
+ * It reads through `createSupabaseServerClient()`, which carries the caller's own
+ * session, and the `projects` select policy ("workspace members can select
+ * projects", 20260512160000_workspace_authorization_rewrite.sql) admits a row only
+ * when a `workspace_memberships` row exists for `auth.uid()`. A project the caller
+ * has no membership for therefore reads as `null` — indistinguishable from one
+ * that does not exist — and the handler answers the same 404 it always did. No
+ * service-role access is introduced and no new authorization model is:
+ * `requireWorkspaceMember` still runs, on the derived workspace, as the same
+ * application-layer defence in depth it was before.
+ */
 const ROUTE = "/api/projects/[id]/pm-assignments";
 
 type Props = { params: Promise<{ id: string }> };
 
 export async function GET(_request: NextRequest, { params }: Props) {
   try {
-    const { user } = await requireAuthenticatedUser();
+    await requireAuthenticatedUser();
     const { id: projectId } = await params;
-    const workspaces = await getUserWorkspaces(user.id);
-    const workspaceId = workspaces[0]?.id;
+
+    // The project decides the workspace; the workspace never decides the project.
+    const workspaceId = await getProjectWorkspaceId(projectId);
     if (!workspaceId) {
-      return denyResponse({ status: 403, routeId: ROUTE, message: "Workspace context required.", reason: "workspace_missing", actorUserId: user.id });
+      return NextResponse.json({ ok: false, error: { code: "not_found", message: "Project not found in this workspace." } }, { status: 404 });
     }
     await requireWorkspaceMember(workspaceId);
 
-    // Verify project belongs to workspace
     const supabase = await createSupabaseServerClient();
-    const { data: project } = await supabase
-      .from("projects")
-      .select("id")
-      .eq("id", projectId)
-      .eq("workspace_id", workspaceId)
-      .maybeSingle();
-    if (!project) {
-      return NextResponse.json({ ok: false, error: { code: "not_found", message: "Project not found in this workspace." } }, { status: 404 });
-    }
 
     const result = await listProjectAssignments(workspaceId, projectId);
     if (!result.ok) {
@@ -85,10 +109,12 @@ export async function POST(request: NextRequest, { params }: Props) {
   try {
     const { user } = await requireAuthenticatedUser();
     const { id: projectId } = await params;
-    const workspaces = await getUserWorkspaces(user.id);
-    const workspaceId = workspaces[0]?.id;
+
+    // Same ancestry rule as the read above: this write is authorized against the
+    // project's own workspace, so it can never land in another tenant's.
+    const workspaceId = await getProjectWorkspaceId(projectId);
     if (!workspaceId) {
-      return denyResponse({ status: 403, routeId: ROUTE, message: "Workspace context required.", reason: "workspace_missing", actorUserId: user.id });
+      return NextResponse.json({ ok: false, error: { code: "not_found", message: "Project not found in this workspace." } }, { status: 404 });
     }
     await requireWorkspaceMember(workspaceId);
 
@@ -104,18 +130,6 @@ export async function POST(request: NextRequest, { params }: Props) {
     }
     if (!PM_ASSIGNMENT_TYPES.includes(body.assignmentType as PMAssignmentType)) {
       return NextResponse.json({ ok: false, error: { code: "validation", message: `assignmentType must be one of: ${PM_ASSIGNMENT_TYPES.join(", ")}.` } }, { status: 400 });
-    }
-
-    // Verify project belongs to workspace
-    const supabase = await createSupabaseServerClient();
-    const { data: project } = await supabase
-      .from("projects")
-      .select("id")
-      .eq("id", projectId)
-      .eq("workspace_id", workspaceId)
-      .maybeSingle();
-    if (!project) {
-      return NextResponse.json({ ok: false, error: { code: "not_found", message: "Project not found in this workspace." } }, { status: 404 });
     }
 
     const result = await assignProjectManager({

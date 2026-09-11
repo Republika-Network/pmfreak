@@ -485,7 +485,7 @@ test("an explicit canonical route is never answered from the preferred-workspace
 
 test("the layout still treats an archived routed workspace as routable", () => {
   assert.match(protectedLayout, /routedAccess\?\.access === "archived"/);
-  assert.match(protectedLayout, /shouldRedirectForOnboarding\(\{ state: onboardingState, routedWorkspaceArchived \}\)/);
+  assert.match(protectedLayout, /shouldRedirectForOnboarding\(\{ state: onboardingState, routedWorkspaceArchived, routedProjectArchived \}\)/);
 });
 
 // ─── 13. Breadcrumbs and ancestor links ──────────────────────────────────
