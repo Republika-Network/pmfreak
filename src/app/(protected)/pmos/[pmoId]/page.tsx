@@ -1,107 +1,56 @@
-import Link from "next/link";
-import { notFound } from "next/navigation";
+import { redirect } from "next/navigation";
 import { requireAuthUser } from "@/lib/auth";
-import { resolvePreferredWorkspace } from "@/lib/workspaces/preferred-workspace";
-import { getPmoById } from "@/lib/pmos/pmo-service";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { PmoTabNav } from "./pmo-tab-nav";
+import { resolveLegacyPmoRoute } from "@/lib/pmos/routed-pmo";
+import { pmoHomePath } from "@/lib/pmos/pmo-paths";
+import { PmoNotAvailable } from "@/components/pmfreak/pmos/pmo-route-states";
 
 export const dynamic = "force-dynamic";
 
 type Props = { params: Promise<{ pmoId: string }> };
 
 /**
- * PMO Overview — portfolio summary for one PMO: its projects, their states,
- * and entry points into the PMO's own chat, reports, and settings.
+ * Legacy PMO Home entry point — a resolver, not a screen.
+ *
+ * PMO Home moved to `/workspaces/[workspaceId]/pmos/[pmoId]`. This path stays
+ * because bookmarks, pasted links and anything already in someone's notes
+ * predate the move, and per ADR-PMF-068 a legacy route keeps serving until its
+ * replacement is verified. What it does NOT keep is a copy of the screen: one
+ * implementation, one destination, so the two cannot drift (ADR-PMF-068 rule 2).
+ * That is the whole point of a strangler seam — if this file rendered a portfolio
+ * of its own we would have two PMO Homes to fix every time one of them changed.
+ *
+ * WHERE `W` COMES FROM, AND WHERE IT MUST NOT
+ * -------------------------------------------
+ * A legacy URL names only a PMO, so the redirect has to discover its workspace.
+ * `resolveLegacyPmoRoute` reads it from `pmos.workspace_id` — the authority — and
+ * from nowhere else. Not from the preferred-workspace cookie, not from the
+ * caller's first membership, not from the shell's current context, not from the
+ * previous page. The consequence is the property the old route did not have:
+ * `/pmos/P` resolves to ONE canonical URL, the same one for every caller and
+ * every session, instead of following whichever workspace the user was last in.
+ * A client-controlled cookie cannot steer where this redirect goes.
+ *
+ * MISSING AND UNAUTHORIZED ARE THE SAME ANSWER
+ * --------------------------------------------
+ * A PMO that does not exist, one that was deleted, and one the caller has no
+ * membership for all arrive here as `denied` and render the identical refusal.
+ * This route must not become an existence oracle: "redirect" versus "refusal" is
+ * the only signal it emits, and it is the same signal the canonical route emits,
+ * so nothing is learned by trying the legacy path instead.
+ *
+ * An ARCHIVED PMO redirects normally. Archival is a read-only state, not a
+ * deletion (`07-route…` §7), so its identity stays routable and the canonical
+ * screen is what explains the state.
  */
-export default async function PmoOverviewPage({ params }: Props) {
+export default async function LegacyPmoHomeRedirectPage({ params }: Props) {
   const user = await requireAuthUser();
   const { pmoId } = await params;
 
-  const resolution = await resolvePreferredWorkspace(user.id);
-  if (!resolution.workspaceId) notFound();
+  const access = await resolveLegacyPmoRoute(user.id, pmoId);
+  if (access.access === "denied") {
+    console.error(JSON.stringify({ event: "legacy_pmo_home.pmo_not_accessible", userId: user.id, requestedPmoId: pmoId }));
+    return <PmoNotAvailable />;
+  }
 
-  const pmo = await getPmoById(resolution.workspaceId, pmoId);
-  if (!pmo) notFound();
-
-  const supabase = await createSupabaseServerClient();
-  const { data: projectRows } = await supabase
-    .from("projects")
-    .select("id, name, description, status, icon, color, created_at")
-    .eq("workspace_id", resolution.workspaceId)
-    .eq("pmo_id", pmo.id)
-    .order("created_at", { ascending: false });
-
-  const projects = projectRows ?? [];
-  const active = projects.filter((p) => p.status === "active").length;
-  const completed = projects.filter((p) => p.status === "completed").length;
-  const archived = projects.filter((p) => p.status === "archived").length;
-
-  return (
-    <main className="space-y-5">
-      <header className="rounded-3xl border border-slate-200 bg-white p-6" style={{ borderTopColor: pmo.color ?? undefined, borderTopWidth: pmo.color ? 3 : undefined }}>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <p className="text-xs uppercase tracking-[0.24em] text-cyan-800">
-              <Link href="/pmos" className="hover:text-cyan-900">PMOs</Link> / {pmo.name}
-            </p>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-900">
-              <span className="mr-2">{pmo.icon ?? "🏛️"}</span>
-              {pmo.name}
-            </h1>
-            {pmo.description ? <p className="mt-2 max-w-3xl text-sm text-slate-700">{pmo.description}</p> : null}
-          </div>
-          <Link
-            href={`/projects/new?pmoId=${pmo.id}`}
-            className="rounded-xl border border-cyan-200/45 bg-cyan-400/[0.1] px-4 py-2.5 text-sm font-semibold text-cyan-900 transition hover:bg-cyan-400/[0.16]"
-          >
-            New Project
-          </Link>
-        </div>
-        <div className="mt-4">
-          <PmoTabNav workspaceId={resolution.workspaceId} pmoId={pmo.id} active="" />
-        </div>
-      </header>
-
-      <section className="grid gap-3 sm:grid-cols-3">
-        {[
-          { label: "Active projects", value: active, tone: "text-emerald-800" },
-          { label: "Completed", value: completed, tone: "text-cyan-800" },
-          { label: "Archived", value: archived, tone: "text-zinc-700" },
-        ].map((stat) => (
-          <div key={stat.label} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-500">{stat.label}</p>
-            <p className={`mt-1 text-lg font-semibold ${stat.tone}`}>{stat.value}</p>
-          </div>
-        ))}
-      </section>
-
-      <section className="rounded-3xl border border-slate-200 bg-white p-5">
-        <h2 className="text-lg font-semibold text-slate-900">Portfolio</h2>
-        <div className="mt-4 grid gap-3 md:grid-cols-2">
-          {projects.length === 0 ? (
-            <p className="text-sm text-slate-600 md:col-span-2">
-              No projects in this PMO yet. Create the first one to activate its portfolio.
-            </p>
-          ) : (
-            projects.map((project) => (
-              <Link
-                key={project.id}
-                href={`/projects/${project.id}`}
-                className="group rounded-2xl border border-slate-200 bg-slate-50 p-4 transition hover:border-cyan-200/35"
-                style={{ borderLeftColor: project.color ?? undefined, borderLeftWidth: project.color ? 3 : undefined }}
-              >
-                <h3 className="text-base font-semibold text-cyan-900 group-hover:text-cyan-950">
-                  {project.icon ? <span className="mr-2">{project.icon}</span> : null}
-                  {project.name}
-                </h3>
-                <p className="mt-1 line-clamp-2 text-sm text-zinc-700">{project.description ?? "No description."}</p>
-                <p className="mt-2 text-[11px] uppercase tracking-[0.14em] text-zinc-500">{project.status}</p>
-              </Link>
-            ))
-          )}
-        </div>
-      </section>
-    </main>
-  );
+  redirect(pmoHomePath(access.workspaceId, access.pmoId));
 }

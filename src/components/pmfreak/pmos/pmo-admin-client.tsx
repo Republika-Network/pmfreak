@@ -4,10 +4,24 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { EmptyPMO } from "@/components/pmfreak/empty-states";
+import { pmoChatPath, pmoHomePath } from "@/lib/pmos/pmo-paths";
 
 export type PmoAdminProject = { id: string; name: string; status: string };
 export type PmoAdminPmo = {
   id: string;
+  /**
+   * The PMO's OWN parent workspace, straight off its `pmos` row (it is part of
+   * `PMO_SELECTABLE_COLUMNS`, so both the server props and `GET /api/pmos` already
+   * carry it).
+   *
+   * This is what makes the canonical links below honest. The alternative — asking
+   * the shell which workspace it thinks it is in — would rebuild the exact defect
+   * this route family removes: a PMO's link would depend on the viewer's current
+   * context instead of on the PMO, so the same row could point at two different
+   * URLs. `pmos.workspace_id` is the only authority for a PMO's parent, and it
+   * travels with the row.
+   */
+  workspace_id: string;
   name: string;
   description: string | null;
   pmo_type: string;
@@ -229,7 +243,7 @@ export function PmoAdminClient({ initialPmos }: { initialPmos: PmoAdminPmo[] }) 
           pmos.map((pmo) => (
             <article key={pmo.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4" style={{ borderLeftColor: pmo.color ?? undefined, borderLeftWidth: pmo.color ? 3 : undefined }}>
               <div className="flex items-start justify-between gap-3">
-                <Link href={`/pmos/${pmo.id}`} className="group min-w-0">
+                <Link href={pmoHomePath(pmo.workspace_id, pmo.id)} className="group min-w-0">
                   <p className="truncate text-lg font-semibold text-cyan-900 group-hover:text-cyan-950">
                     <span className="mr-2">{pmo.icon ?? "🏛️"}</span>
                     {pmo.name}
@@ -243,8 +257,8 @@ export function PmoAdminClient({ initialPmos }: { initialPmos: PmoAdminPmo[] }) 
               </div>
               {pmo.description ? <p className="mt-2 line-clamp-2 text-sm text-zinc-700">{pmo.description}</p> : null}
               <div className="mt-3 flex flex-wrap gap-2 text-xs">
-                <Link href={`/pmos/${pmo.id}`} className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-slate-800 hover:border-cyan-300/40">Open</Link>
-                <Link href={`/pmos/${pmo.id}/chat`} className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-slate-800 hover:border-cyan-300/40">Chat</Link>
+                <Link href={pmoHomePath(pmo.workspace_id, pmo.id)} className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-slate-800 hover:border-cyan-300/40">Open</Link>
+                <Link href={pmoChatPath(pmo.workspace_id, pmo.id)} className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-slate-800 hover:border-cyan-300/40">Chat</Link>
                 <button type="button" disabled={busy} onClick={() => openEdit(pmo)} className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-slate-800 hover:border-cyan-300/40 disabled:opacity-50">Edit</button>
                 <button
                   type="button"

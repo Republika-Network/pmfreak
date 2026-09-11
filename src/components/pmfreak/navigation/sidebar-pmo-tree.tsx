@@ -3,10 +3,17 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
+import { parseCanonicalPmoRoute, pmoHomePath, PMOS_NAV_HREF } from "@/lib/pmos/pmo-paths";
 
 type TreeProject = { id: string; name: string; status: string };
 type TreePmo = {
   id: string;
+  /**
+   * The PMO's own parent workspace, from its `pmos` row via `GET /api/pmos`.
+   * Deliberately not the shell's current workspace: a PMO's link must be a
+   * property of the PMO, not of where the viewer happens to be standing.
+   */
+  workspace_id: string;
   name: string;
   icon: string | null;
   color: string | null;
@@ -49,11 +56,13 @@ export function SidebarPmoTree({
     return () => { active = false; };
   }, [pathname]);
 
+  const routedPmo = parseCanonicalPmoRoute(pathname);
+
   return (
     <div>
       <div className="mb-1 flex items-center justify-between px-1">
         <p className="text-[9px] uppercase tracking-[0.28em] text-zinc-400">PMOs</p>
-        <Link href="/pmos" className="text-[10px] font-semibold text-cyan-300/80 hover:text-cyan-800" title="Create or manage PMOs">
+        <Link href={PMOS_NAV_HREF} className="text-[10px] font-semibold text-cyan-300/80 hover:text-cyan-800" title="Create or manage PMOs">
           + New PMO
         </Link>
       </div>
@@ -61,14 +70,18 @@ export function SidebarPmoTree({
       {!loaded ? (
         <p className="px-1 text-[11px] text-zinc-400">Loading…</p>
       ) : pmos.length === 0 ? (
-        <Link href="/pmos" className="block rounded-lg border border-dashed border-slate-200 px-2.5 py-2 text-[11px] text-slate-600 hover:border-cyan-300/40 hover:text-cyan-800">
+        <Link href={PMOS_NAV_HREF} className="block rounded-lg border border-dashed border-slate-200 px-2.5 py-2 text-[11px] text-slate-600 hover:border-cyan-300/40 hover:text-cyan-800">
           Create your first PMO
         </Link>
       ) : (
         <div className="space-y-1.5">
           {pmos.map((pmo) => {
             const isCollapsed = collapsed[pmo.id] ?? false;
-            const pmoActive = pathname.startsWith(`/pmos/${pmo.id}`);
+            // Active on ANY of this PMO's canonical surfaces — Home, Chat,
+            // Reports, Settings or its Command Center. The parser answers that in
+            // one call, where a `startsWith` on a home path would also have to
+            // guess about the workspace segment.
+            const pmoActive = routedPmo?.pmoId === pmo.id;
             return (
               <div key={pmo.id} className="rounded-lg border border-slate-200 bg-white">
                 <div className="flex items-center gap-1 px-1.5 py-1">
@@ -81,7 +94,7 @@ export function SidebarPmoTree({
                     {isCollapsed ? "▸" : "▾"}
                   </button>
                   <Link
-                    href={`/pmos/${pmo.id}`}
+                    href={pmoHomePath(pmo.workspace_id, pmo.id)}
                     className={`min-w-0 flex-1 truncate rounded px-1 py-0.5 text-xs ${pmoActive ? "text-cyan-900" : "text-slate-700 hover:text-slate-900"}`}
                     style={pmo.color ? { textShadow: `0 0 14px ${pmo.color}55` } : undefined}
                   >
