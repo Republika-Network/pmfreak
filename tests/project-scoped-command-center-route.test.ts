@@ -32,9 +32,19 @@ import {
   selectProjectRaid,
   selectProjectRecommendations,
   GOVERNED_RAID_CATEGORY_LABELS,
+  PROJECT_RAID_COLUMNS,
+  SUPPORTING_RAID_PANEL_ID_PREFIX,
+  collectSupportingRaidIds,
+  governedRaidCategoryLabel,
   projectEvidenceRepositoryPath,
+  projectSupportingRaidQuery,
+  resolveSupportingRaid,
   selectRaidRecommendationEvidence,
   selectRaidRecommendationWhy,
+  selectSupportingRaidRecords,
+  storedDetectionDate,
+  supportingRaidPanelHref,
+  supportingRaidPanelId,
   type ProjectRaidRow,
   type ProjectRecommendationRow,
 } from "../src/lib/projects/project-command-center-projection";
@@ -410,6 +420,7 @@ const recRow = (over: Partial<ProjectRecommendationRow> = {}): ProjectRecommenda
   id: "a1",
   workspace_id: WS,
   project_id: PROJECT,
+  raid_item_id: null,
   governance_event_id: null,
   title: "t",
   description: "d",
@@ -1608,16 +1619,20 @@ test("the evidence link is truthful: the collection, never a fabricated item rou
   const evidence = selectRaidRecommendationEvidence(STORED_RATIONALE, STORED_EVIDENCE, PROJECT);
   assert.ok(evidence);
 
-  // NO per-input href exists, because no destination does. Audited, not assumed:
+  // The MAPPER still carries no href of its own — it names the input and holds no
+  // identifier. The item-level destination is composed at render time from the
+  // lineage column, and only for a record that actually loaded
+  // (`resolveSupportingRaid`), which is what keeps this selector free of ids.
+  assert.equal("href" in evidence.inputs[0], false, "the mapper names the input; it does not address it");
+  // And no per-record ROUTE was invented to host the panel. Audited, not assumed:
   //   - no page or API route under src/app addresses a `raid_items` row by id;
   //   - `03-canonical-information-architecture.md` §5.8's Risks / Issues /
   //     Dependencies screens are unbuilt, which is why `project-paths.ts` refuses
   //     to list them in PROJECT_SURFACES;
   //   - `/evidence?projectId=` lists `project_evidence` documents — a different
   //     table from `raid_items`, with no item selector.
-  // This assertion is the implementation gap, recorded rather than hidden behind
-  // a link that lands somewhere else while claiming to be this item.
-  assert.equal("href" in evidence.inputs[0], false, "a per-RAID-item destination does not exist yet");
+  // The panel is hosted by the authorized Project Command Center instead, and
+  // reached by a same-document fragment.
   assert.deepEqual(PROJECT_SURFACES.filter((s) => ["risks", "issues", "dependencies", "documents"].includes(s)), []);
   assert.equal(existsSync("src/app/(protected)/risks/page.tsx"), false);
   assert.equal(existsSync("src/app/(protected)/raid/page.tsx"), false);
@@ -1653,7 +1668,7 @@ test("Zone 2 renders Why, then Evidence, then Confidence", () => {
   assert.ok(zone2.indexOf("{item.title}") < why);
   // Both sections vanish with their stored basis rather than rendering empty.
   assert.match(route, /function RecommendationWhy\(\{ why \}[\s\S]{0,140}if \(why === null\) return null;/);
-  assert.match(route, /function RecommendationEvidence\(\{ evidence \}[\s\S]{0,160}if \(evidence === null\) return null;/);
+  assert.match(route, /function RecommendationEvidence\(\{\s*evidence,\s*supporting,[\s\S]{0,220}if \(evidence === null\) return null;/);
   // Evidence is scoped to the AUTHORIZED project id, never a routed segment.
   assert.equal(zone2.includes("requestedProjectId"), false);
 });
@@ -1735,4 +1750,473 @@ test("Zone 2 stays project-scoped and ungoverned-only", () => {
     ).map((r) => r.id),
     ["keep"],
   );
+});
+
+// ─── 11. Zone 2's item-level Evidence Panel ───────────────────────────────
+//
+// `08-ai-interaction-patterns.md` §2 requires each NAMED evidence input to be a
+// link into the Evidence Panel (§5), and §5 requires that panel "reachable in
+// exactly one interaction from wherever the claim is shown". §5 does not require
+// a separate route, and this repository has none to offer for a `raid_items` row
+// — so the panel is hosted by the authorized Project Command Center that already
+// holds the claim, reads the REAL supporting record, and is addressed by a
+// same-document fragment.
+//
+// The properties this section pins:
+//   1. the lineage column is read, and never rendered
+//   2. supporting ids are deduplicated
+//   3. ONE batched statement, never one per Recommendation
+//   4. that statement carries workspace W + project P + exactly the referenced ids
+//   5. a foreign workspace's row is refused in memory
+//   6. a sibling project's row is refused in memory
+//   7. a closed/resolved record is still valid evidence
+//   8. the evidence text anchors to the exact panel
+//   9. the panel renders the STORED record, not a re-print of evidence_summary
+//  10. stored status is labelled as recorded, not as current attention
+//  11. the two confidences stay distinct
+//  12. a record that did not load is never substituted
+//  13. a supporting failure does not blank Zone 2
+//  14. a supporting failure does not blank the page
+//  15. no uuid is user-facing
+//  16. no fabricated per-record route
+
+/** Two supporting records, and one nobody referenced. */
+const SUPPORT_A = RAID_ITEM_ID;
+const SUPPORT_B = "1b4e28ba-2fa1-11d2-883f-0016d3cca427";
+const SUPPORT_C = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";
+const UNREFERENCED = "00000000-1111-2222-3333-444444444444";
+
+const routeBody = withoutComments(route);
+const panelSource = route.slice(
+  route.indexOf("function SupportingRaidPanel"),
+  route.indexOf("function SupportingRaidUnavailable"),
+);
+const zone2Body = routeBody.slice(
+  routeBody.indexOf("zone={ZONE_RECOMMENDATIONS}"),
+  routeBody.indexOf("zone={ZONE_DECISIONS}"),
+);
+
+test("the lineage column is selected for Zone 2 and never rendered as copy", () => {
+  // `recommended_actions.raid_item_id` already exists — nothing was added.
+  assert.ok(PROJECT_RECOMMENDATION_COLUMNS.split(", ").includes("raid_item_id"));
+  assert.ok(
+    RECOMMENDED_ACTION_SELECTABLE_COLUMNS.includes(
+      "raid_item_id" as (typeof RECOMMENDED_ACTION_SELECTABLE_COLUMNS)[number],
+    ),
+    "raid_item_id must be an existing database-contract column, not a new one",
+  );
+  for (const query of [projectRecommendationsQuery(WS, PROJECT), projectPendingDecisionsQuery(WS, PROJECT)]) {
+    assert.equal(query.columns, PROJECT_RECOMMENDATION_COLUMNS);
+  }
+
+  // It is read as LINEAGE and for nothing else: one call site, feeding the
+  // supporting lookup. It is never a text node and never a label.
+  assert.match(routeBody, /resolveSupportingRaid\(item\.raid_item_id, supportingRaidRecords\)/);
+  assert.equal(routeBody.match(/item\.raid_item_id/g)?.length, 1, "the lineage column has exactly one reader");
+  assert.equal(routeBody.includes("{item.raid_item_id}"), false, "an id is not copy");
+
+  // And the disclosure mappers still cannot see the producer's copy of it.
+  assert.equal(disclosureText(STORED_RATIONALE, STORED_EVIDENCE).includes(RAID_ITEM_ID), false);
+});
+
+test("supporting RAID ids are deduplicated, and nulls carry no lookup", () => {
+  // Two Recommendations routinely derive from ONE RAID item — one read, one panel.
+  assert.deepEqual(
+    collectSupportingRaidIds([
+      recRow({ id: "a1", raid_item_id: SUPPORT_A }),
+      recRow({ id: "a2", raid_item_id: SUPPORT_A }),
+      recRow({ id: "a3", raid_item_id: SUPPORT_B }),
+      recRow({ id: "a4", raid_item_id: null }),
+      recRow({ id: "a5", raid_item_id: SUPPORT_A }),
+      recRow({ id: "a6", raid_item_id: SUPPORT_B }),
+    ]),
+    [SUPPORT_A, SUPPORT_B],
+    "first-reference order, each id once",
+  );
+  assert.deepEqual(collectSupportingRaidIds([]), []);
+  assert.deepEqual(collectSupportingRaidIds([recRow({ raid_item_id: null })]), [], "no lineage, no lookup");
+});
+
+test("ONE batched statement reads every supporting record, carrying all three scopes", () => {
+  const query = projectSupportingRaidQuery(WS, PROJECT, [SUPPORT_A, SUPPORT_B]);
+  assert.equal(query.table, "raid_items");
+  assert.equal(query.columns, PROJECT_RAID_COLUMNS);
+  assert.equal(query.workspaceId, WS, "the AUTHORIZED workspace");
+  assert.equal(query.projectId, PROJECT, "the boundary RLS cannot enforce");
+  assert.deepEqual([...(query.ids ?? [])], [SUPPORT_A, SUPPORT_B], "exactly the referenced ids");
+  assert.equal(query.limit, 2, "the read must not truncate evidence for a row already shown");
+
+  // What actually reaches the database.
+  const applied: { froms: number; columns?: string; eq: [string, unknown][]; in: [string, unknown][]; not: unknown[]; is: unknown[]; limit?: number } =
+    { froms: 0, eq: [], in: [], not: [], is: [] };
+  const builder = {
+    eq(column: string, value: unknown) {
+      applied.eq.push([column, value]);
+      return builder;
+    },
+    in(column: string, value: unknown) {
+      applied.in.push([column, value]);
+      return builder;
+    },
+    is(column: string, value: unknown) {
+      applied.is.push([column, value]);
+      return builder;
+    },
+    not(...args: unknown[]) {
+      applied.not.push(args);
+      return builder;
+    },
+    order() {
+      return builder;
+    },
+    limit(value: number) {
+      applied.limit = value;
+      return { then: (resolve: (r: unknown) => void) => resolve({ data: [], count: 0, error: null }) };
+    },
+  };
+  const fake = {
+    from(table: string) {
+      applied.froms += 1;
+      assert.equal(table, "raid_items");
+      return {
+        select(columns: string) {
+          applied.columns = columns;
+          return builder;
+        },
+      };
+    },
+  };
+
+  return (async () => {
+    type Client = Parameters<typeof runProjectScopedQuery>[0];
+    await runProjectScopedQuery(fake as unknown as Client, query);
+    assert.equal(applied.froms, 1, "ONE statement for the whole referenced set — never one per Recommendation");
+    assert.equal(applied.columns, PROJECT_RAID_COLUMNS);
+    assert.deepEqual(applied.eq, [["workspace_id", WS], ["project_id", PROJECT]]);
+    assert.deepEqual(applied.in, [["id", [SUPPORT_A, SUPPORT_B]]]);
+    assert.deepEqual(applied.not, [], "provenance is not Attention Required: no status exclusion");
+    assert.deepEqual(applied.is, []);
+    assert.equal(applied.limit, 2);
+
+    // And the route issues it exactly once, outside every per-row render.
+    assert.equal(routeBody.match(/projectSupportingRaidQuery\(/g)?.length, 1);
+    assert.match(routeBody, /const supportingRaidIds = collectSupportingRaidIds\(recommendations\);/);
+    assert.equal(zone2Body.includes("runProjectScopedQuery"), false, "no read happens per rendered Recommendation");
+    assert.equal(zone2Body.includes("await"), false, "Zone 2's JSX awaits nothing");
+  })();
+});
+
+test("a referenced id does not make a foreign workspace's or sibling project's row evidence", () => {
+  // Every one of these ids WAS referenced. Membership in the referenced set is a
+  // claim, exactly like the routed workspace segment — never a permission.
+  const referenced = [SUPPORT_A, SUPPORT_B, SUPPORT_C, UNREFERENCED];
+  const records = selectSupportingRaidRecords(
+    [
+      raidRow({ id: SUPPORT_A }),
+      raidRow({ id: SUPPORT_B, workspace_id: OTHER_WS }),
+      raidRow({ id: SUPPORT_C, project_id: OTHER_PROJECT }),
+      raidRow({ id: UNREFERENCED, project_id: null }),
+      raidRow({ id: "never-asked-for" }),
+    ],
+    WS,
+    PROJECT,
+    referenced,
+  );
+  assert.deepEqual([...records.keys()], [SUPPORT_A]);
+  assert.equal(records.get(SUPPORT_B), undefined, "a foreign workspace's row is refused in memory");
+  assert.equal(records.get(SUPPORT_C), undefined, "a sibling project's row is refused in memory");
+  assert.equal(records.get(UNREFERENCED), undefined, "a workspace-scoped row with no project is refused");
+  assert.equal(records.get("never-asked-for"), undefined, "a row nobody referenced is not evidence");
+
+  // The query says the same thing, so the guard is belt-and-braces, not the only
+  // defence — and neither is trusted alone.
+  const query = projectSupportingRaidQuery(WS, PROJECT, referenced);
+  assert.equal(query.workspaceId, WS);
+  assert.equal(query.projectId, PROJECT);
+  assert.equal(withoutComments(projection).includes("selectSupportingRaidRecords"), true);
+});
+
+test("a closed or resolved supporting record is still valid evidence", () => {
+  // A Recommendation may legitimately retain lineage to a RAID item that was
+  // closed after it was written. The panel is provenance, not a queue.
+  for (const closed of CLOSED_RAID_STATUSES) {
+    const status = closed as ProjectRaidRow["status"];
+    const records = selectSupportingRaidRecords([raidRow({ id: SUPPORT_A, status })], WS, PROJECT, [SUPPORT_A]);
+    assert.equal(records.get(SUPPORT_A)?.status, status, `${closed} must remain inspectable`);
+    assert.equal(resolveSupportingRaid(SUPPORT_A, records).state, "resolved");
+  }
+  // Zone 1 still refuses exactly those rows — the two reads differ in that one
+  // filter and in nothing else about scope.
+  assert.deepEqual(selectProjectRaid([raidRow({ id: SUPPORT_A, status: "closed" })], WS, PROJECT), []);
+  assert.equal(projectRaidQuery(WS, PROJECT).excludeStatuses, CLOSED_RAID_STATUSES);
+  assert.equal(
+    projectSupportingRaidQuery(WS, PROJECT, [SUPPORT_A]).excludeStatuses,
+    undefined,
+    "the supporting read must not inherit Zone 1's open-only semantics",
+  );
+  // And the route does not route the supporting rows through Zone 1's selector.
+  assert.equal(routeBody.includes("selectProjectRaid(supportingRead"), false);
+  assert.match(routeBody, /selectSupportingRaidRecords\(supportingRead\.rows, workspaceId, projectId, supportingRaidIds\)/);
+});
+
+test("each named evidence input is an anchor onto its own record's panel", () => {
+  assert.equal(supportingRaidPanelId(SUPPORT_A), `${SUPPORTING_RAID_PANEL_ID_PREFIX}${SUPPORT_A}`);
+  assert.equal(supportingRaidPanelHref(SUPPORT_A), `#${SUPPORTING_RAID_PANEL_ID_PREFIX}${SUPPORT_A}`);
+  assert.equal(SUPPORTING_RAID_PANEL_ID_PREFIX, "recommendation-evidence-");
+
+  // One interaction: a same-document fragment. No new route, no searchParam, no
+  // project picker, no query-string project authority.
+  const href = supportingRaidPanelHref(SUPPORT_A);
+  assert.ok(href.startsWith("#"));
+  assert.equal(href.includes("?"), false);
+  assert.equal(href.includes("/"), false);
+  assert.equal(href.includes("projectId="), false);
+
+  // The anchor is DETERMINISTIC: the escape is injective, so two different ids
+  // can never collide onto one panel and send a reader to the wrong record.
+  assert.notEqual(supportingRaidPanelId("a_b"), supportingRaidPanelId("a b"));
+  assert.notEqual(supportingRaidPanelId(SUPPORT_A), supportingRaidPanelId(SUPPORT_B));
+  assert.doesNotMatch(supportingRaidPanelId('x" onload="/><script>'), /[^A-Za-z0-9_-]/);
+
+  // The route wires it: the named input becomes the anchor, the panel carries the
+  // matching DOM id, and the link is offered ONLY for a record that loaded.
+  assert.match(
+    route,
+    /const panelHref = supporting\.state === "resolved" \? supportingRaidPanelHref\(supporting\.record\.id\) : null;/,
+  );
+  assert.match(route, /<a href=\{panelHref\}[\s\S]{0,200}\{input\.name\}/);
+  assert.match(panelSource, /<li id=\{supportingRaidPanelId\(record\.id\)\}/);
+  assert.match(routeBody, /<SupportingRaidPanel key=\{record\.id\} record=\{record\} \/>/);
+  // Not "Recommendation → generic collection → search by hand": the item link
+  // exists and is separate from the collection link.
+  assert.notEqual(supportingRaidPanelHref(SUPPORT_A), projectEvidenceRepositoryPath(PROJECT));
+});
+
+test("the panel renders the STORED record, never a re-print of evidence_summary", () => {
+  // Governed noun, off `raid_items.category`, through the same closed map.
+  assert.equal(governedRaidCategoryLabel("risk"), "Risk");
+  assert.equal(governedRaidCategoryLabel("DEPENDENCY"), "Dependency");
+  assert.equal(governedRaidCategoryLabel("raid_unknown"), null, "an unratified value is not prettified");
+  assert.match(panelSource, /governedRaidCategoryLabel\(record\.category\)/);
+
+  // The stored facts, and only stored facts.
+  assert.match(panelSource, /\{record\.title\}/);
+  assert.match(panelSource, /\{record\.description\}/);
+  assert.match(panelSource, /\{record\.status\}/);
+  assert.match(panelSource, /\{Math\.round\(record\.confidence_score\)\}%/);
+  assert.match(panelSource, /\{record\.occurrence_count\}/);
+  assert.match(panelSource, /storedDetectionDate\(record\.last_detected_at\)/);
+  assert.equal(storedDetectionDate("2026-09-01T12:34:56Z"), "2026-09-01");
+  for (const bad of [null, "", "   ", "not a date"]) {
+    assert.equal(storedDetectionDate(bad), null, "an unparseable timestamp states nothing");
+  }
+
+  // It reads the ROW. Nothing from the producer's jsonb snapshot reaches it, so
+  // the panel cannot be the same claim twice under a heading promising its source.
+  const body = withoutComments(panelSource);
+  for (const snapshot of ["evidence_summary", "rationale", "raidTitle", "raidCategory", "raidConfidenceScore", "selectRaidRecommendation"]) {
+    assert.equal(body.includes(snapshot), false, `the panel must not read ${snapshot}`);
+  }
+  // And it invents nothing `raid_items` does not store.
+  for (const invented of ["severity", "priority", "health", "sourceSignalId", "source_signal_id", "source_document_id", "urgency", "impact"]) {
+    assert.equal(body.toLowerCase().includes(invented.toLowerCase()), false, `the panel must not invent ${invented}`);
+  }
+  // No fabricated destination of its own — an unlinkable signal stays unlinked.
+  assert.equal(body.includes("href"), false, "the panel fabricates no Document/Evidence link");
+});
+
+test("the panel states a recorded status without implying current attention", () => {
+  assert.match(panelSource, /Recorded status/);
+  // Never Zone 1's vocabulary: this is history, not a queue.
+  for (const attention of ["Attention", "Open risk", "needs", "awaiting", "Action required", "overdue"]) {
+    assert.equal(panelSource.toLowerCase().includes(attention.toLowerCase()), false, `the panel must not imply ${attention}`);
+  }
+  // The zone says so once, in its own words, rather than per row.
+  assert.match(route, /a record here may already be closed or resolved/);
+  // Read-only, like every other part of this screen.
+  for (const forbidden of ["<form", "<button", "onClick", "use server", "action=", "Accept", "Reject", "Defer"]) {
+    assert.equal(panelSource.includes(forbidden), false, `the panel must not gain ${forbidden}`);
+  }
+});
+
+test("the panel's confidence is the RAID item's, never the Recommendation's", () => {
+  // Same label the Evidence line uses, and a different label from the
+  // Recommendation's own number (§2.1).
+  assert.match(panelSource, /Detection confidence/);
+  assert.equal(panelSource.includes("Recommendation confidence"), false);
+  assert.equal(withoutComments(panelSource).includes("item.confidence_score"), false);
+  assert.match(zone2Body, /Recommendation confidence \{Math\.round\(item\.confidence_score\)\}%/);
+  // Two different numbers about two different things, and they stay apart.
+  const record = raidRow({ id: SUPPORT_A, confidence_score: 82 });
+  const recommendation = recRow({ raid_item_id: SUPPORT_A, confidence_score: 70 });
+  assert.equal(record.confidence_score, 82);
+  assert.equal(recommendation.confidence_score, 70);
+  assert.equal(
+    selectRaidRecommendationEvidence(null, { raidTitle: "t", raidConfidenceScore: 82 }, PROJECT)?.inputs[0]
+      .detectedConfidence,
+    82,
+  );
+});
+
+test("a supporting record that did not load is never substituted by another", () => {
+  const records = selectSupportingRaidRecords([raidRow({ id: SUPPORT_B })], WS, PROJECT, [SUPPORT_A, SUPPORT_B]);
+  // The read SUCCEEDED and this exact row was not in it.
+  assert.deepEqual(resolveSupportingRaid(SUPPORT_A, records), { state: "not-visible", record: null });
+  assert.equal(resolveSupportingRaid(SUPPORT_B, records).record?.id, SUPPORT_B);
+  // No lineage at all is a fifth thing again, and claims nothing.
+  assert.deepEqual(resolveSupportingRaid(null, records), { state: "none", record: null });
+  assert.deepEqual(resolveSupportingRaid(null, null), { state: "none", record: null });
+
+  // Resolution is by id ONLY. There is no positional fallback in either file, so
+  // "the first row" cannot become "this Recommendation's record".
+  const bodies = withoutComments(projection) + withoutComments(route);
+  for (const fallback of ["rows[0]", "records[0]", ".at(0)", ".find(", "[0] ??"]) {
+    assert.equal(bodies.includes(fallback), false, `no positional fallback (${fallback})`);
+  }
+  // And nothing else stands in for the record: not documents, not the snapshot.
+  assert.equal(routeBody.includes("project_evidence"), false);
+  assert.equal(routeBody.includes("evidence_summary as"), false);
+  // The panels rendered are exactly the records that resolved, by id.
+  assert.match(routeBody, /\.map\(\(id\) => supportingRaidRecords\?\.get\(id\)\)/);
+});
+
+test("a supporting read failure degrades the Evidence Panel and nothing else", () => {
+  // `null` is the failed read; an empty Map is a successful read that found
+  // nothing. The two are different facts and stay different.
+  assert.deepEqual(resolveSupportingRaid(SUPPORT_A, null), { state: "unavailable", record: null });
+  assert.deepEqual(resolveSupportingRaid(SUPPORT_A, new Map()), { state: "not-visible", record: null });
+
+  // Truthful, small, and distinct from both the Empty and the Degraded copy.
+  assert.match(route, /Supporting RAID record is temporarily unavailable\./);
+  assert.match(route, /Supporting RAID record is not available to open\./);
+  assert.equal(routeBody.includes("Supporting RAID record is temporarily unavailable.We"), false);
+  // It names nothing — no ancestry, no title, no sibling project, no existence oracle.
+  const notice = route.slice(route.indexOf("function SupportingRaidUnavailable"), route.indexOf("function RecommendationEvidence"));
+  for (const leak of ["workspace", "project_id", "record.title", "record.id", "OTHER"]) {
+    assert.equal(notice.includes(leak), false, `the notice must not name ${leak}`);
+  }
+
+  // Zone 2's own branches are chosen by Zone 2's OWN read. A supporting failure
+  // cannot make a real Recommendation render as an empty or degraded zone.
+  assert.match(zone2Body, /\{recommendationsRead === null \? \(\s*<ZoneDegraded/);
+  assert.match(zone2Body, /recommendations\.length === 0 \? \(\s*<ZoneEmpty>/);
+  assert.equal(zone2Body.includes("supportingRaidRecords === null ?"), false);
+  assert.equal(zone2Body.includes("supportingRaidPanels.length === 0 ?"), false);
+  // The panel block is ABSENT, not empty, when nothing loaded.
+  assert.match(zone2Body, /\{supportingRaidPanels\.length > 0 \? \(/);
+
+  // And it cannot take the page down: the four zone reads stay their own
+  // allSettled unit, the supporting read is a separate awaited one, and no
+  // `Promise.all` makes any of them one failure unit.
+  assert.equal(routeBody.match(/Promise\.all\(/g), null, "never one giant failure unit");
+  assert.equal(routeBody.match(/Promise\.allSettled\(/g)?.length, 2);
+  assert.match(
+    routeBody,
+    /await Promise\.allSettled\(\[\s*runProjectScopedQuery<ProjectRaidRow>\(\s*supabase,\s*projectSupportingRaidQuery\(workspaceId, projectId, supportingRaidIds\),\s*\),\s*\]\)/,
+  );
+  // Its failure is logged under its own event, like every other degraded read.
+  assert.match(routeBody, /"project_command_center\.supporting_raid_unavailable"/);
+  // The four zones are still rendered unconditionally.
+  assert.deepEqual(
+    [...routeBody.matchAll(/zone=\{ZONE_([A-Z]+)\}/g)].map((m) => m[1]),
+    ["ATTENTION", "RECOMMENDATIONS", "DECISIONS", "HEALTH"],
+  );
+});
+
+test("no identifier reaches a user as copy, panel included", () => {
+  // The uuid may live in the fragment — that is the whole point of the anchor.
+  assert.ok(supportingRaidPanelHref(RAID_ITEM_ID).includes(RAID_ITEM_ID));
+  // And nowhere a user reads. No uuid-shaped literal exists in the route's copy
+  // at all, and no id expression is a text node.
+  assert.doesNotMatch(routeBody, /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+  for (const asCopy of ["{record.id}", "{item.id}", "{item.raid_item_id}", "{supporting.record.id}"]) {
+    assert.equal(routeBody.includes(`>${asCopy}`), false, `${asCopy} must not be rendered as text`);
+    assert.equal(routeBody.includes(`${asCopy}<`), false, `${asCopy} must not be rendered as text`);
+  }
+  // The producer's own copies of the same identifiers stay off screen too.
+  const shown = disclosureText(STORED_RATIONALE, STORED_EVIDENCE);
+  for (const internal of [RAID_ITEM_ID, "raidItemId", SOURCE_SIGNAL_ID, "sourceSignalId"]) {
+    assert.equal(shown.includes(internal), false);
+  }
+  assert.equal(withoutComments(panelSource).includes("sourceSignalId"), false);
+});
+
+test("no fabricated per-record route was introduced to host the panel", () => {
+  for (const fake of ["/risks/", "/issues/", "/dependencies/", "/documents/", "/raid/"]) {
+    assert.equal(routeBody.includes(fake), false, `${fake} does not exist and must not be linked`);
+    assert.equal(withoutComments(projection).includes(fake), false);
+  }
+  assert.deepEqual([...PROJECT_SURFACES], ["home", "command-center"], "the Project route family did not grow");
+  for (const unbuilt of ["risks", "issues", "dependencies", "documents", "raid"]) {
+    assert.equal(existsSync(`src/app/(protected)/${unbuilt}/page.tsx`), false);
+    assert.equal(
+      existsSync(`src/app/(protected)/workspaces/[workspaceId]/projects/[projectId]/${unbuilt}`),
+      false,
+      `${unbuilt} must not have been created as a canonical child route`,
+    );
+  }
+  // The panel's target is a fragment on this page, not a route.
+  assert.ok(supportingRaidPanelHref(RAID_ITEM_ID).startsWith("#"));
+  assert.equal(isCanonicalProjectRoutePath(supportingRaidPanelHref(RAID_ITEM_ID)), false);
+});
+
+test("the generic project evidence link stays, and stays explicitly collection-level", () => {
+  // §5's Source Documents section wants the canonical Document/Evidence screen,
+  // and `/evidence?projectId=` is the real, authorized one — a DIFFERENT
+  // population from `raid_items`, on its own line, in its own words.
+  assert.match(route, /Open project evidence/);
+  assert.match(route, /the project&apos;s evidence collection, not this specific item\./);
+  assert.equal(
+    selectRaidRecommendationEvidence(STORED_RATIONALE, STORED_EVIDENCE, PROJECT)?.repositoryHref,
+    projectEvidenceRepositoryPath(PROJECT),
+  );
+  // It is never offered AS the supporting record, and never as the panel target.
+  assert.notEqual(projectEvidenceRepositoryPath(PROJECT), supportingRaidPanelHref(SUPPORT_A));
+  assert.equal(projectEvidenceRepositoryPath(PROJECT).startsWith("#"), false);
+});
+
+test("Zone 2's population and the earlier corrections are untouched by this change", () => {
+  // Zone 2 is still exactly: workspace W, project P, governance_event_id IS NULL,
+  // status = 'proposed'.
+  const query = projectRecommendationsQuery(WS, PROJECT);
+  assert.deepEqual(
+    { table: query.table, workspaceId: query.workspaceId, projectId: query.projectId, governed: query.governed, status: query.status },
+    { table: "recommended_actions", workspaceId: WS, projectId: PROJECT, governed: false, status: "proposed" },
+  );
+  assert.deepEqual(
+    selectProjectRecommendations(
+      [
+        recRow({ id: "keep", raid_item_id: SUPPORT_A }),
+        recRow({ id: "governed", governance_event_id: "g1", raid_item_id: SUPPORT_A }),
+        recRow({ id: "decided", status: "accepted", raid_item_id: SUPPORT_A }),
+        recRow({ id: "sibling", project_id: OTHER_PROJECT, raid_item_id: SUPPORT_A }),
+        recRow({ id: "foreign", workspace_id: OTHER_WS, raid_item_id: SUPPORT_A }),
+      ],
+      WS,
+      PROJECT,
+      false,
+    ).map((r) => r.id),
+    ["keep"],
+    "a lineage column changes nothing about who enters the zone",
+  );
+  // P2 #1 — `decisionRequiredCount` is still absent from Zone 4.
+  assert.equal(routeBody.includes("decisionRequiredCount"), false);
+  assert.equal(withoutComments(projection).includes("decisionRequiredCount"), false);
+  // P2 #2 — PMO ancestry still has its four outcomes, and the notice is intact.
+  assert.equal(resolveProjectPmoAncestry({ pmoId: null, row: null, error: null }).state, "none");
+  assert.equal(resolveProjectPmoAncestry({ pmoId: PMO, row: { id: PMO, name: "P" }, error: null }).state, "resolved");
+  assert.equal(resolveProjectPmoAncestry({ pmoId: PMO, row: null, error: null }).state, "not-visible");
+  assert.equal(resolveProjectPmoAncestry({ pmoId: PMO, row: null, error: { message: "x" } }).state, "unavailable");
+  assert.match(route, /PMO ancestry is temporarily unavailable\./);
+  // Previous Zone 2 P2 — no JSON presentation, no enums, no raw ids on screen.
+  for (const generic of ["Object.entries", "Object.keys", "Object.values"]) {
+    assert.equal(withoutComments(projection).includes(generic), false);
+  }
+  for (const internal of ["trigger", "discoveryOrigin", "raidItemId", "sourceSignalId"]) {
+    assert.equal(disclosureText(STORED_RATIONALE, STORED_EVIDENCE).includes(internal), false);
+  }
+  // And the whole screen is still read-only.
+  for (const forbidden of ["use server", "<form", "<button", "onClick", "revalidatePath", ".insert(", ".update(", ".delete("]) {
+    assert.equal(routeBody.includes(forbidden), false, `the page must stay read-only (${forbidden})`);
+  }
 });

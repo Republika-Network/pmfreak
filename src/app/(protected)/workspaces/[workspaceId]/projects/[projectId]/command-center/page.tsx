@@ -13,11 +13,15 @@ import {
   type ProjectBreadcrumbPmo,
 } from "@/lib/projects/project-command-center-paths";
 import {
+  collectSupportingRaidIds,
   countRaidByCategory,
+  governedRaidCategoryLabel,
   PROJECT_COMMAND_CENTER_ZONES,
   projectPendingDecisionsQuery,
   projectRaidQuery,
   projectRecommendationsQuery,
+  projectSupportingRaidQuery,
+  resolveSupportingRaid,
   resolveVisibleTotal,
   runProjectScopedQuery,
   selectProjectGovernanceFacts,
@@ -25,6 +29,10 @@ import {
   selectProjectRecommendations,
   selectRaidRecommendationEvidence,
   selectRaidRecommendationWhy,
+  selectSupportingRaidRecords,
+  storedDetectionDate,
+  supportingRaidPanelHref,
+  supportingRaidPanelId,
   ZONE_ROW_LIMIT,
   type ProjectGovernanceFacts,
   type ProjectRaidRow,
@@ -32,6 +40,7 @@ import {
   type ProjectScopedQueryResult,
   type RecommendationEvidenceDisclosure,
   type RecommendationWhyDisclosure,
+  type SupportingRaidLookup,
 } from "@/lib/projects/project-command-center-projection";
 import type { ProjectStatus } from "@/lib/db/database-contract";
 
@@ -242,34 +251,143 @@ function RecommendationWhy({ why }: { why: RecommendationWhyDisclosure | null })
 }
 
 /**
- * The "Evidence" line — NAMED inputs, and an honestly-labelled repository link.
+ * One supporting record's EVIDENCE PANEL — `08-ai-interaction-patterns.md` §5.
+ *
+ * §5 requires the panel to be "reachable in exactly one interaction from wherever
+ * the claim is shown". It does not require a separate route, and there is none to
+ * use: §5.8's Risks / Issues / Dependencies screens are ratified but unbuilt, so
+ * `/risks/[id]` would be a 404 wearing a product's clothes. The panel therefore
+ * lives on the authorized Project Command Center that already holds the claim,
+ * and the Evidence line above links straight into it by fragment — one click,
+ * landing on the exact record rather than on a collection to search by hand.
+ *
+ * WHAT IT SHOWS: the stored `raid_items` row this Recommendation cites through
+ * `recommended_actions.raid_item_id`, read by `projectSupportingRaidQuery` and
+ * guarded by `selectSupportingRaidRecords`. It is the RECORD, not a re-print of
+ * the `evidence_summary` snapshot the producer copied at generation time — which
+ * would be the same claim twice under a heading promising its source.
+ *
+ * WHAT IT DOES NOT SHOW, because `raid_items` does not store it: severity,
+ * priority, health, a band, or source-document lineage. `source_signal_id`
+ * references `vault_operational_signals`, which has no user-facing surface, so it
+ * is neither displayed nor linked. No uuid appears as copy anywhere — the id
+ * exists only in this element's anchor.
+ *
+ * "Recorded status" is the stored value under a label that says so. The panel is
+ * historical inspection, not Attention Required, so a `closed` or `resolved`
+ * record renders here exactly as it is stored and nothing implies it needs
+ * looking at now.
+ */
+function SupportingRaidPanel({ record }: { record: ProjectRaidRow }) {
+  const category = governedRaidCategoryLabel(record.category);
+  const lastDetected = storedDetectionDate(record.last_detected_at);
+  return (
+    <li id={supportingRaidPanelId(record.id)} className="scroll-mt-24 rounded-2xl border border-slate-200 bg-white p-4">
+      <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-500">{category ?? record.category}</p>
+      <p className="mt-1 text-sm font-medium text-slate-900">{record.title}</p>
+      <p className="mt-1 text-xs text-slate-600">{record.description}</p>
+      <dl className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-zinc-600">
+        <div>
+          <dt className="inline text-zinc-500">Recorded status: </dt>
+          <dd className="inline">{record.status}</dd>
+        </div>
+        <div>
+          {/*
+            The RAID item's OWN recorded number, under the same label the Evidence
+            line uses — never the Recommendation's, which is a different number
+            about a different thing (§2.1).
+          */}
+          <dt className="inline text-zinc-500">Detection confidence: </dt>
+          <dd className="inline">{Math.round(record.confidence_score)}%</dd>
+        </div>
+        {Number.isFinite(record.occurrence_count) ? (
+          <div>
+            <dt className="inline text-zinc-500">Times detected: </dt>
+            <dd className="inline">{record.occurrence_count}</dd>
+          </div>
+        ) : null}
+        {lastDetected ? (
+          <div>
+            <dt className="inline text-zinc-500">Last detected: </dt>
+            <dd className="inline">{lastDetected}</dd>
+          </div>
+        ) : null}
+      </dl>
+      {record.auto_generated ? (
+        <p className="mt-2 text-[11px] text-zinc-500">
+          Detected automatically from this project&apos;s documents. Not a human-certified governance record.
+        </p>
+      ) : null}
+    </li>
+  );
+}
+
+/**
+ * The supporting record could not be shown — said plainly, and nothing else.
+ *
+ * A failed or empty supporting read degrades THIS line only. The Recommendation,
+ * its Why and both confidences stay exactly as they are: the zone does not blank,
+ * a real Recommendation never becomes an empty state, and no other RAID row, no
+ * sibling project's row, no `project_evidence` document and no re-print of
+ * `evidence_summary` is substituted for the record we could not load.
+ *
+ * The two states are kept apart because they are different facts —
+ * `resolveProjectPmoAncestry` makes the same distinction for PMO ancestry — and
+ * neither names anything. A message that said whose the row was, or that it
+ * exists elsewhere, would turn this line into an existence oracle.
+ */
+function SupportingRaidUnavailable({ state }: { state: SupportingRaidLookup["state"] }) {
+  if (state === "resolved" || state === "none") return null;
+  return (
+    <p className="mt-0.5 text-amber-800">
+      {state === "unavailable"
+        ? "Supporting RAID record is temporarily unavailable."
+        : "Supporting RAID record is not available to open."}
+    </p>
+  );
+}
+
+/**
+ * The "Evidence" line — NAMED inputs, each linked to its own Evidence Panel, and
+ * an honestly-labelled repository link beside it.
  *
  * §2 requires "an enumerated, named list of inputs … never a vague 'based on
  * project data'", so what appears here is the RAID item's stored TITLE qualified
  * by its governed category — never `raidItemId`, never `sourceSignalId`, never
  * `discoveryOrigin`.
  *
- * NO PER-INPUT LINK, ON PURPOSE. §2 wants each input to link into the Evidence
- * Panel (§5) and §5 into the canonical Document/Evidence screen
- * (`03-canonical-information-architecture.md` §5.8). This repository has no
- * surface that addresses a `raid_items` row — the Risks/Issues/Dependencies
- * screens §5.8 names are not built, which is why `project-paths.ts` refuses to
- * list them — and `/evidence?projectId=…` lists uploaded documents, a different
- * population, with no item selector. A link that lands somewhere else while
- * claiming to be this item is worse than no link, so the gap is left visible and
- * closes in the slice that ships one of those screens.
+ * §2 also requires each named input to be "a link into the Evidence Panel (§5)",
+ * and it now is: when the exact supporting record loaded, the named input is an
+ * anchor to `#recommendation-evidence-<id>` — that record's panel, further down
+ * this same zone. One interaction, deterministic, and it identifies the RAID row
+ * rather than a collection the user would have to search. The uuid lives in the
+ * href and is never rendered as copy.
  *
- * The project's evidence repository IS linked, on its own line and in its own
- * words, so it reads as "the project's collection" and not as "this item".
+ * The link appears ONLY for a record that actually loaded. Offering it otherwise
+ * would point at an anchor that is not on the page.
+ *
+ * The project's evidence repository is still linked, on its own line and in its
+ * own words, because it is a real and authorized destination and a genuinely
+ * different one: `/evidence?projectId=…` lists `project_evidence` DOCUMENTS, a
+ * different table and population from `raid_items`. Now that an exact item-level
+ * panel exists beside it, the two read as what they are — the record, and the
+ * project's document collection — and the copy says so.
  *
  * `detectedConfidence` is the RAID item's own recorded confidence. It is
- * labelled "Detection confidence" and the Recommendation's own number is
+ * labelled "detection confidence" and the Recommendation's own number is
  * labelled "Recommendation confidence", because they are two different numbers
  * about two different things and §2.1 forbids a confidence rendered away from
  * what it is confidence IN.
  */
-function RecommendationEvidence({ evidence }: { evidence: RecommendationEvidenceDisclosure | null }) {
+function RecommendationEvidence({
+  evidence,
+  supporting,
+}: {
+  evidence: RecommendationEvidenceDisclosure | null;
+  supporting: SupportingRaidLookup;
+}) {
   if (evidence === null) return null;
+  const panelHref = supporting.state === "resolved" ? supportingRaidPanelHref(supporting.record.id) : null;
   return (
     <div className="mt-1 text-[11px] text-zinc-600">
       <p>
@@ -277,14 +395,24 @@ function RecommendationEvidence({ evidence }: { evidence: RecommendationEvidence
         {evidence.inputs.map((input, index) => (
           <span key={`${input.name}-${index}`}>
             {index > 0 ? <span className="text-zinc-400"> · </span> : null}
-            {input.category ? <span className="text-zinc-500">{input.category} — </span> : null}
-            {input.name}
+            {panelHref !== null ? (
+              <a href={panelHref} className="text-cyan-800 underline hover:text-cyan-900">
+                {input.category ? `${input.category} — ` : ""}
+                {input.name}
+              </a>
+            ) : (
+              <>
+                {input.category ? <span className="text-zinc-500">{input.category} — </span> : null}
+                {input.name}
+              </>
+            )}
             {input.detectedConfidence !== null ? (
               <span className="text-zinc-500"> · detection confidence {input.detectedConfidence}%</span>
             ) : null}
           </span>
         ))}
       </p>
+      <SupportingRaidUnavailable state={supporting.state} />
       <p className="mt-0.5 text-zinc-500">
         <Link href={evidence.repositoryHref} className="text-cyan-800 underline hover:text-cyan-900">
           Open project evidence
@@ -494,6 +622,49 @@ export default async function ProjectCommandCenterPage({
     ? resolveVisibleTotal(recommendationsRead.rows.length, recommendations.length, recommendationsRead.total)
     : null;
 
+  // ── Zone 2's supporting Evidence read ──────────────────────────────────────
+  //
+  // Deliberately NOT a fifth member of the `allSettled` set above. Its argument
+  // is the set of `raid_item_id` values carried by rows that have ALREADY passed
+  // Zone 2's own scope guard, so it cannot be issued until those rows exist, and
+  // it must not be issued at all when Zone 2's own read failed — asking for
+  // evidence behind recommendations we never loaded would be a query with no
+  // question behind it.
+  //
+  // ONE statement for the whole deduplicated set. A read per Recommendation would
+  // be the N+1 `projectSupportingRaidQuery` exists to make impossible, and with
+  // `ZONE_ROW_LIMIT` rows it would be up to eight round trips for one zone.
+  //
+  // Three outcomes, kept apart: an empty Map is "the scoped read returned
+  // nothing", `null` is "we could not find out", and neither is allowed to touch
+  // the Recommendations themselves — a supporting failure degrades the Evidence
+  // Panel and only the Evidence Panel, exactly as a zone failure degrades one zone
+  // and not the page (ADR-PMF-070 Frontend Rule 4).
+  const supportingRaidIds = collectSupportingRaidIds(recommendations);
+  let supportingRaidRecords: Map<string, ProjectRaidRow> | null = new Map();
+  if (supportingRaidIds.length > 0) {
+    const [supportingSettled] = await Promise.allSettled([
+      runProjectScopedQuery<ProjectRaidRow>(
+        supabase,
+        projectSupportingRaidQuery(workspaceId, projectId, supportingRaidIds),
+      ),
+    ]);
+    const supportingRead = readZone<ProjectRaidRow>(
+      supportingSettled,
+      "project_command_center.supporting_raid_unavailable",
+    );
+    supportingRaidRecords = supportingRead
+      ? selectSupportingRaidRecords(supportingRead.rows, workspaceId, projectId, supportingRaidIds)
+      : null;
+  }
+
+  // One panel per unique supporting record, in first-referenced order. Resolved
+  // by id only: a Recommendation whose record is absent gets no panel, never a
+  // neighbour's.
+  const supportingRaidPanels = supportingRaidIds
+    .map((id) => supportingRaidRecords?.get(id))
+    .filter((record): record is ProjectRaidRow => record !== undefined);
+
   const pendingDecisions = decisionsRead
     ? selectProjectRecommendations(decisionsRead.rows, workspaceId, projectId, true)
     : [];
@@ -659,6 +830,7 @@ export default async function ProjectCommandCenterPage({
                   <RecommendationWhy why={selectRaidRecommendationWhy(item.rationale, item.evidence_summary)} />
                   <RecommendationEvidence
                     evidence={selectRaidRecommendationEvidence(item.rationale, item.evidence_summary, projectId)}
+                    supporting={resolveSupportingRaid(item.raid_item_id, supportingRaidRecords)}
                   />
                   {item.confidence_score !== null ? (
                     <p className="mt-1 text-[11px] text-zinc-500">
@@ -673,6 +845,29 @@ export default async function ProjectCommandCenterPage({
               ))}
             </ul>
             <MoreThanShown shown={recommendations.length} total={recommendationsTotal} />
+            {/*
+              The Evidence Panels (§5), hosted by the screen that holds the claim.
+              Each named evidence input above is an anchor into the exact panel for
+              its own record, so the claim is one interaction from its basis. This
+              block is absent — not empty — when nothing loaded, per the
+              Empty-state rule in `08-command-center-experience.md` §5.
+            */}
+            {supportingRaidPanels.length > 0 ? (
+              <section aria-labelledby="supporting-records" className="mt-5 border-t border-slate-200 pt-4">
+                <h3 id="supporting-records" className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
+                  Supporting records
+                </h3>
+                <p className="mt-1 text-[11px] text-zinc-500">
+                  The recorded risks, issues, dependencies and assumptions the recommendations above were derived
+                  from, exactly as stored. Shown for inspection — a record here may already be closed or resolved.
+                </p>
+                <ul className="mt-3 space-y-2">
+                  {supportingRaidPanels.map((record) => (
+                    <SupportingRaidPanel key={record.id} record={record} />
+                  ))}
+                </ul>
+              </section>
+            ) : null}
           </>
         )}
       </Zone>
