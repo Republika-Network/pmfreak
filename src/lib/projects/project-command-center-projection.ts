@@ -495,51 +495,38 @@ export function resolveSupportingRaid(
   return record ? { state: "resolved", record } : { state: "not-visible", record: null };
 }
 
-// ─── Item-level Evidence Panel targets ─────────────────────────────────────
+// ─── Item-level Evidence Panel ─────────────────────────────────────────────
 
 /**
- * The fragment prefix every supporting-record Evidence Panel is addressed by.
+ * HOW THE PANEL IS REACHED, AND WHY IT IS NO LONGER A FRAGMENT
+ * -----------------------------------------------------------
+ * `08-ai-interaction-patterns.md` §5 requires the Evidence Panel to be reachable
+ * "in exactly one interaction from wherever the claim is shown", and
+ * `08-accessibility-guidelines.md` §2 fixes what that interaction must DO: the
+ * panel "opens without stealing focus unexpectedly, and its dismissal returns
+ * focus to the control that opened it".
  *
- * `08-ai-interaction-patterns.md` §5 requires the panel to be reachable "in
- * exactly one interaction from wherever the claim is shown". It does NOT require
- * a separate route, and this repository has none to offer: `03-canonical-
- * information-architecture.md` §5.8's Risks / Issues / Dependencies screens are
- * ratified but unbuilt, which is why `project-paths.ts` still refuses to list
- * them in `PROJECT_SURFACES`. Inventing `/risks/[id]` here would be a 404 wearing
- * a product's clothes.
+ * The first attempt satisfied the first sentence and failed the second. It was an
+ * `<a href="#recommendation-evidence-…">` landing on a non-focusable `<li>`: a
+ * pointer user's viewport moved and a keyboard or screen-reader user's FOCUS did
+ * not — it stayed on the Recommendation, with no dismissal to return from. A
+ * fragment is a scroll instruction, not a focus-management contract, so the
+ * prefix, the escaper and the href builder that composed those anchors are gone
+ * rather than left behind as a second, inaccessible way in.
  *
- * So the panel lives on the Project Command Center that already holds the claim,
- * and the claim links to it by fragment — one click, deterministic, and it lands
- * on the exact record rather than on a collection to search by hand.
+ * The named evidence input is now a real control, and the panel is the
+ * repository's OWN `Drawer` (`components/pmfreak/ui/drawer.tsx`) — audited for
+ * and reused rather than reinvented, so no UI dependency was added. It already
+ * implements the whole §2 contract: focus moves into the panel on open, the panel
+ * is a `role="dialog"` with an accessible name, an explicit Close control exists,
+ * Escape closes, and focus returns to the control that opened it.
+ *
+ * The SERVER still performs every authorization and every read. What crosses into
+ * the client is `SupportingRaidPanelRecord` below — already-authorized, already
+ * governed PRESENTATION TEXT carrying no identifier, no query and nothing to
+ * fetch with. The page remains a server component; only the open/close/focus
+ * interaction is client-owned.
  */
-export const SUPPORTING_RAID_PANEL_ID_PREFIX = "recommendation-evidence-";
-
-/**
- * A fragment-safe rendering of an id.
- *
- * Every character outside `[A-Za-z0-9-]` becomes `_<hex>_`, and `_` is itself
- * outside that set, so the escape is INJECTIVE: two different ids cannot collide
- * on one anchor and send a user to the wrong record. A uuid — which is what
- * `raid_items.id` actually is — passes through untouched.
- */
-function fragmentSafeId(id: string): string {
-  return id.replace(/[^A-Za-z0-9-]/g, (char) => `_${char.codePointAt(0)!.toString(16)}_`);
-}
-
-/** The DOM id of one supporting record's Evidence Panel. Never rendered as copy. */
-export function supportingRaidPanelId(raidItemId: string): string {
-  return `${SUPPORTING_RAID_PANEL_ID_PREFIX}${fragmentSafeId(raidItemId)}`;
-}
-
-/**
- * The href a named evidence input carries.
- *
- * A same-document fragment, so the uuid exists only in the address — it is never
- * shown to a user, and it addresses nothing outside this already-authorized page.
- */
-export function supportingRaidPanelHref(raidItemId: string): string {
-  return `#${supportingRaidPanelId(raidItemId)}`;
-}
 
 /**
  * A stored timestamp at day precision, or `null` if it is not a timestamp.
@@ -645,17 +632,18 @@ export function storedDetectionDate(value: string | null): string | null {
  *     neither shown nor linked.
  *
  * So the Evidence Panel is hosted by the authorized Project Command Center that
- * already holds the claim, and the named input links to it by fragment:
- * `supportingRaidPanelHref` → `#recommendation-evidence-<id>`. One interaction,
- * landing on the EXACT supporting record, read from `raid_items` through
+ * already holds the claim, and the named input is the CONTROL that opens it — one
+ * interaction, onto the EXACT supporting record read from `raid_items` through
  * `recommended_actions.raid_item_id` (`projectSupportingRaidQuery`) rather than
- * re-printed from the `evidence_summary` snapshot below. The uuid lives in the
- * fragment and nowhere a user reads it.
+ * re-printed from the `evidence_summary` snapshot below. It is a real control and
+ * not an anchor because `08-accessibility-guidelines.md` §2 requires the panel to
+ * manage focus and to return it on dismissal, which a fragment cannot do; see the
+ * Item-level Evidence Panel note above. No uuid travels with it at all now.
  *
  * This mapper is unchanged by that: it still NAMES the input from stored text,
- * and it still carries no id of its own. The href is composed at the point of
- * render, from the lineage column, and only when the exact record actually
- * loaded — see `resolveSupportingRaid`.
+ * and it still carries no id of its own. Whether a panel can be opened at all is
+ * decided at the point of render, from the lineage column, and only when the
+ * exact record actually loaded — see `resolveSupportingRaid`.
  */
 
 /**
@@ -763,10 +751,18 @@ export function selectRaidRecommendationWhy(
  * fragment from `recommended_actions.raid_item_id` and this mapper stays free of
  * identifiers — see the navigability note above.
  *
- * `detectedConfidence` is `raid_items.confidence_score` as the producer copied
- * it — the confidence that this CONDITION was correctly detected. It is NOT
- * `recommended_actions.confidence_score`, and the caller labels the two
+ * `detectedConfidence` here is `evidence_summary.raidConfidenceScore` — the
+ * producer's SNAPSHOT of `raid_items.confidence_score`, frozen at generation
+ * time. It is the confidence that this CONDITION was correctly detected, and it
+ * is NOT `recommended_actions.confidence_score`; the caller labels the two
  * differently so they cannot be read as one number.
+ *
+ * It is also NOT what the screen shows when the exact supporting record loaded:
+ * `resolveRecommendationDisclosure` replaces it with that row's CURRENT
+ * `confidence_score`, and drops it entirely when the row did not load. This
+ * selector keeps reading the snapshot because the snapshot is a real stored fact
+ * about what the producer saw — deciding which of the two a reader is shown is
+ * the combiner's job, not this mapper's.
  *
  * `null` when nothing names an input. Evidence is then omitted entirely rather
  * than degraded to "based on project data", which §2 names as the failure.
@@ -828,6 +824,187 @@ export function selectRaidRecommendationEvidence(
  */
 export function projectEvidenceRepositoryPath(projectId: string): string {
   return `/evidence?projectId=${encodeURIComponent(projectId)}`;
+}
+
+// ─── The CURRENT supporting record, and the fallback onto it ───────────────
+
+/**
+ * The supporting RAID row's OWN recorded detection confidence, right now.
+ *
+ * `evidence_summary.raidConfidenceScore` is the producer's SNAPSHOT of this
+ * number, copied when the Recommendation was written and never rewritten
+ * afterwards. `raid_items.confidence_score` moves: a later detection of the same
+ * fingerprint updates the row (`raid-materialization.ts`) while the Recommendation
+ * keeps its old copy. Once the exact supporting row is loaded and shown, the two
+ * can disagree — and a card claiming one "detection confidence" directly above
+ * the record stating another is a contradiction the reader has no way to resolve.
+ *
+ * So when the record resolves, THIS is the current number and the snapshot is not
+ * used. Validated exactly as `storedPercentage` validates the snapshot, so a
+ * database value outside 0–100 is "not recorded" rather than a rendered lie.
+ */
+export function recordDetectionConfidence(record: ProjectRaidRow): number | null {
+  const value = record.confidence_score;
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  if (value < 0 || value > 100) return null;
+  return Math.round(value);
+}
+
+/** A stored string, trimmed, or `null` when there is no human text in it. */
+function storedLine(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * One named evidence input as a single reading line.
+ *
+ * The governed noun and the stored name, in the order §2 reads them — and
+ * nothing else, so the control that opens the panel is labelled by the same text
+ * the panel is titled with. Never an identifier.
+ */
+export function evidenceInputLabel(input: RecommendationEvidenceInput): string {
+  return input.category === null ? input.name : `${input.category} — ${input.name}`;
+}
+
+/**
+ * The disclosure ONE Recommendation actually shows, snapshot and record combined.
+ *
+ * TWO SOURCES, AND WHICH ONE WINS FOR WHAT
+ * ----------------------------------------
+ * A Recommendation carries two accounts of its own basis:
+ *
+ *   the SNAPSHOT   `rationale` + `evidence_summary`, jsonb the producer wrote at
+ *                  generation time. It is the basis AS CAPTURED THEN, which is
+ *                  exactly what a historical disclosure should say — and it is
+ *                  nullable and unvalidated, so it may say nothing at all.
+ *   the RECORD     the `raid_items` row this Recommendation cites through
+ *                  `recommended_actions.raid_item_id`, loaded and scope-guarded by
+ *                  `projectSupportingRaidQuery` / `selectSupportingRaidRecords`.
+ *                  It is the CURRENT state of the same thing.
+ *
+ * Neither one alone is right, and the two review findings this function answers
+ * are the two halves of that:
+ *
+ *   WORDING comes from the snapshot when the snapshot has any. The human sentence
+ *   captured at generation time is the honest account of why this Recommendation
+ *   was produced, and rewriting it from the row would silently restate history.
+ *   When the snapshot is missing or malformed and the exact record DID resolve,
+ *   the wording falls back to that row — `category` + `title`, the same two
+ *   governed facts the snapshot would have carried — because omitting a mandatory
+ *   disclosure while its authoritative source sits in memory is a worse failure
+ *   than a slightly newer sentence.
+ *
+ *   DETECTION CONFIDENCE comes from the record whenever the record resolved,
+ *   never from the snapshot. The supporting panel shows `confidence_score` off
+ *   the same row; sourcing the line above it from the frozen copy is how one
+ *   screen came to state two different "detection confidence" values for one
+ *   record. When the record did NOT resolve the number is OMITTED rather than
+ *   backfilled from the snapshot: a stale number under a present-tense label is
+ *   ambiguous disclosure, and §2.1 would rather have no number than a number
+ *   whose meaning the reader has to guess at.
+ *
+ * WHAT IS NEVER DONE HERE
+ * -----------------------
+ * The Recommendation's own `title` / `description` are not arguments to this
+ * function and cannot become a Why — synthesizing the basis out of the directive
+ * it is supposed to justify is the §2 defect, not a fallback. No other RAID row
+ * substitutes for one that did not resolve: `supporting` is already resolved BY
+ * ID (`resolveSupportingRaid`), with no positional fallback anywhere behind it.
+ * And `recommended_actions.confidence_score` is untouched — it stays the
+ * "Recommendation confidence", labelled separately at the point of render.
+ */
+export type RecommendationDisclosure = {
+  why: RecommendationWhyDisclosure | null;
+  evidence: RecommendationEvidenceDisclosure | null;
+};
+
+export function resolveRecommendationDisclosure(
+  rationale: unknown,
+  evidenceSummary: unknown,
+  supporting: SupportingRaidLookup,
+  projectId: string,
+): RecommendationDisclosure {
+  const record = supporting.state === "resolved" ? supporting.record : null;
+  // `null` in both branches below when the record did not resolve — the snapshot's
+  // frozen copy is never promoted to a current reading.
+  const detectedConfidence = record === null ? null : recordDetectionConfidence(record);
+
+  const snapshotWhy = selectRaidRecommendationWhy(rationale, evidenceSummary);
+  const snapshotEvidence = selectRaidRecommendationEvidence(rationale, evidenceSummary, projectId);
+
+  const recordCondition = record === null ? null : storedLine(record.title);
+  const recordCategory = record === null ? null : governedCategoryLabel(record.category);
+
+  const why =
+    snapshotWhy ?? (recordCondition === null ? null : { category: recordCategory, condition: recordCondition });
+
+  let evidence: RecommendationEvidenceDisclosure | null = null;
+  if (snapshotEvidence !== null) {
+    evidence = {
+      ...snapshotEvidence,
+      inputs: snapshotEvidence.inputs.map((input) => ({ ...input, detectedConfidence })),
+    };
+  } else if (recordCondition !== null) {
+    evidence = {
+      inputs: [{ category: recordCategory, name: recordCondition, detectedConfidence }],
+      repositoryHref: projectEvidenceRepositoryPath(projectId),
+    };
+  }
+
+  return { why, evidence };
+}
+
+/**
+ * One supporting RAID row, rendered down to the text the Evidence Panel shows.
+ *
+ * This is the ONLY thing that crosses the server/client boundary for the panel,
+ * and it is built here — on the server, from a row this module already scope-
+ * guarded — precisely so the client component has no reason and no means to read
+ * anything: no id to query by, no workspace, no project, no lineage column, no
+ * raw `raid_items` row.
+ *
+ * `id` is deliberately absent. It was previously needed to address a fragment;
+ * the panel is now opened by the control that owns it, so the uuid has no
+ * remaining use on this screen and does not travel.
+ *
+ * `panelTitle` is the panel's ACCESSIBLE NAME (`08-accessibility-guidelines.md`
+ * §2, §5). It names the exact record in the same governed words the trigger uses,
+ * so a screen-reader user hears the same thing they activated — never "Details",
+ * never an identifier.
+ *
+ * `categoryLabel` falls back to the stored value only when the category is not
+ * one of the four ratified nouns: the row exists and its category is a stored
+ * fact, so it is shown as stored rather than dropped or prettified into a noun
+ * the enum does not name.
+ */
+export type SupportingRaidPanelRecord = {
+  panelTitle: string;
+  categoryLabel: string;
+  title: string;
+  description: string;
+  status: string;
+  detectionConfidence: number | null;
+  occurrenceCount: number | null;
+  lastDetected: string | null;
+  autoGenerated: boolean;
+};
+
+export function supportingRaidPanelPresentation(record: ProjectRaidRow): SupportingRaidPanelRecord {
+  const category = governedCategoryLabel(record.category);
+  const title = storedLine(record.title) ?? "";
+  return {
+    panelTitle: category === null ? `Supporting record: ${title}` : `Supporting record: ${category} — ${title}`,
+    categoryLabel: category ?? record.category,
+    title,
+    description: record.description,
+    status: record.status,
+    detectionConfidence: recordDetectionConfidence(record),
+    occurrenceCount: Number.isFinite(record.occurrence_count) ? record.occurrence_count : null,
+    lastDetected: storedDetectionDate(record.last_detected_at),
+    autoGenerated: record.auto_generated,
+  };
 }
 
 /**

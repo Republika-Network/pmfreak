@@ -33,18 +33,19 @@ import {
   selectProjectRecommendations,
   GOVERNED_RAID_CATEGORY_LABELS,
   PROJECT_RAID_COLUMNS,
-  SUPPORTING_RAID_PANEL_ID_PREFIX,
   collectSupportingRaidIds,
+  evidenceInputLabel,
   governedRaidCategoryLabel,
   projectEvidenceRepositoryPath,
   projectSupportingRaidQuery,
+  recordDetectionConfidence,
+  resolveRecommendationDisclosure,
   resolveSupportingRaid,
   selectRaidRecommendationEvidence,
   selectRaidRecommendationWhy,
   selectSupportingRaidRecords,
   storedDetectionDate,
-  supportingRaidPanelHref,
-  supportingRaidPanelId,
+  supportingRaidPanelPresentation,
   type ProjectRaidRow,
   type ProjectRecommendationRow,
 } from "../src/lib/projects/project-command-center-projection";
@@ -117,12 +118,18 @@ const pmoCommandCenter = readFileSync(
 const protectedLayout = readFileSync("src/app/(protected)/layout.tsx", "utf8");
 const sidebarTree = readFileSync("src/components/pmfreak/navigation/sidebar-pmo-tree.tsx", "utf8");
 const routeStates = readFileSync("src/components/pmfreak/projects/project-route-states.tsx", "utf8");
+const EVIDENCE_PANEL_FILE = "src/components/pmfreak/projects/supporting-raid-evidence-panel.tsx";
+/** The ONLY client component this slice owns — the Evidence Panel's interaction. */
+const evidencePanel = readFileSync(EVIDENCE_PANEL_FILE, "utf8");
+/** The repository primitive it reuses, rather than reimplementing dialog mechanics. */
+const drawerPrimitive = readFileSync("src/components/pmfreak/ui/drawer.tsx", "utf8");
 
 /** Every file this slice adds or rewrites, for the whole-slice prohibitions. */
 const NEW_SLICE_FILES: [string, string][] = [
   ["route", route],
   ["command-center paths", paths],
   ["projection", projection],
+  ["evidence panel", evidencePanel],
 ];
 
 /**
@@ -1658,8 +1665,15 @@ test("the evidence link is truthful: the collection, never a fabricated item rou
 
 test("Zone 2 renders Why, then Evidence, then Confidence", () => {
   const zone2 = route.slice(route.indexOf("zone={ZONE_RECOMMENDATIONS}"), route.indexOf("zone={ZONE_DECISIONS}"));
-  const why = zone2.indexOf("<RecommendationWhy why={selectRaidRecommendationWhy(item.rationale, item.evidence_summary)} />");
-  const evidence = zone2.indexOf("selectRaidRecommendationEvidence(item.rationale, item.evidence_summary, projectId)");
+  // One pure combiner produces both halves — the stored snapshot and the exact
+  // resolved supporting row, decided in one place rather than by conditionals
+  // spread through this JSX (section 12).
+  assert.match(
+    zone2,
+    /const disclosure = resolveRecommendationDisclosure\(\s*item\.rationale,\s*item\.evidence_summary,\s*supporting,\s*projectId,\s*\);/,
+  );
+  const why = zone2.indexOf("<RecommendationWhy why={disclosure.why} />");
+  const evidence = zone2.indexOf("<RecommendationEvidence evidence={disclosure.evidence} supporting={supporting} />");
   const confidence = zone2.indexOf("Recommendation confidence {Math.round(item.confidence_score)}%");
   assert.ok(why > -1, "Why is mapped from the stored disclosure");
   assert.ok(evidence > why, "Evidence follows Why");
@@ -1684,13 +1698,26 @@ test("the two confidences stay distinct, visible and adjacent to their basis", (
   // different number about a different thing — never as the Recommendation's.
   assert.match(route, /detection confidence \{input\.detectedConfidence\}%/);
   assert.notEqual("detection confidence", "Recommendation confidence");
-  // It comes from `evidence_summary.raidConfidenceScore`, not from
-  // `recommended_actions.confidence_score` — the two are never conflated.
+  // The SNAPSHOT mapper still reads `evidence_summary.raidConfidenceScore`,
+  // because that is a real stored fact about what the producer saw. What a reader
+  // is SHOWN is a separate decision, and it is never
+  // `recommended_actions.confidence_score` and never a stale snapshot value under
+  // a present-tense label — see section 12.
   assert.match(withoutComments(projection), /storedPercentage\(evidence, "raidConfidenceScore"\)/);
   assert.equal(
     selectRaidRecommendationEvidence(null, { raidTitle: "t", raidConfidenceScore: 40 }, PROJECT)?.inputs[0]
       .detectedConfidence,
     40,
+  );
+  assert.equal(
+    resolveRecommendationDisclosure(
+      null,
+      { raidTitle: "t", raidConfidenceScore: 40 },
+      resolveSupportingRaid(null, new Map()),
+      PROJECT,
+    ).evidence?.inputs[0].detectedConfidence,
+    null,
+    "with no resolved row there is no current detection confidence to state",
   );
   assert.equal(recRow({ confidence_score: 70 }).confidence_score, 70, "and the Recommendation's own stays its own");
   // No band, no threshold, no colour-only meaning introduced.
@@ -1759,8 +1786,9 @@ test("Zone 2 stays project-scoped and ungoverned-only", () => {
 // exactly one interaction from wherever the claim is shown". §5 does not require
 // a separate route, and this repository has none to offer for a `raid_items` row
 // — so the panel is hosted by the authorized Project Command Center that already
-// holds the claim, reads the REAL supporting record, and is addressed by a
-// same-document fragment.
+// holds the claim, reads the REAL supporting record, and — since the PR #611
+// correction in section 12 — is opened by a focus-managing control rather than
+// addressed by a same-document fragment.
 //
 // The properties this section pins:
 //   1. the lineage column is read, and never rendered
@@ -1770,7 +1798,7 @@ test("Zone 2 stays project-scoped and ungoverned-only", () => {
 //   5. a foreign workspace's row is refused in memory
 //   6. a sibling project's row is refused in memory
 //   7. a closed/resolved record is still valid evidence
-//   8. the evidence text anchors to the exact panel
+//   8. the evidence text is the control that opens the exact panel
 //   9. the panel renders the STORED record, not a re-print of evidence_summary
 //  10. stored status is labelled as recorded, not as current attention
 //  11. the two confidences stay distinct
@@ -1787,10 +1815,18 @@ const SUPPORT_C = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";
 const UNREFERENCED = "00000000-1111-2222-3333-444444444444";
 
 const routeBody = withoutComments(route);
-const panelSource = route.slice(
-  route.indexOf("function SupportingRaidPanel"),
-  route.indexOf("function SupportingRaidUnavailable"),
-);
+/**
+ * The panel's own source. It moved out of the route in the PR #611 correction:
+ * focus management is behaviour, behaviour needs a client boundary, and the page
+ * stays a server component (section 12).
+ */
+const panelSource = evidencePanel;
+/** The server-side mapper that turns one guarded row into the panel's text. */
+const presentationSource = (() => {
+  const body = withoutComments(projection);
+  const from = body.slice(body.indexOf("export function supportingRaidPanelPresentation"));
+  return from.slice(0, from.indexOf("\n}") + 2);
+})();
 const zone2Body = routeBody.slice(
   routeBody.indexOf("zone={ZONE_RECOMMENDATIONS}"),
   routeBody.indexOf("zone={ZONE_DECISIONS}"),
@@ -1959,37 +1995,49 @@ test("a closed or resolved supporting record is still valid evidence", () => {
   assert.match(routeBody, /selectSupportingRaidRecords\(supportingRead\.rows, workspaceId, projectId, supportingRaidIds\)/);
 });
 
-test("each named evidence input is an anchor onto its own record's panel", () => {
-  assert.equal(supportingRaidPanelId(SUPPORT_A), `${SUPPORTING_RAID_PANEL_ID_PREFIX}${SUPPORT_A}`);
-  assert.equal(supportingRaidPanelHref(SUPPORT_A), `#${SUPPORTING_RAID_PANEL_ID_PREFIX}${SUPPORT_A}`);
-  assert.equal(SUPPORTING_RAID_PANEL_ID_PREFIX, "recommendation-evidence-");
+test("each named evidence input is the CONTROL that opens its own record's panel", () => {
+  // One interaction still — but a control, not an anchor. `08-accessibility-
+  // guidelines.md` §2 requires this panel to move focus on open and to return it
+  // on dismissal, and a fragment can do neither, so the prefix, the escaper and
+  // the href builder that composed those anchors are GONE rather than left behind
+  // as a second, inaccessible way in.
+  const projectionBody = withoutComments(projection);
+  const panelBody = withoutComments(evidencePanel);
+  for (const gone of [
+    "SUPPORTING_RAID_PANEL_ID_PREFIX",
+    "supportingRaidPanelId",
+    "supportingRaidPanelHref",
+    "fragmentSafeId",
+    "recommendation-evidence-",
+  ]) {
+    assert.equal(projectionBody.includes(gone), false, `${gone} must not survive the correction`);
+    assert.equal(routeBody.includes(gone), false, `${gone} must not survive the correction`);
+    assert.equal(panelBody.includes(gone), false, `${gone} must not survive the correction`);
+  }
+  assert.equal(routeBody.includes('href="#'), false, "no fragment-only interaction remains");
+  assert.equal(panelBody.includes("href"), false, "the panel addresses nothing and links nowhere");
 
-  // One interaction: a same-document fragment. No new route, no searchParam, no
-  // project picker, no query-string project authority.
-  const href = supportingRaidPanelHref(SUPPORT_A);
-  assert.ok(href.startsWith("#"));
-  assert.equal(href.includes("?"), false);
-  assert.equal(href.includes("/"), false);
-  assert.equal(href.includes("projectId="), false);
-
-  // The anchor is DETERMINISTIC: the escape is injective, so two different ids
-  // can never collide onto one panel and send a reader to the wrong record.
-  assert.notEqual(supportingRaidPanelId("a_b"), supportingRaidPanelId("a b"));
-  assert.notEqual(supportingRaidPanelId(SUPPORT_A), supportingRaidPanelId(SUPPORT_B));
-  assert.doesNotMatch(supportingRaidPanelId('x" onload="/><script>'), /[^A-Za-z0-9_-]/);
-
-  // The route wires it: the named input becomes the anchor, the panel carries the
-  // matching DOM id, and the link is offered ONLY for a record that loaded.
+  // The named input IS the trigger, labelled by exactly the governed text the
+  // Evidence line reads, and offered ONLY for a record that actually loaded.
   assert.match(
     route,
-    /const panelHref = supporting\.state === "resolved" \? supportingRaidPanelHref\(supporting\.record\.id\) : null;/,
+    /const panelRecord = supporting\.state === "resolved" \? supportingRaidPanelPresentation\(supporting\.record\) : null;/,
   );
-  assert.match(route, /<a href=\{panelHref\}[\s\S]{0,200}\{input\.name\}/);
-  assert.match(panelSource, /<li id=\{supportingRaidPanelId\(record\.id\)\}/);
-  assert.match(routeBody, /<SupportingRaidPanel key=\{record\.id\} record=\{record\} \/>/);
-  // Not "Recommendation → generic collection → search by hand": the item link
+  assert.match(route, /\{panelRecord !== null \? \(/);
+  assert.match(route, /<SupportingRaidEvidencePanel label=\{evidenceInputLabel\(input\)\} record=\{panelRecord\} \/>/);
+  assert.equal(
+    evidenceInputLabel({ category: "Risk", name: "Vendor approval may delay launch", detectedConfidence: 82 }),
+    "Risk — Vendor approval may delay launch",
+  );
+  assert.equal(
+    evidenceInputLabel({ category: null, name: "Vendor approval may delay launch", detectedConfidence: null }),
+    "Vendor approval may delay launch",
+    "an unratified category is dropped, never prettified into the label",
+  );
+  // Not "Recommendation → generic collection → search by hand": the item control
   // exists and is separate from the collection link.
-  assert.notEqual(supportingRaidPanelHref(SUPPORT_A), projectEvidenceRepositoryPath(PROJECT));
+  assert.match(routeBody, /<Link href=\{evidence\.repositoryHref\}/);
+  assert.equal(projectEvidenceRepositoryPath(PROJECT).startsWith("#"), false);
 });
 
 test("the panel renders the STORED record, never a re-print of evidence_summary", () => {
@@ -1997,55 +2045,106 @@ test("the panel renders the STORED record, never a re-print of evidence_summary"
   assert.equal(governedRaidCategoryLabel("risk"), "Risk");
   assert.equal(governedRaidCategoryLabel("DEPENDENCY"), "Dependency");
   assert.equal(governedRaidCategoryLabel("raid_unknown"), null, "an unratified value is not prettified");
-  assert.match(panelSource, /governedRaidCategoryLabel\(record\.category\)/);
+  assert.equal(supportingRaidPanelPresentation(raidRow({ category: "dependency" })).categoryLabel, "Dependency");
+  // An unratified stored value is shown AS STORED — the row exists and its
+  // category is a stored fact — never prettified into a noun the enum lacks.
+  assert.equal(
+    supportingRaidPanelPresentation(raidRow({ category: "raid_unknown" as ProjectRaidRow["category"] })).categoryLabel,
+    "raid_unknown",
+  );
 
-  // The stored facts, and only stored facts.
+  // The stored facts, and only stored facts. Mapped on the SERVER, from the row
+  // this page already scope-guarded.
+  assert.deepEqual(
+    supportingRaidPanelPresentation(
+      raidRow({
+        category: "risk",
+        title: "Vendor approval may delay launch",
+        description: "Vendor sign-off is outstanding.",
+        status: "closed",
+        confidence_score: 82,
+        occurrence_count: 3,
+        auto_generated: true,
+        last_detected_at: "2026-09-01T12:34:56Z",
+      }),
+    ),
+    {
+      panelTitle: "Supporting record: Risk — Vendor approval may delay launch",
+      categoryLabel: "Risk",
+      title: "Vendor approval may delay launch",
+      description: "Vendor sign-off is outstanding.",
+      status: "closed",
+      detectionConfidence: 82,
+      occurrenceCount: 3,
+      lastDetected: "2026-09-01",
+      autoGenerated: true,
+    },
+  );
+  assert.match(panelSource, /\{record\.categoryLabel\}/);
   assert.match(panelSource, /\{record\.title\}/);
   assert.match(panelSource, /\{record\.description\}/);
   assert.match(panelSource, /\{record\.status\}/);
-  assert.match(panelSource, /\{Math\.round\(record\.confidence_score\)\}%/);
-  assert.match(panelSource, /\{record\.occurrence_count\}/);
-  assert.match(panelSource, /storedDetectionDate\(record\.last_detected_at\)/);
+  assert.match(panelSource, /record\.detectionConfidence/);
+  assert.match(panelSource, /\{record\.occurrenceCount\}/);
+  assert.match(panelSource, /\{record\.lastDetected\}/);
   assert.equal(storedDetectionDate("2026-09-01T12:34:56Z"), "2026-09-01");
   for (const bad of [null, "", "   ", "not a date"]) {
     assert.equal(storedDetectionDate(bad), null, "an unparseable timestamp states nothing");
   }
 
-  // It reads the ROW. Nothing from the producer's jsonb snapshot reaches it, so
-  // the panel cannot be the same claim twice under a heading promising its source.
+  // It reads the ROW. Nothing from the producer's jsonb snapshot reaches either
+  // the mapper or the panel, so the panel cannot be the same claim twice under a
+  // heading promising its source.
   const body = withoutComments(panelSource);
   for (const snapshot of ["evidence_summary", "rationale", "raidTitle", "raidCategory", "raidConfidenceScore", "selectRaidRecommendation"]) {
     assert.equal(body.includes(snapshot), false, `the panel must not read ${snapshot}`);
+    assert.equal(presentationSource.includes(snapshot), false, `the panel mapper must not read ${snapshot}`);
   }
   // And it invents nothing `raid_items` does not store.
   for (const invented of ["severity", "priority", "health", "sourceSignalId", "source_signal_id", "source_document_id", "urgency", "impact"]) {
     assert.equal(body.toLowerCase().includes(invented.toLowerCase()), false, `the panel must not invent ${invented}`);
+    assert.equal(presentationSource.toLowerCase().includes(invented.toLowerCase()), false, `the mapper must not invent ${invented}`);
   }
   // No fabricated destination of its own — an unlinkable signal stays unlinked.
   assert.equal(body.includes("href"), false, "the panel fabricates no Document/Evidence link");
 });
 
 test("the panel states a recorded status without implying current attention", () => {
-  assert.match(panelSource, /Recorded status/);
+  // Checked against the comment-stripped source, for the reason `withoutComments`
+  // exists on this file at all: prose explaining a rule necessarily quotes the
+  // phrase the rule forbids, and everything a user reads is JSX text.
+  const body = withoutComments(panelSource);
+  assert.match(body, /Recorded status/);
   // Never Zone 1's vocabulary: this is history, not a queue.
   for (const attention of ["Attention", "Open risk", "needs", "awaiting", "Action required", "overdue"]) {
-    assert.equal(panelSource.toLowerCase().includes(attention.toLowerCase()), false, `the panel must not imply ${attention}`);
+    assert.equal(body.toLowerCase().includes(attention.toLowerCase()), false, `the panel must not imply ${attention}`);
   }
-  // The zone says so once, in its own words, rather than per row.
-  assert.match(route, /a record here may already be closed or resolved/);
-  // Read-only, like every other part of this screen.
-  for (const forbidden of ["<form", "<button", "onClick", "use server", "action=", "Accept", "Reject", "Defer"]) {
-    assert.equal(panelSource.includes(forbidden), false, `the panel must not gain ${forbidden}`);
+  // The caveat moved with the panel, and is now stated where the record is read.
+  assert.match(body, /a record here may already be closed or resolved/);
+  assert.equal(routeBody.includes("a record here may already be closed or resolved"), false, "stated once, not twice");
+  // Read-only. The panel owns exactly one interaction — open and dismiss — and no
+  // decision control, no form, no write and no request of any kind.
+  for (const forbidden of ["<form", "use server", "action=", "Accept", "Reject", "Defer", "Record Decision", ".insert(", ".update(", ".upsert(", ".delete("]) {
+    assert.equal(body.includes(forbidden), false, `the panel must not gain ${forbidden}`);
   }
 });
 
 test("the panel's confidence is the RAID item's, never the Recommendation's", () => {
+  const body = withoutComments(panelSource);
   // Same label the Evidence line uses, and a different label from the
   // Recommendation's own number (§2.1).
-  assert.match(panelSource, /Detection confidence/);
-  assert.equal(panelSource.includes("Recommendation confidence"), false);
-  assert.equal(withoutComments(panelSource).includes("item.confidence_score"), false);
+  assert.match(body, /Detection confidence/);
+  assert.equal(body.includes("Recommendation confidence"), false);
+  assert.equal(body.includes("item.confidence_score"), false);
   assert.match(zone2Body, /Recommendation confidence \{Math\.round\(item\.confidence_score\)\}%/);
+  // It is the ROW's own number, read off the row and validated exactly as the
+  // snapshot's is — an impossible stored score is "not recorded", not rendered.
+  assert.equal(recordDetectionConfidence(raidRow({ confidence_score: 82 })), 82);
+  assert.equal(recordDetectionConfidence(raidRow({ confidence_score: 82.4 })), 82);
+  for (const bad of [-1, 101, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.equal(recordDetectionConfidence(raidRow({ confidence_score: bad })), null, `${bad} is not a percentage`);
+  }
+  assert.match(body, /record\.detectionConfidence === null \? "not recorded"/);
   // Two different numbers about two different things, and they stay apart.
   const record = raidRow({ id: SUPPORT_A, confidence_score: 82 });
   const recommendation = recRow({ raid_item_id: SUPPORT_A, confidence_score: 70 });
@@ -2067,17 +2166,22 @@ test("a supporting record that did not load is never substituted by another", ()
   assert.deepEqual(resolveSupportingRaid(null, records), { state: "none", record: null });
   assert.deepEqual(resolveSupportingRaid(null, null), { state: "none", record: null });
 
-  // Resolution is by id ONLY. There is no positional fallback in either file, so
-  // "the first row" cannot become "this Recommendation's record".
-  const bodies = withoutComments(projection) + withoutComments(route);
+  // Resolution is by id ONLY. There is no positional fallback in any of the three
+  // files, so "the first row" cannot become "this Recommendation's record".
+  const bodies = withoutComments(projection) + withoutComments(route) + withoutComments(evidencePanel);
   for (const fallback of ["rows[0]", "records[0]", ".at(0)", ".find(", "[0] ??"]) {
     assert.equal(bodies.includes(fallback), false, `no positional fallback (${fallback})`);
   }
   // And nothing else stands in for the record: not documents, not the snapshot.
   assert.equal(routeBody.includes("project_evidence"), false);
   assert.equal(routeBody.includes("evidence_summary as"), false);
-  // The panels rendered are exactly the records that resolved, by id.
-  assert.match(routeBody, /\.map\(\(id\) => supportingRaidRecords\?\.get\(id\)\)/);
+  // The panel a Recommendation can open is built from THAT Recommendation's own
+  // resolved lookup, and from nothing else.
+  assert.match(routeBody, /const supporting = resolveSupportingRaid\(item\.raid_item_id, supportingRaidRecords\);/);
+  assert.match(
+    routeBody,
+    /supporting\.state === "resolved" \? supportingRaidPanelPresentation\(supporting\.record\) : null/,
+  );
 });
 
 test("a supporting read failure degrades the Evidence Panel and nothing else", () => {
@@ -2101,9 +2205,11 @@ test("a supporting read failure degrades the Evidence Panel and nothing else", (
   assert.match(zone2Body, /\{recommendationsRead === null \? \(\s*<ZoneDegraded/);
   assert.match(zone2Body, /recommendations\.length === 0 \? \(\s*<ZoneEmpty>/);
   assert.equal(zone2Body.includes("supportingRaidRecords === null ?"), false);
-  assert.equal(zone2Body.includes("supportingRaidPanels.length === 0 ?"), false);
-  // The panel block is ABSENT, not empty, when nothing loaded.
-  assert.match(zone2Body, /\{supportingRaidPanels\.length > 0 \? \(/);
+  assert.equal(zone2Body.includes("supportingRaidPanels"), false, "there is no aggregate panel list to blank");
+  // The Recommendation still renders in full; only the control that would open
+  // its record is absent, and the notice beside it says why.
+  assert.match(zone2Body, /<RecommendationEvidence evidence=\{disclosure\.evidence\} supporting=\{supporting\} \/>/);
+  assert.match(route, /\{panelRecord !== null \? \(/);
 
   // And it cannot take the page down: the four zone reads stay their own
   // allSettled unit, the supporting read is a separate awaited one, and no
@@ -2124,14 +2230,19 @@ test("a supporting read failure degrades the Evidence Panel and nothing else", (
 });
 
 test("no identifier reaches a user as copy, panel included", () => {
-  // The uuid may live in the fragment — that is the whole point of the anchor.
-  assert.ok(supportingRaidPanelHref(RAID_ITEM_ID).includes(RAID_ITEM_ID));
+  // No uuid crosses into the client AT ALL now. The fragment was the last thing
+  // on this screen that needed one, and the presentation record carries none.
+  const presented = supportingRaidPanelPresentation(raidRow({ id: RAID_ITEM_ID }));
+  assert.equal("id" in presented, false, "the panel record carries no identifier");
+  assert.equal(JSON.stringify(presented).includes(RAID_ITEM_ID), false);
   // And nowhere a user reads. No uuid-shaped literal exists in the route's copy
-  // at all, and no id expression is a text node.
+  // or the panel's, and no id expression is a text node.
   assert.doesNotMatch(routeBody, /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+  assert.doesNotMatch(withoutComments(evidencePanel), /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
   for (const asCopy of ["{record.id}", "{item.id}", "{item.raid_item_id}", "{supporting.record.id}"]) {
     assert.equal(routeBody.includes(`>${asCopy}`), false, `${asCopy} must not be rendered as text`);
     assert.equal(routeBody.includes(`${asCopy}<`), false, `${asCopy} must not be rendered as text`);
+    assert.equal(withoutComments(evidencePanel).includes(asCopy), false, `${asCopy} must not reach the panel`);
   }
   // The producer's own copies of the same identifiers stay off screen too.
   const shown = disclosureText(STORED_RATIONALE, STORED_EVIDENCE);
@@ -2145,6 +2256,7 @@ test("no fabricated per-record route was introduced to host the panel", () => {
   for (const fake of ["/risks/", "/issues/", "/dependencies/", "/documents/", "/raid/"]) {
     assert.equal(routeBody.includes(fake), false, `${fake} does not exist and must not be linked`);
     assert.equal(withoutComments(projection).includes(fake), false);
+    assert.equal(withoutComments(evidencePanel).includes(fake), false);
   }
   assert.deepEqual([...PROJECT_SURFACES], ["home", "command-center"], "the Project route family did not grow");
   for (const unbuilt of ["risks", "issues", "dependencies", "documents", "raid"]) {
@@ -2155,9 +2267,12 @@ test("no fabricated per-record route was introduced to host the panel", () => {
       `${unbuilt} must not have been created as a canonical child route`,
     );
   }
-  // The panel's target is a fragment on this page, not a route.
-  assert.ok(supportingRaidPanelHref(RAID_ITEM_ID).startsWith("#"));
-  assert.equal(isCanonicalProjectRoutePath(supportingRaidPanelHref(RAID_ITEM_ID)), false);
+  // The panel opens IN PLACE on the page that already holds the claim — it is not
+  // a route, not a fragment, and it navigates nowhere.
+  const panelBody = withoutComments(evidencePanel);
+  for (const navigation of ["next/link", "next/navigation", "useRouter", "href", "window.location"]) {
+    assert.equal(panelBody.includes(navigation), false, `the panel must not navigate (${navigation})`);
+  }
 });
 
 test("the generic project evidence link stays, and stays explicitly collection-level", () => {
@@ -2170,8 +2285,10 @@ test("the generic project evidence link stays, and stays explicitly collection-l
     selectRaidRecommendationEvidence(STORED_RATIONALE, STORED_EVIDENCE, PROJECT)?.repositoryHref,
     projectEvidenceRepositoryPath(PROJECT),
   );
-  // It is never offered AS the supporting record, and never as the panel target.
-  assert.notEqual(projectEvidenceRepositoryPath(PROJECT), supportingRaidPanelHref(SUPPORT_A));
+  // It is never offered AS the supporting record: the record opens in place, the
+  // collection is a link to a different screen, and the copy distinguishes them.
+  assert.match(routeBody, /<Link href=\{evidence\.repositoryHref\}/);
+  assert.equal(withoutComments(evidencePanel).includes("repositoryHref"), false);
   assert.equal(projectEvidenceRepositoryPath(PROJECT).startsWith("#"), false);
 });
 
@@ -2219,4 +2336,464 @@ test("Zone 2's population and the earlier corrections are untouched by this chan
   for (const forbidden of ["use server", "<form", "<button", "onClick", "revalidatePath", ".insert(", ".update(", ".delete("]) {
     assert.equal(routeBody.includes(forbidden), false, `the page must stay read-only (${forbidden})`);
   }
+});
+
+// ─── 12. PR #611 review corrections (Codex P2 #1, #2, #3) ─────────────────
+//
+// Three findings against the item-level Evidence Panel section 11 added. All
+// three are read/presentation defects: no schema moved, no producer changed, and
+// the reads, their scopes and their failure isolation are the same statements.
+//
+//   P2 #1  the Evidence line's "detection confidence" came from the producer's
+//          FROZEN `evidence_summary.raidConfidenceScore` while the panel directly
+//          beneath it showed the row's CURRENT `raid_items.confidence_score`. A
+//          later detection updates the row and never rewrites the snapshot, so one
+//          screen could state two different numbers, under one label, about one
+//          record — contradictory disclosure a reader cannot resolve.
+//   P2 #2  Why and Evidence were built from the nullable, unvalidated jsonb
+//          columns ONLY. A Recommendation whose exact supporting row was in memory
+//          could therefore render no disclosure at all, which §2 makes mandatory.
+//   P2 #3  the panel was an `<a href="#…">` onto a non-focusable `<li>`. Activation
+//          moved the viewport and left focus on the Recommendation; there was no
+//          dismissal and nothing to return focus to —
+//          `08-accessibility-guidelines.md` §2 requires both.
+//
+// The properties this section pins:
+//   1. the visible detection confidence is the RESOLVED ROW's, not the snapshot's
+//   2. a stale snapshot number is never presented as a current one
+//   3. Recommendation confidence stays a separate number under a separate label
+//   4. a valid snapshot keeps its own wording
+//   5. an unusable snapshot plus a resolved row still produces Why and Evidence
+//   6. that fallback is the EXACT resolved row, never a sibling or a neighbour
+//   7. neither source, no fabricated basis
+//   8. the trigger is keyboard-operable, focus-visible and state-exposing
+//   9. the panel has an accessible name, a dismissal, Escape, and focus return
+//  10. the interaction is client-owned; the authorization and the reads are not
+//  11. the batched, project-scoped supporting read is untouched
+
+/** A resolved lookup for one row, exactly as the page builds it. */
+const resolved = (over: Partial<ProjectRaidRow> = {}) =>
+  resolveSupportingRaid(SUPPORT_A, selectSupportingRaidRecords([raidRow({ id: SUPPORT_A, ...over })], WS, PROJECT, [SUPPORT_A]));
+
+/** The three non-resolving outcomes, for the "no current number" cases. */
+const UNRESOLVED = [
+  resolveSupportingRaid(SUPPORT_A, null),
+  resolveSupportingRaid(SUPPORT_A, new Map<string, ProjectRaidRow>()),
+  resolveSupportingRaid(null, null),
+];
+
+// P2 #1 — the detection confidence a reader sees.
+
+test("the visible detection confidence is the resolved RAID row's, not the snapshot's", () => {
+  // The snapshot says 82 — what the producer saw. The row says 35 now, because a
+  // later detection updated it and left the Recommendation's copy alone.
+  const snapshot = { raidCategory: "risk", raidTitle: "Vendor approval may delay launch", raidConfidenceScore: 82 };
+  const disclosure = resolveRecommendationDisclosure(null, snapshot, resolved({ confidence_score: 35 }), PROJECT);
+  assert.equal(disclosure.evidence?.inputs[0].detectedConfidence, 35, "the current number comes from the row");
+  assert.equal(
+    selectRaidRecommendationEvidence(null, snapshot, PROJECT)?.inputs[0].detectedConfidence,
+    82,
+    "the snapshot mapper still reports the snapshot, unchanged — it is a real stored fact",
+  );
+
+  // Which is the same number the panel beneath it shows, off the same row. That
+  // identity is the whole finding: one record, one current detection confidence.
+  assert.equal(supportingRaidPanelPresentation(raidRow({ confidence_score: 35 })).detectionConfidence, 35);
+  assert.equal(
+    disclosure.evidence?.inputs[0].detectedConfidence,
+    supportingRaidPanelPresentation(raidRow({ id: SUPPORT_A, confidence_score: 35 })).detectionConfidence,
+  );
+
+  // And it is read from the row, not from `evidence_summary`, in one place.
+  const combiner = withoutComments(projection).slice(
+    withoutComments(projection).indexOf("export function resolveRecommendationDisclosure"),
+  );
+  assert.match(combiner.slice(0, combiner.indexOf("\n}") + 2), /recordDetectionConfidence\(record\)/);
+});
+
+test("a stale snapshot confidence is never presented as a current one", () => {
+  // No resolved row means no current number. The snapshot's copy is NOT promoted
+  // into a present-tense label — §2.1 prefers no number to an ambiguous one.
+  for (const supporting of UNRESOLVED) {
+    const disclosure = resolveRecommendationDisclosure(
+      null,
+      { raidCategory: "risk", raidTitle: "Vendor approval may delay launch", raidConfidenceScore: 82 },
+      supporting,
+      PROJECT,
+    );
+    assert.equal(disclosure.evidence?.inputs.length, 1, "the named input survives — only the number is withheld");
+    assert.equal(disclosure.evidence?.inputs[0].name, "Vendor approval may delay launch");
+    assert.equal(disclosure.evidence?.inputs[0].detectedConfidence, null, `${supporting.state} states no confidence`);
+  }
+  // The line is omitted rather than rendered empty or labelled vaguely.
+  assert.match(route, /\{input\.detectedConfidence !== null \? \(/);
+  assert.match(route, /detection confidence \{input\.detectedConfidence\}%/);
+  // A resolved row whose own score is not a percentage says nothing either.
+  assert.equal(
+    resolveRecommendationDisclosure(null, { raidTitle: "t", raidConfidenceScore: 82 }, resolved({ confidence_score: 900 }), PROJECT)
+      .evidence?.inputs[0].detectedConfidence,
+    null,
+    "an impossible stored score is not backfilled from the snapshot",
+  );
+});
+
+test("Recommendation confidence remains a separate number under a separate label", () => {
+  // `recommended_actions.confidence_score` is untouched by any of this: it is not
+  // an argument to the combiner and cannot reach a detection-confidence line.
+  const combiner = withoutComments(projection).slice(
+    withoutComments(projection).indexOf("export function resolveRecommendationDisclosure"),
+  );
+  const body = combiner.slice(0, combiner.indexOf("\n}") + 2);
+  for (const name of ["item.confidence_score", "confidence_score:"]) {
+    assert.equal(body.includes(name), false, `the combiner must not see ${name}`);
+  }
+  assert.match(zone2Body, /Recommendation confidence \{Math\.round\(item\.confidence_score\)\}%/);
+  assert.match(zone2Body, /Recommendation confidence not recorded/);
+  assert.equal(zone2Body.includes("Recommendation confidence {input.detectedConfidence}"), false);
+  // Two labels, two sources, never interchanged.
+  const disclosure = resolveRecommendationDisclosure(
+    null,
+    { raidTitle: "t", raidConfidenceScore: 82 },
+    resolved({ confidence_score: 35 }),
+    PROJECT,
+  );
+  assert.equal(disclosure.evidence?.inputs[0].detectedConfidence, 35);
+  assert.equal(recRow({ confidence_score: 70 }).confidence_score, 70);
+});
+
+// P2 #2 — the disclosure falls back to the resolved record.
+
+test("a valid snapshot keeps its own wording when the record also resolved", () => {
+  // The snapshot records the basis AS CAPTURED when the Recommendation was
+  // produced. Rewriting it from a row that has since moved would silently restate
+  // history, so the wording is preserved — only the confidence is current.
+  const disclosure = resolveRecommendationDisclosure(
+    STORED_RATIONALE,
+    STORED_EVIDENCE,
+    resolved({ category: "issue", title: "Retitled after a later detection", confidence_score: 35 }),
+    PROJECT,
+  );
+  assert.deepEqual(disclosure.why, { category: "Risk", condition: "Vendor approval may delay launch" });
+  assert.deepEqual(disclosure.evidence, {
+    inputs: [{ category: "Risk", name: "Vendor approval may delay launch", detectedConfidence: 35 }],
+    repositoryHref: projectEvidenceRepositoryPath(PROJECT),
+  });
+  // And the snapshot selectors themselves are unchanged by any of this.
+  assert.deepEqual(selectRaidRecommendationWhy(STORED_RATIONALE, STORED_EVIDENCE), {
+    category: "Risk",
+    condition: "Vendor approval may delay launch",
+  });
+  assert.deepEqual(selectRaidRecommendationEvidence(STORED_RATIONALE, STORED_EVIDENCE, PROJECT), {
+    inputs: [{ category: "Risk", name: "Vendor approval may delay launch", detectedConfidence: 82 }],
+    repositoryHref: projectEvidenceRepositoryPath(PROJECT),
+  });
+});
+
+test("an unusable snapshot plus a resolved record still produces Why, and named Evidence", () => {
+  // Every way the two jsonb columns can fail to say anything: null, missing,
+  // malformed, wrong type, blank text.
+  const unusable: [unknown, unknown][] = [
+    [null, null],
+    [undefined, undefined],
+    [{}, {}],
+    ["not an object", 7],
+    [[], []],
+    [{ trigger: "approval_dependency_detected" }, { raidItemId: RAID_ITEM_ID, discoveryOrigin: "project_discovery" }],
+    [{ riskText: "   " }, { raidTitle: "   " }],
+    [{ riskText: 7 }, { raidTitle: 7, raidConfidenceScore: 82 }],
+  ];
+  for (const [rationale, evidenceSummary] of unusable) {
+    // Nothing from the snapshot alone.
+    assert.equal(selectRaidRecommendationWhy(rationale, evidenceSummary), null);
+    assert.equal(selectRaidRecommendationEvidence(rationale, evidenceSummary, PROJECT), null);
+
+    // But the exact supporting row IS in memory, so the mandatory disclosure is
+    // built from it rather than omitted.
+    const disclosure = resolveRecommendationDisclosure(
+      rationale,
+      evidenceSummary,
+      resolved({ category: "dependency", title: "Integration testing is blocked", confidence_score: 64 }),
+      PROJECT,
+    );
+    assert.deepEqual(disclosure.why, { category: "Dependency", condition: "Integration testing is blocked" });
+    assert.deepEqual(disclosure.evidence, {
+      inputs: [{ category: "Dependency", name: "Integration testing is blocked", detectedConfidence: 64 }],
+      repositoryHref: projectEvidenceRepositoryPath(PROJECT),
+    });
+  }
+
+  // The fallback is the row's governed category and its STORED title, and nothing
+  // else — no id, no trigger, no discoveryOrigin, no arbitrary jsonb key.
+  const shown = JSON.stringify(
+    resolveRecommendationDisclosure(
+      { trigger: "approval_dependency_detected", riskType: "vendor" },
+      { raidItemId: RAID_ITEM_ID, sourceSignalId: SOURCE_SIGNAL_ID, discoveryOrigin: "project_discovery" },
+      resolved({ title: "Integration testing is blocked" }),
+      PROJECT,
+    ),
+  );
+  for (const internal of [RAID_ITEM_ID, SOURCE_SIGNAL_ID, "raidItemId", "sourceSignalId", "discoveryOrigin", "trigger", "approval_dependency_detected", "riskType", "vendor"]) {
+    assert.equal(shown.includes(internal), false, `the fallback must not expose ${internal}`);
+  }
+  // An unratified stored category is dropped from the disclosure rather than
+  // prettified — the same closed map the snapshot path uses.
+  assert.deepEqual(
+    resolveRecommendationDisclosure(null, null, resolved({ category: "raid_unknown" as ProjectRaidRow["category"], title: "x" }), PROJECT).why,
+    { category: null, condition: "x" },
+  );
+});
+
+test("the fallback never reaches a sibling, foreign or unrequested RAID row", () => {
+  // The fallback reads `supporting.record` and nothing else, and that record has
+  // already survived the batched query's three filters AND the in-memory guard.
+  // A referenced id is a claim, not a permission — so none of these resolves, and
+  // none of them can become somebody's Why.
+  const referenced = [SUPPORT_A];
+  for (const [what, row] of [
+    ["a foreign workspace's row", raidRow({ id: SUPPORT_A, workspace_id: OTHER_WS, title: "Foreign condition" })],
+    ["a sibling project's row", raidRow({ id: SUPPORT_A, project_id: OTHER_PROJECT, title: "Sibling condition" })],
+    ["a workspace-scoped row with no project", raidRow({ id: SUPPORT_A, project_id: null, title: "Unscoped condition" })],
+    ["a row nobody referenced", raidRow({ id: SUPPORT_B, title: "Unrequested condition" })],
+  ] as [string, ProjectRaidRow][]) {
+    const records = selectSupportingRaidRecords([row], WS, PROJECT, referenced);
+    const supporting = resolveSupportingRaid(SUPPORT_A, records);
+    assert.notEqual(supporting.state, "resolved", what);
+    const disclosure = resolveRecommendationDisclosure(null, null, supporting, PROJECT);
+    assert.equal(disclosure.why, null, `${what} must not become a Why`);
+    assert.equal(disclosure.evidence, null, `${what} must not become Evidence`);
+    assert.equal(JSON.stringify(disclosure).includes(row.title), false, `${what} must not reach a reader`);
+  }
+  // And a neighbour that DID resolve never stands in for the one that did not.
+  const records = selectSupportingRaidRecords([raidRow({ id: SUPPORT_B, title: "Neighbour condition" })], WS, PROJECT, [SUPPORT_A, SUPPORT_B]);
+  const disclosure = resolveRecommendationDisclosure(null, null, resolveSupportingRaid(SUPPORT_A, records), PROJECT);
+  assert.equal(disclosure.why, null);
+  assert.equal(JSON.stringify(disclosure).includes("Neighbour condition"), false);
+});
+
+test("with neither a usable snapshot nor a resolved record, no basis is fabricated", () => {
+  for (const supporting of UNRESOLVED) {
+    const disclosure = resolveRecommendationDisclosure(null, null, supporting, PROJECT);
+    assert.deepEqual(disclosure, { why: null, evidence: null }, `${supporting.state} states nothing`);
+  }
+  // Both sections then vanish rather than rendering empty, and the truthful
+  // unavailable notice is the only thing said.
+  assert.match(route, /function RecommendationWhy\(\{ why \}[\s\S]{0,140}if \(why === null\) return null;/);
+  assert.match(route, /function RecommendationEvidence\(\{\s*evidence,\s*supporting,[\s\S]{0,220}if \(evidence === null\) return null;/);
+  assert.match(route, /Supporting RAID record is temporarily unavailable\./);
+  assert.match(route, /Supporting RAID record is not available to open\./);
+  // The Recommendation's own directive is never a source for its own basis: the
+  // combiner cannot see it, because it is not an argument.
+  const combiner = withoutComments(projection).slice(
+    withoutComments(projection).indexOf("export function resolveRecommendationDisclosure"),
+  );
+  const body = combiner.slice(0, combiner.indexOf("\n}") + 2);
+  for (const name of ["item.title", "item.description", "recommended_action_type"]) {
+    assert.equal(body.includes(name), false, `the combiner must not read ${name}`);
+  }
+});
+
+// P2 #3 — the focus-managed Evidence Panel.
+
+test("the evidence trigger is a keyboard-operable control with a visible focus treatment", () => {
+  const panelBody = withoutComments(evidencePanel);
+  // A real button: Tab reaches it, Enter and Space activate it. Not a div with a
+  // handler, not an anchor with no href, not a fragment.
+  assert.match(panelBody, /<button\s+type="button"/);
+  assert.equal(panelBody.includes("<a "), false);
+  assert.equal(panelBody.includes("tabIndex"), false, "nothing is bolted into or out of the tab order by hand");
+  assert.equal(panelBody.includes('href="#'), false);
+  // Focus is visible, and not by colour alone (§3's focus-appearance rule).
+  assert.match(panelBody, /focus-visible:outline-2/);
+  assert.match(panelBody, /focus-visible:outline-offset-2/);
+  // The trigger says what it opens and whether it is open — which the anchor it
+  // replaces could not say at all.
+  assert.match(panelBody, /aria-haspopup="dialog"/);
+  assert.match(panelBody, /aria-expanded=\{open\}/);
+  // Exactly one interaction opens the panel.
+  assert.equal(panelBody.match(/onClick=/g)?.length, 1);
+  assert.match(panelBody, /onClick=\{\(\) => setOpen\(true\)\}/);
+  // No bare fragment-only interaction remains anywhere in the slice.
+  for (const [name, source] of NEW_SLICE_FILES) {
+    assert.equal(withoutComments(source).includes('href="#'), false, `${name} must not ship a fragment interaction`);
+  }
+});
+
+test("activation opens the exact supporting record in a named, dismissible panel", () => {
+  const panelBody = withoutComments(evidencePanel);
+  // The panel is the repository's OWN primitive, reused rather than reinvented —
+  // and no UI dependency was added to do it.
+  assert.match(panelBody, /import \{ Drawer \} from "@\/components\/pmfreak\/ui\/drawer";/);
+  assert.match(panelBody, /<Drawer title=\{record\.panelTitle\} onClose=\{\(\) => setOpen\(false\)\}/);
+  // Portalled to the document body: the trigger sits inside the Evidence line's
+  // running text, and a block-level dialog is not valid content inside a
+  // paragraph — the parser would reparent it out from under the claim it belongs
+  // to. Only reachable when `open`, which a server render can never be.
+  assert.match(panelBody, /\{open\s*\?\s*createPortal\(/);
+  assert.match(panelBody, /document\.body,/);
+  const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as {
+    dependencies: Record<string, string>;
+    devDependencies: Record<string, string>;
+  };
+  for (const added of ["@radix-ui/react-dialog", "@headlessui/react", "react-modal", "@reach/dialog", "vaul", "focus-trap-react"]) {
+    assert.equal(added in packageJson.dependencies, false, `${added} must not have been added`);
+    assert.equal(added in packageJson.devDependencies, false, `${added} must not have been added`);
+  }
+
+  // Dialog semantics, with an accessible name that identifies THIS record in the
+  // same governed words the trigger carries — never "Details", never an id.
+  assert.match(drawerPrimitive, /role="dialog"/);
+  assert.match(drawerPrimitive, /aria-modal="true"/);
+  assert.match(drawerPrimitive, /aria-labelledby="drawer-title"/);
+  assert.match(drawerPrimitive, /<h2 id="drawer-title"[\s\S]{0,120}\{title\}/);
+  const presented = supportingRaidPanelPresentation(
+    raidRow({ category: "risk", title: "Vendor approval may delay launch" }),
+  );
+  assert.equal(presented.panelTitle, "Supporting record: Risk — Vendor approval may delay launch");
+  assert.equal(
+    supportingRaidPanelPresentation(raidRow({ category: "raid_unknown" as ProjectRaidRow["category"], title: "x" })).panelTitle,
+    "Supporting record: x",
+  );
+  assert.equal(presented.panelTitle.includes("undefined"), false);
+  assert.equal(presented.panelTitle.includes(RAID_ITEM_ID), false);
+  // The trigger's own name is the same governed line, so a screen-reader user
+  // hears what they activated.
+  assert.equal(
+    evidenceInputLabel({ category: "Risk", name: "Vendor approval may delay launch", detectedConfidence: null }),
+    "Risk — Vendor approval may delay launch",
+  );
+  assert.ok(presented.panelTitle.endsWith("Risk — Vendor approval may delay launch"));
+
+  // An explicit dismissal exists, it is labelled, and Escape closes too.
+  assert.match(drawerPrimitive, /aria-label="Close"/);
+  assert.match(drawerPrimitive, /onClick=\{onClose\}/);
+  assert.match(drawerPrimitive, /if \(event\.key === "Escape"\)[\s\S]{0,120}onClose\(\);/);
+});
+
+test("opening moves focus into the panel, and dismissal returns it to the same trigger", () => {
+  // Opening focuses the first focusable element INSIDE the panel — predictable,
+  // and it is the panel's own Close control rather than anything on the page
+  // behind it. Focus is never moved without an activation having asked for it.
+  assert.match(drawerPrimitive, /const focusable = container\?\.querySelectorAll<HTMLElement>\(FOCUSABLE_SELECTOR\);/);
+  assert.match(drawerPrimitive, /focusable\?\.\[0\]\?\.focus\(\);/);
+  // The element that was focused when the panel mounted — the trigger that
+  // activated it — is captured and refocused on unmount, whichever dismissal ran.
+  assert.match(drawerPrimitive, /triggerElementRef\.current = document\.activeElement as HTMLElement \| null;/);
+  assert.match(drawerPrimitive, /return \(\) => \{[\s\S]{0,200}triggerElementRef\.current\?\.focus\(\);/);
+  // Unmounting IS the dismissal, so Escape, the Close control and the scrim all
+  // take the same path back to the same trigger.
+  assert.match(withoutComments(evidencePanel), /\{open\s*\?\s*createPortal\([\s\S]{0,5000}\)\s*: null\}/);
+  assert.equal(withoutComments(evidencePanel).match(/setOpen\(false\)/g)?.length, 1, "one close path, one focus return");
+  // The focus trap is the dialog pattern's own requirement, implemented by the
+  // repository primitive — not invented in this slice.
+  assert.match(drawerPrimitive, /if \(event\.key !== "Tab" \|\| !container\) return;/);
+  assert.equal(withoutComments(evidencePanel).includes("Tab"), false);
+  assert.equal(withoutComments(evidencePanel).includes("addEventListener"), false);
+  assert.equal(withoutComments(evidencePanel).includes(".focus()"), false);
+});
+
+test("only the interaction is client-owned — authorization, reads and scope are not", () => {
+  const panelBody = withoutComments(evidencePanel);
+  // The page is still a server component, and still the only thing that reads.
+  assert.equal(routeBody.includes('"use client"'), false);
+  assert.match(evidencePanel, /^"use client";/);
+  assert.equal(routeBody.includes("useState"), false);
+  assert.equal(routeBody.includes("onClick"), false);
+
+  // No client fetch of any kind, and nothing to fetch WITH: the component gets
+  // presentation text, not a row, not an id, not a scope.
+  for (const forbidden of [
+    "fetch(",
+    "/api/",
+    "useEffect",
+    "supabase",
+    "createClient",
+    "createSupabase",
+    "useSWR",
+    "axios",
+    "XMLHttpRequest",
+    "workspaceId",
+    "projectId",
+    "raid_item_id",
+    "raid_items",
+    "recommended_actions",
+    "record.id",
+  ]) {
+    assert.equal(panelBody.includes(forbidden), false, `the panel must not reach for ${forbidden}`);
+  }
+  // Its only imports are React state and the repository's own primitive, plus a
+  // TYPE that erases at build time.
+  assert.deepEqual(
+    [...panelBody.matchAll(/from "([^"]+)"/g)].map((m) => m[1]).sort(),
+    ["@/components/pmfreak/ui/drawer", "@/lib/projects/project-command-center-projection", "react", "react-dom"],
+  );
+  assert.match(panelBody, /import type \{ SupportingRaidPanelRecord \} from "@\/lib\/projects\/project-command-center-projection";/);
+  assert.match(panelBody, /import \{ useState \} from "react";/);
+  assert.match(panelBody, /import \{ createPortal \} from "react-dom";/);
+
+  // The server builds the presentation, from a row it already guarded twice.
+  assert.match(routeBody, /supportingRaidPanelPresentation\(supporting\.record\)/);
+  assert.equal(presentationSource.includes("use client"), false);
+
+  // And the panel is still read-only, like every other part of this screen.
+  for (const forbidden of ["<form", "use server", "revalidatePath", "router.refresh", "Accept", "Reject", "Defer"]) {
+    assert.equal(panelBody.includes(forbidden), false, `the panel must stay read-only (${forbidden})`);
+  }
+});
+
+test("the supporting read, its scope and its failure isolation survive the correction", () => {
+  // ONE batched statement, three filters, the exact referenced ids.
+  const query = projectSupportingRaidQuery(WS, PROJECT, [SUPPORT_A, SUPPORT_B]);
+  assert.equal(query.table, "raid_items");
+  assert.equal(query.workspaceId, WS);
+  assert.equal(query.projectId, PROJECT);
+  assert.deepEqual([...(query.ids ?? [])], [SUPPORT_A, SUPPORT_B]);
+  assert.equal(query.limit, 2);
+  assert.equal(query.excludeStatuses, undefined, "Zone 1's open-only filter is still not inherited");
+  assert.equal(routeBody.match(/projectSupportingRaidQuery\(/g)?.length, 1, "no N+1");
+  assert.equal(zone2Body.includes("runProjectScopedQuery"), false);
+  assert.equal(zone2Body.includes("await"), false);
+  assert.match(routeBody, /selectSupportingRaidRecords\(supportingRead\.rows, workspaceId, projectId, supportingRaidIds\)/);
+
+  // A closed record is still inspectable — provenance is not attention — and the
+  // fallback disclosure works for one too.
+  for (const closed of CLOSED_RAID_STATUSES) {
+    const status = closed as ProjectRaidRow["status"];
+    const supporting = resolved({ status, title: "Vendor approval may delay launch" });
+    assert.equal(supporting.state, "resolved", `${closed} must remain inspectable`);
+    assert.equal(supportingRaidPanelPresentation(raidRow({ status })).status, status);
+    assert.deepEqual(resolveRecommendationDisclosure(null, null, supporting, PROJECT).why, {
+      category: "Risk",
+      condition: "Vendor approval may delay launch",
+    });
+  }
+
+  // A supporting failure degrades that line only: the four zones still render
+  // unconditionally, Zone 2's branches still come from Zone 2's OWN read, and no
+  // read was merged into a single failure unit.
+  assert.deepEqual(
+    [...routeBody.matchAll(/zone=\{ZONE_([A-Z]+)\}/g)].map((m) => m[1]),
+    ["ATTENTION", "RECOMMENDATIONS", "DECISIONS", "HEALTH"],
+  );
+  assert.match(zone2Body, /\{recommendationsRead === null \? \(\s*<ZoneDegraded/);
+  assert.match(zone2Body, /recommendations\.length === 0 \? \(\s*<ZoneEmpty>/);
+  assert.equal(routeBody.match(/Promise\.all\(/g), null);
+  assert.equal(routeBody.match(/Promise\.allSettled\(/g)?.length, 2);
+  assert.match(routeBody, /"project_command_center\.supporting_raid_unavailable"/);
+
+  // Zone 2's population is untouched, and so is every earlier correction.
+  const zone2Query = projectRecommendationsQuery(WS, PROJECT);
+  assert.deepEqual(
+    { workspaceId: zone2Query.workspaceId, projectId: zone2Query.projectId, governed: zone2Query.governed, status: zone2Query.status },
+    { workspaceId: WS, projectId: PROJECT, governed: false, status: "proposed" },
+  );
+  assert.equal(routeBody.includes("decisionRequiredCount"), false, "PR #610 P2 #1 stands");
+  assert.match(route, /PMO ancestry is temporarily unavailable\./);
+  assert.equal(resolveProjectPmoAncestry({ pmoId: PMO, row: null, error: { message: "x" } }).state, "unavailable");
+  for (const generic of ["Object.entries", "Object.keys", "Object.values"]) {
+    assert.equal(withoutComments(projection).includes(generic), false, "PR #610 P2 #3 stands");
+  }
+
+  // No workspace module, and no database client, reachable from the correction.
+  assert.equal(withoutComments(evidencePanel).includes("supabase"), false);
+  assert.equal(withoutComments(evidencePanel).includes("@/modules/workspace"), false);
 });
