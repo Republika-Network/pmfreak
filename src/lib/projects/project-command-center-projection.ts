@@ -3,7 +3,7 @@ import type { RaidItemRow, RecommendedActionRow } from "@/lib/db/database-contra
 import { CLOSED_RAID_STATUSES } from "@/lib/pmos/pmo-command-center-rollup";
 
 /**
- * Project Command Center — the zone grammar and the three reads of Slice 1.
+ * Project Command Center — the zone grammar and the reads of Slice 1.
  *
  * SCOPE RULE THIS MODULE ENFORCES
  * -------------------------------
@@ -21,9 +21,10 @@ import { CLOSED_RAID_STATUSES } from "@/lib/pmos/pmo-command-center-rollup";
  *   1. In the query, by filters this module builds as DATA (the descriptors
  *      below), so the filters are inspectable and testable rather than buried in
  *      a page.
- *   2. Again in memory, by `selectProjectRaid` / `selectProjectRecommendations`,
- *      which discard any row that does not belong to this exact workspace AND
- *      this exact project even if it somehow arrived.
+ *   2. Again in memory, by `selectProjectRaid` / `selectProjectRecommendations` /
+ *      `selectSupportingRaidRecords`, which discard any row that does not belong
+ *      to this exact workspace AND this exact project even if it somehow arrived
+ *      — including a supporting RAID row whose id a Recommendation referenced.
  *
  * Belt and braces is not decoration here, it is the only available defence.
  * There is NO `project_members` table anywhere in the schema and every relevant
@@ -46,6 +47,11 @@ import { CLOSED_RAID_STATUSES } from "@/lib/pmos/pmo-command-center-rollup";
  *     `operational_command_centers` table is dormant, not FK-constrained to
  *     `projects`, and never a Project identity.
  *
+ * Zone 2's supporting Evidence read is the one place where a row's id arrives
+ * from ANOTHER table's column (`recommended_actions.raid_item_id`). It is
+ * treated exactly like the routed workspace segment: a claim about ancestry, not
+ * a permission. See `projectSupportingRaidQuery`.
+ *
  * WHY `CLOSED_RAID_STATUSES` IS IMPORTED RATHER THAN RESTATED
  * ----------------------------------------------------------
  * "Open" must mean one thing across the product. `pmo-command-center-rollup.ts`
@@ -54,6 +60,10 @@ import { CLOSED_RAID_STATUSES } from "@/lib/pmos/pmo-command-center-rollup";
  * disagree about the same number for the same project, which is exactly the
  * failure a shared constant prevents. It is RAID status VOCABULARY, not PMO
  * data — no PMO scope, no PMO row and no PMO query travels with it.
+ *
+ * It governs ZONE 1 ONLY. The supporting Evidence read deliberately does NOT
+ * apply it: provenance is not attention, and a Recommendation may legitimately
+ * retain lineage to a RAID item that was closed after it was written.
  */
 
 // ─── Zone grammar ──────────────────────────────────────────────────────────
@@ -109,6 +119,11 @@ export type ProjectRecommendationRow = Pick<
   | "id"
   | "workspace_id"
   | "project_id"
+  // The LINEAGE column. Selected so Zone 2 can find the exact `raid_items` row a
+  // Recommendation was derived from, and never rendered: it is an opaque uuid,
+  // and `evidence_summary.raidItemId` — the producer's copy of the same value —
+  // stays off screen for the same reason. See `projectSupportingRaidQuery`.
+  | "raid_item_id"
   | "governance_event_id"
   | "title"
   | "description"
@@ -116,6 +131,8 @@ export type ProjectRecommendationRow = Pick<
   | "status"
   | "confidence_score"
   | "impact_level"
+  | "rationale"
+  | "evidence_summary"
   | "recommended_owner"
   | "recommended_due_window"
   | "created_at"
@@ -125,7 +142,7 @@ export const PROJECT_RAID_COLUMNS =
   "id, workspace_id, project_id, category, title, description, status, confidence_score, occurrence_count, auto_generated, last_detected_at";
 
 export const PROJECT_RECOMMENDATION_COLUMNS =
-  "id, workspace_id, project_id, governance_event_id, title, description, recommended_action_type, status, confidence_score, impact_level, recommended_owner, recommended_due_window, created_at";
+  "id, workspace_id, project_id, raid_item_id, governance_event_id, title, description, recommended_action_type, status, confidence_score, impact_level, rationale, evidence_summary, recommended_owner, recommended_due_window, created_at";
 
 /**
  * The one status a Recommendation must be in to appear in Zone 2 or Zone 3.
@@ -161,6 +178,13 @@ export type ProjectScopedQuery = {
   excludeStatuses?: readonly string[];
   /** `status = ...`. Present only on the Recommendation queries. */
   status?: string;
+  /**
+   * `id IN (...)`. Present only on the SUPPORTING RAID read, which fetches a
+   * known, already-scoped set of rows in ONE statement rather than one statement
+   * per Recommendation. Never a user-supplied list — see
+   * `projectSupportingRaidQuery`.
+   */
+  ids?: readonly string[];
   /**
    * `governance_event_id IS NOT NULL` (true) or `IS NULL` (false). Present only
    * on the Recommendation queries, and it is the WHOLE distinction between
@@ -275,6 +299,61 @@ export function projectPendingDecisionsQuery(workspaceId: string, projectId: str
   };
 }
 
+/**
+ * The SUPPORTING RAID read behind Zone 2's Evidence — one statement, not N.
+ *
+ * `08-ai-interaction-patterns.md` §2 requires each NAMED evidence input to be a
+ * link into the Evidence Panel (§5), and §5 requires that panel to be reachable
+ * "in exactly one interaction from wherever the claim is shown". A panel is only
+ * worth reaching if it shows the RECORD — so this reads the actual `raid_items`
+ * row each visible Recommendation cites through `recommended_actions.raid_item_id`,
+ * rather than re-printing the `evidence_summary` snapshot the producer copied at
+ * generation time and calling that the source.
+ *
+ * WHY THIS IS NOT `projectRaidQuery`
+ * ----------------------------------
+ * Zone 1 is ATTENTION REQUIRED and excludes `CLOSED_RAID_STATUSES`, because a
+ * resolved risk is not something a PM must look at now. This read is PROVENANCE:
+ * it answers "what record is this Recommendation based on", and a Recommendation
+ * legitimately keeps its lineage to a RAID item that was closed or resolved
+ * after the Recommendation was written. Excluding closed rows here would make an
+ * still-proposed Recommendation's own basis silently unviewable — so
+ * `excludeStatuses` is deliberately ABSENT and the panel labels the stored status
+ * rather than implying the item is currently open.
+ *
+ * WHY THE SCOPE FILTERS ARE STILL BOTH PRESENT
+ * -------------------------------------------
+ * `raid_item_id` is a foreign key to `raid_items` and nothing more: the database
+ * does not constrain it to a row of the SAME project, and RLS keys on
+ * `workspace_memberships`, so it cannot tell project A from project B inside one
+ * workspace. A referenced id is therefore a CLAIM, exactly like the routed
+ * workspace segment is. The statement is constrained by all three of
+ * `workspace_id`, `project_id` and `id IN (…)`, and
+ * `selectSupportingRaidRecords` rejects a foreign-workspace or sibling-project
+ * row a second time in memory. A row is never accepted merely because its id was
+ * referenced.
+ *
+ * `ids` is the DEDUPLICATED set derived from rows that already passed Zone 2's
+ * own scope guard (`collectSupportingRaidIds`), so nothing user-supplied reaches
+ * it. `limit` is that set's size: this read must not truncate the evidence of a
+ * Recommendation the zone is already showing.
+ */
+export function projectSupportingRaidQuery(
+  workspaceId: string,
+  projectId: string,
+  ids: readonly string[],
+): ProjectScopedQuery {
+  return {
+    table: "raid_items",
+    columns: PROJECT_RAID_COLUMNS,
+    workspaceId,
+    projectId,
+    ids,
+    orderBy: "last_detected_at",
+    limit: ids.length,
+  };
+}
+
 // ─── In-memory scope guards ────────────────────────────────────────────────
 
 function belongsToProject(row: { workspace_id: string; project_id: string | null }, workspaceId: string, projectId: string): boolean {
@@ -318,6 +397,614 @@ export function selectProjectRecommendations(
       row.status === PROPOSED_RECOMMENDATION_STATUS &&
       (row.governance_event_id !== null) === governed,
   );
+}
+
+/**
+ * The deduplicated set of `raid_items` ids the VISIBLE Recommendations cite.
+ *
+ * Taken from rows that have already passed `selectProjectRecommendations`, so
+ * every id here was carried by a row this workspace and this project own. Nulls
+ * are dropped — `recommended_actions.raid_item_id` is nullable and a
+ * Recommendation with no RAID lineage simply has no supporting record to show.
+ *
+ * Deduplicated because two Recommendations routinely derive from ONE RAID item
+ * (`generate-recommended-actions.ts` can emit several actions per item), and
+ * first-reference order is preserved so the rendered panels follow the order the
+ * zone already reads in. One id, one row read, one panel.
+ */
+export function collectSupportingRaidIds(rows: readonly ProjectRecommendationRow[]): string[] {
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const row of rows) {
+    const id = row.raid_item_id;
+    if (id === null || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
+}
+
+/**
+ * Keep only supporting RAID rows owned by this exact workspace AND project AND
+ * actually referenced, keyed by id.
+ *
+ * Three guards, all of them load-bearing:
+ *
+ *   - `belongsToProject` — the same guard Zone 1 uses. A foreign workspace's row
+ *     and a sibling project's row are dropped even though their ids were
+ *     referenced, because a foreign `raid_item_id` is a claim, not a permission.
+ *   - `referenced` — a row nobody asked for cannot become somebody's evidence.
+ *   - and NO status filter, deliberately. See `projectSupportingRaidQuery`: this
+ *     is provenance, so a closed or resolved record is still the exact record.
+ *
+ * Rows are returned as a Map so the caller resolves each Recommendation by its
+ * OWN id. There is no positional fallback anywhere in this file — a
+ * Recommendation whose id is absent from the map gets no record, never the first
+ * one, never a neighbour's.
+ */
+export function selectSupportingRaidRecords(
+  rows: readonly ProjectRaidRow[],
+  workspaceId: string,
+  projectId: string,
+  referencedIds: readonly string[],
+): Map<string, ProjectRaidRow> {
+  const referenced = new Set(referencedIds);
+  const records = new Map<string, ProjectRaidRow>();
+  for (const row of rows) {
+    if (!belongsToProject(row, workspaceId, projectId)) continue;
+    if (!referenced.has(row.id)) continue;
+    records.set(row.id, row);
+  }
+  return records;
+}
+
+/**
+ * What Zone 2 can honestly say about one Recommendation's supporting record.
+ *
+ * The same four-outcome vocabulary `resolveProjectPmoAncestry` uses for PMO
+ * ancestry, for the same reason: "there is none", "here it is", "the scoped read
+ * succeeded and it is not ours to show" and "we could not find out" are four
+ * different facts, and collapsing them would let the screen state something it
+ * never established.
+ *
+ *   none         `raid_item_id` is NULL — this Recommendation cites no RAID
+ *                record, so none is claimed and no link is offered.
+ *   resolved     the exact row, read and guarded.
+ *   not-visible  the scoped read SUCCEEDED and this id was not in it: deleted,
+ *                or belonging to another workspace or project. Reported as
+ *                unavailable copy that names nothing — no ancestry, no title, no
+ *                existence oracle.
+ *   unavailable  the read FAILED. Nothing is known about the record, and
+ *                nothing about the Recommendation itself is withheld for it.
+ */
+export type SupportingRaidLookup =
+  | { state: "none"; record: null }
+  | { state: "resolved"; record: ProjectRaidRow }
+  | { state: "not-visible"; record: null }
+  | { state: "unavailable"; record: null };
+
+export function resolveSupportingRaid(
+  raidItemId: string | null,
+  records: ReadonlyMap<string, ProjectRaidRow> | null,
+): SupportingRaidLookup {
+  if (raidItemId === null) return { state: "none", record: null };
+  // `null` is the failed read, distinct from an empty map, which is a successful
+  // read that returned nothing.
+  if (records === null) return { state: "unavailable", record: null };
+  const record = records.get(raidItemId);
+  return record ? { state: "resolved", record } : { state: "not-visible", record: null };
+}
+
+// ─── Item-level Evidence Panel ─────────────────────────────────────────────
+
+/**
+ * HOW THE PANEL IS REACHED, AND WHY IT IS NO LONGER A FRAGMENT
+ * -----------------------------------------------------------
+ * `08-ai-interaction-patterns.md` §5 requires the Evidence Panel to be reachable
+ * "in exactly one interaction from wherever the claim is shown", and
+ * `08-accessibility-guidelines.md` §2 fixes what that interaction must DO: the
+ * panel "opens without stealing focus unexpectedly, and its dismissal returns
+ * focus to the control that opened it".
+ *
+ * The first attempt satisfied the first sentence and failed the second. It was an
+ * `<a href="#recommendation-evidence-…">` landing on a non-focusable `<li>`: a
+ * pointer user's viewport moved and a keyboard or screen-reader user's FOCUS did
+ * not — it stayed on the Recommendation, with no dismissal to return from. A
+ * fragment is a scroll instruction, not a focus-management contract, so the
+ * prefix, the escaper and the href builder that composed those anchors are gone
+ * rather than left behind as a second, inaccessible way in.
+ *
+ * The named evidence input is now a real control, and the panel is the
+ * repository's OWN `Drawer` (`components/pmfreak/ui/drawer.tsx`) — audited for
+ * and reused rather than reinvented, so no UI dependency was added. It already
+ * implements the whole §2 contract: focus moves into the panel on open, the panel
+ * is a `role="dialog"` with an accessible name, an explicit Close control exists,
+ * Escape closes, and focus returns to the control that opened it.
+ *
+ * The SERVER still performs every authorization and every read. What crosses into
+ * the client is `SupportingRaidPanelRecord` below — already-authorized, already
+ * governed PRESENTATION TEXT carrying no identifier, no query and nothing to
+ * fetch with. The page remains a server component; only the open/close/focus
+ * interaction is client-owned.
+ */
+
+/**
+ * A stored timestamp at day precision, or `null` if it is not a timestamp.
+ *
+ * `raid_items.last_detected_at` is a `timestamptz`. Rendered as its UTC calendar
+ * date: a stored fact shown at lower precision, never a relative phrase like
+ * "2 days ago" that would be computed against the reader's clock and stop being
+ * true the moment the page is cached.
+ */
+export function storedDetectionDate(value: string | null): string | null {
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+  const parsed = new Date(value);
+  const time = parsed.getTime();
+  if (!Number.isFinite(time)) return null;
+  return parsed.toISOString().slice(0, 10);
+}
+
+// ─── Zone 2 disclosure: Why → Evidence, in governed vocabulary ─────────────
+
+/**
+ * The user-facing Why and Evidence behind one RAID-derived Recommendation.
+ *
+ * WHY THIS IS A NARROW MAPPER AND NOT A JSON RENDERER
+ * ---------------------------------------------------
+ * `08-ai-interaction-patterns.md` §2 fixes the disclosure shape every rendered
+ * Recommendation carries — Why → Evidence → Confidence — and is specific about
+ * what each part IS:
+ *
+ *   Why      "the detected condition, in the same governed vocabulary the
+ *             Risk/Issue it responds to uses (`02-canonical-product-language.md`),
+ *             never a raw model rationalization."
+ *   Evidence "an enumerated, NAMED list of inputs … never a vague 'based on
+ *             project data.'"
+ *
+ * The first attempt at this satisfied the shape structurally and failed it
+ * semantically: it walked `Object.entries()` over the two `jsonb` columns and
+ * printed every scalar under its own key, spaced. That is FORMATTING AN INTERNAL
+ * KEY, which is not the same act as mapping it into product language, and it put
+ * the producer's machine contract on screen — `trigger:
+ * "approval_dependency_detected"`, `discoveryOrigin: "project_discovery"`, and
+ * the raw `raidItemId` / `sourceSignalId` uuids. None of those is governed
+ * vocabulary, a named evidence input, or a fact a PM can evaluate; the uuids are
+ * not even readable. A generic mapper also fails FORWARD: the day a producer adds
+ * a key, that key starts rendering to users with nobody having decided it should.
+ *
+ * So this is an ALLOWLIST over one known producer schema, not a presentation
+ * framework. Zone 2 lists exactly the ungoverned, `proposed` rows, and in this
+ * repository those have exactly one writer —
+ * `recommended-actions/generate-recommended-actions.ts`, persisted by
+ * `materialize-recommended-actions.ts` — whose stored shape is:
+ *
+ *   evidence_summary  raidItemId, raidCategory, raidTitle, raidConfidenceScore,
+ *                     discoveryOrigin, sourceSignalId
+ *   rationale         trigger, raidCategory, riskText?, riskType?
+ *
+ * Of those, exactly three are facts about the PROJECT rather than about the rule
+ * engine, and those three are the only ones read below:
+ *
+ *   raidCategory          → the governed noun (Risk / Issue / Dependency /
+ *                           Assumption), the vocabulary `02-…` §"RAID" ratifies.
+ *   raidTitle             → the human sentence a person or an extraction wrote
+ *                           for the detected condition. `rationale.riskText` is
+ *                           the SAME stored value (`riskText: item.title`) and is
+ *                           read only as a fallback, never as a second line.
+ *   raidConfidenceScore   → the RAID item's OWN recorded confidence, which is a
+ *                           different number from `recommended_actions.
+ *                           confidence_score` and is labelled as such at the
+ *                           point of use.
+ *
+ * DELIBERATELY NOT READ, and why each stays off screen:
+ *   trigger          the rule-engine enum that fired. `approval_dependency_detected`
+ *                    adds no fact the stored Risk and its title do not already
+ *                    state; rendering it explains PMFreak's implementation to a
+ *                    PM instead of describing their project.
+ *   discoveryOrigin  a constant the producer hard-codes. It classifies the
+ *                    pipeline, not the project.
+ *   riskType         "vendor" / "schedule", a keyword match over the title —
+ *                    a derived guess, not a stored governed fact.
+ *   raidItemId       an opaque uuid. See the navigability note below.
+ *   sourceSignalId   an opaque uuid, and null for every project-discovery RAID
+ *                    item anyway (`project-discovery/raid-materialization.ts`
+ *                    writes `sourceSignalId: null`).
+ *
+ * NAVIGABILITY — WHERE THE NAMED INPUT LEADS
+ * ------------------------------------------
+ * §2 wants each named evidence input to be a link into the Evidence Panel (§5),
+ * and §5 wants that panel "reachable in exactly one interaction from wherever
+ * the claim is shown". §5 does NOT require a separate route, and this repository
+ * has none to offer for a RAID item — verified rather than assumed:
+ *
+ *   - No page or API route anywhere under `src/app` addresses a `raid_items` row
+ *     by id. `03-…` §5.8 lists Risks / Issues / Dependencies as required
+ *     Execution Layer screens; none of them is built, which is also why
+ *     `project-paths.ts` refuses to list them in `PROJECT_SURFACES`.
+ *   - The shipped `/evidence?projectId=…` screen reads `project_evidence` and
+ *     `project_evidence_content`. Those are UPLOADED DOCUMENTS — a different
+ *     table and a different population from `raid_items`. It has no item
+ *     selector, so `/evidence?projectId=P` cannot identify one RAID item and
+ *     pretending it does would be a lie in a link. It stays offered, on its own
+ *     line and in its own words, as the COLLECTION and never as this item.
+ *   - `raid_items.source_signal_id` references `vault_operational_signals`
+ *     (`20260602020000`), which has no user-facing surface at all — so it is
+ *     neither shown nor linked.
+ *
+ * So the Evidence Panel is hosted by the authorized Project Command Center that
+ * already holds the claim, and the named input is the CONTROL that opens it — one
+ * interaction, onto the EXACT supporting record read from `raid_items` through
+ * `recommended_actions.raid_item_id` (`projectSupportingRaidQuery`) rather than
+ * re-printed from the `evidence_summary` snapshot below. It is a real control and
+ * not an anchor because `08-accessibility-guidelines.md` §2 requires the panel to
+ * manage focus and to return it on dismissal, which a fragment cannot do; see the
+ * Item-level Evidence Panel note above. No uuid travels with it at all now.
+ *
+ * This mapper is unchanged by that: it still NAMES the input from stored text,
+ * and it still carries no id of its own. Whether a panel can be opened at all is
+ * decided at the point of render, from the lineage column, and only when the
+ * exact record actually loaded — see `resolveSupportingRaid`.
+ */
+
+/**
+ * The four RAID nouns `02-canonical-product-language.md` ratifies, in the exact
+ * casing a user reads them in. `raid_items.category` is CHECK-constrained to
+ * these four lowercase values (`20260602020000`), so this is a translation of a
+ * closed stored enum into its governed label — not a prettifier that would
+ * accept whatever string arrived.
+ */
+export const GOVERNED_RAID_CATEGORY_LABELS = {
+  risk: "Risk",
+  issue: "Issue",
+  dependency: "Dependency",
+  assumption: "Assumption",
+} as const;
+
+type GovernedRaidCategory = keyof typeof GOVERNED_RAID_CATEGORY_LABELS;
+
+/**
+ * A stored category, or `null` if it is not one of the four ratified nouns.
+ *
+ * Exported because the Evidence Panel reads `raid_items.category` straight off
+ * the supporting row and must translate it through this same closed map — a
+ * second prettifier there could accept a value the enum does not name.
+ */
+export function governedRaidCategoryLabel(stored: unknown): string | null {
+  if (typeof stored !== "string") return null;
+  const key = stored.trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(GOVERNED_RAID_CATEGORY_LABELS, key)
+    ? GOVERNED_RAID_CATEGORY_LABELS[key as GovernedRaidCategory]
+    : null;
+}
+
+/** Internal alias, so the two disclosure mappers below read as they did. */
+const governedCategoryLabel = governedRaidCategoryLabel;
+
+function storedObject(column: unknown): Record<string, unknown> | null {
+  if (typeof column !== "object" || column === null || Array.isArray(column)) return null;
+  return column as Record<string, unknown>;
+}
+
+/**
+ * One NAMED key, read as human text. The key is always a literal at the call
+ * site — there is no iteration over the object, so a key this module does not
+ * name cannot reach a user however a producer changes.
+ */
+function storedText(source: Record<string, unknown> | null, key: string): string | null {
+  const value = source?.[key];
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/** One NAMED key, read as a 0–100 percentage. Anything else is "not recorded". */
+function storedPercentage(source: Record<string, unknown> | null, key: string): number | null {
+  const value = source?.[key];
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  if (value < 0 || value > 100) return null;
+  return Math.round(value);
+}
+
+/**
+ * The DETECTED CONDITION this Recommendation responds to.
+ *
+ * `condition` is stored human text, passed through untouched — this function
+ * composes no sentence, and nothing here is derived from the Recommendation's
+ * own title or description, which would be synthesizing a rationale out of the
+ * directive it is supposed to justify.
+ *
+ * `null` when no stored human-readable condition exists. The caller then renders
+ * NO Why line — an absent basis is stated by omission, never by a stand-in.
+ */
+export type RecommendationWhyDisclosure = {
+  /** The governed RAID noun, or `null` if the stored category is unrecognized. */
+  category: string | null;
+  /** The stored, human-written detected condition. */
+  condition: string;
+};
+
+export function selectRaidRecommendationWhy(
+  rationale: unknown,
+  evidenceSummary: unknown,
+): RecommendationWhyDisclosure | null {
+  const evidence = storedObject(evidenceSummary);
+  const reason = storedObject(rationale);
+
+  // `raidTitle` and `rationale.riskText` are the same stored string written
+  // twice by the producer, so this is a fallback, never a second entry.
+  const condition = storedText(evidence, "raidTitle") ?? storedText(reason, "riskText");
+  if (condition === null) return null;
+
+  return {
+    category: governedCategoryLabel(evidence?.raidCategory) ?? governedCategoryLabel(reason?.raidCategory),
+    condition,
+  };
+}
+
+/**
+ * The NAMED evidence inputs behind this Recommendation.
+ *
+ * One input today — the RAID item the producer derived the Recommendation from,
+ * named by its stored title and qualified by its governed category. It carries
+ * no href OF ITS OWN: the destination is the supporting record's Evidence Panel,
+ * which exists only when that record actually loaded, so the caller composes the
+ * fragment from `recommended_actions.raid_item_id` and this mapper stays free of
+ * identifiers — see the navigability note above.
+ *
+ * `detectedConfidence` here is `evidence_summary.raidConfidenceScore` — the
+ * producer's SNAPSHOT of `raid_items.confidence_score`, frozen at generation
+ * time. It is the confidence that this CONDITION was correctly detected, and it
+ * is NOT `recommended_actions.confidence_score`; the caller labels the two
+ * differently so they cannot be read as one number.
+ *
+ * It is also NOT what the screen shows when the exact supporting record loaded:
+ * `resolveRecommendationDisclosure` replaces it with that row's CURRENT
+ * `confidence_score`, and drops it entirely when the row did not load. This
+ * selector keeps reading the snapshot because the snapshot is a real stored fact
+ * about what the producer saw — deciding which of the two a reader is shown is
+ * the combiner's job, not this mapper's.
+ *
+ * `null` when nothing names an input. Evidence is then omitted entirely rather
+ * than degraded to "based on project data", which §2 names as the failure.
+ */
+export type RecommendationEvidenceInput = {
+  category: string | null;
+  /** The stored NAME of the input. Never an identifier. */
+  name: string;
+  /** The RAID item's own recorded detection confidence, 0–100, or `null`. */
+  detectedConfidence: number | null;
+};
+
+export type RecommendationEvidenceDisclosure = {
+  inputs: RecommendationEvidenceInput[];
+  /**
+   * The project's evidence COLLECTION — offered as a separate, differently
+   * labelled destination, never as this input's own link.
+   */
+  repositoryHref: string;
+};
+
+export function selectRaidRecommendationEvidence(
+  rationale: unknown,
+  evidenceSummary: unknown,
+  projectId: string,
+): RecommendationEvidenceDisclosure | null {
+  const evidence = storedObject(evidenceSummary);
+  const reason = storedObject(rationale);
+
+  const name = storedText(evidence, "raidTitle");
+  if (name === null) return null;
+
+  return {
+    inputs: [
+      {
+        category: governedCategoryLabel(evidence?.raidCategory) ?? governedCategoryLabel(reason?.raidCategory),
+        name,
+        detectedConfidence: storedPercentage(evidence, "raidConfidenceScore"),
+      },
+    ],
+    repositoryHref: projectEvidenceRepositoryPath(projectId),
+  };
+}
+
+/**
+ * The project's evidence repository, on the shipped `/evidence` screen.
+ *
+ * NOT a member of the canonical Project route family and deliberately not added
+ * to `project-paths.ts`: `PROJECT_SURFACES` describes the ratified
+ * `/workspaces/[w]/projects/[p]/…` family, and `/evidence` is a flat surface
+ * that takes the project as a query parameter. It is linked because it EXISTS
+ * and is authorized — the page sits under `(protected)` and every read behind it
+ * runs `requireProjectAccess(projectId, "read")`
+ * (`src/app/api/project-evidence/route.ts`) — so the project scope a user
+ * arrives with is the project scope the destination enforces.
+ *
+ * The id is percent-encoded: it lands in a query string, and an id carrying `&`
+ * or `#` would otherwise silently become a different request.
+ */
+export function projectEvidenceRepositoryPath(projectId: string): string {
+  return `/evidence?projectId=${encodeURIComponent(projectId)}`;
+}
+
+// ─── The CURRENT supporting record, and the fallback onto it ───────────────
+
+/**
+ * The supporting RAID row's OWN recorded detection confidence, right now.
+ *
+ * `evidence_summary.raidConfidenceScore` is the producer's SNAPSHOT of this
+ * number, copied when the Recommendation was written and never rewritten
+ * afterwards. `raid_items.confidence_score` moves: a later detection of the same
+ * fingerprint updates the row (`raid-materialization.ts`) while the Recommendation
+ * keeps its old copy. Once the exact supporting row is loaded and shown, the two
+ * can disagree — and a card claiming one "detection confidence" directly above
+ * the record stating another is a contradiction the reader has no way to resolve.
+ *
+ * So when the record resolves, THIS is the current number and the snapshot is not
+ * used. Validated exactly as `storedPercentage` validates the snapshot, so a
+ * database value outside 0–100 is "not recorded" rather than a rendered lie.
+ */
+export function recordDetectionConfidence(record: ProjectRaidRow): number | null {
+  const value = record.confidence_score;
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  if (value < 0 || value > 100) return null;
+  return Math.round(value);
+}
+
+/** A stored string, trimmed, or `null` when there is no human text in it. */
+function storedLine(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * One named evidence input as a single reading line.
+ *
+ * The governed noun and the stored name, in the order §2 reads them — and
+ * nothing else, so the control that opens the panel is labelled by the same text
+ * the panel is titled with. Never an identifier.
+ */
+export function evidenceInputLabel(input: RecommendationEvidenceInput): string {
+  return input.category === null ? input.name : `${input.category} — ${input.name}`;
+}
+
+/**
+ * The disclosure ONE Recommendation actually shows, snapshot and record combined.
+ *
+ * TWO SOURCES, AND WHICH ONE WINS FOR WHAT
+ * ----------------------------------------
+ * A Recommendation carries two accounts of its own basis:
+ *
+ *   the SNAPSHOT   `rationale` + `evidence_summary`, jsonb the producer wrote at
+ *                  generation time. It is the basis AS CAPTURED THEN, which is
+ *                  exactly what a historical disclosure should say — and it is
+ *                  nullable and unvalidated, so it may say nothing at all.
+ *   the RECORD     the `raid_items` row this Recommendation cites through
+ *                  `recommended_actions.raid_item_id`, loaded and scope-guarded by
+ *                  `projectSupportingRaidQuery` / `selectSupportingRaidRecords`.
+ *                  It is the CURRENT state of the same thing.
+ *
+ * Neither one alone is right, and the two review findings this function answers
+ * are the two halves of that:
+ *
+ *   WORDING comes from the snapshot when the snapshot has any. The human sentence
+ *   captured at generation time is the honest account of why this Recommendation
+ *   was produced, and rewriting it from the row would silently restate history.
+ *   When the snapshot is missing or malformed and the exact record DID resolve,
+ *   the wording falls back to that row — `category` + `title`, the same two
+ *   governed facts the snapshot would have carried — because omitting a mandatory
+ *   disclosure while its authoritative source sits in memory is a worse failure
+ *   than a slightly newer sentence.
+ *
+ *   DETECTION CONFIDENCE comes from the record whenever the record resolved,
+ *   never from the snapshot. The supporting panel shows `confidence_score` off
+ *   the same row; sourcing the line above it from the frozen copy is how one
+ *   screen came to state two different "detection confidence" values for one
+ *   record. When the record did NOT resolve the number is OMITTED rather than
+ *   backfilled from the snapshot: a stale number under a present-tense label is
+ *   ambiguous disclosure, and §2.1 would rather have no number than a number
+ *   whose meaning the reader has to guess at.
+ *
+ * WHAT IS NEVER DONE HERE
+ * -----------------------
+ * The Recommendation's own `title` / `description` are not arguments to this
+ * function and cannot become a Why — synthesizing the basis out of the directive
+ * it is supposed to justify is the §2 defect, not a fallback. No other RAID row
+ * substitutes for one that did not resolve: `supporting` is already resolved BY
+ * ID (`resolveSupportingRaid`), with no positional fallback anywhere behind it.
+ * And `recommended_actions.confidence_score` is untouched — it stays the
+ * "Recommendation confidence", labelled separately at the point of render.
+ */
+export type RecommendationDisclosure = {
+  why: RecommendationWhyDisclosure | null;
+  evidence: RecommendationEvidenceDisclosure | null;
+};
+
+export function resolveRecommendationDisclosure(
+  rationale: unknown,
+  evidenceSummary: unknown,
+  supporting: SupportingRaidLookup,
+  projectId: string,
+): RecommendationDisclosure {
+  const record = supporting.state === "resolved" ? supporting.record : null;
+  // `null` in both branches below when the record did not resolve — the snapshot's
+  // frozen copy is never promoted to a current reading.
+  const detectedConfidence = record === null ? null : recordDetectionConfidence(record);
+
+  const snapshotWhy = selectRaidRecommendationWhy(rationale, evidenceSummary);
+  const snapshotEvidence = selectRaidRecommendationEvidence(rationale, evidenceSummary, projectId);
+
+  const recordCondition = record === null ? null : storedLine(record.title);
+  const recordCategory = record === null ? null : governedCategoryLabel(record.category);
+
+  const why =
+    snapshotWhy ?? (recordCondition === null ? null : { category: recordCategory, condition: recordCondition });
+
+  let evidence: RecommendationEvidenceDisclosure | null = null;
+  if (snapshotEvidence !== null) {
+    evidence = {
+      ...snapshotEvidence,
+      inputs: snapshotEvidence.inputs.map((input) => ({ ...input, detectedConfidence })),
+    };
+  } else if (recordCondition !== null) {
+    evidence = {
+      inputs: [{ category: recordCategory, name: recordCondition, detectedConfidence }],
+      repositoryHref: projectEvidenceRepositoryPath(projectId),
+    };
+  }
+
+  return { why, evidence };
+}
+
+/**
+ * One supporting RAID row, rendered down to the text the Evidence Panel shows.
+ *
+ * This is the ONLY thing that crosses the server/client boundary for the panel,
+ * and it is built here — on the server, from a row this module already scope-
+ * guarded — precisely so the client component has no reason and no means to read
+ * anything: no id to query by, no workspace, no project, no lineage column, no
+ * raw `raid_items` row.
+ *
+ * `id` is deliberately absent. It was previously needed to address a fragment;
+ * the panel is now opened by the control that owns it, so the uuid has no
+ * remaining use on this screen and does not travel.
+ *
+ * `panelTitle` is the panel's ACCESSIBLE NAME (`08-accessibility-guidelines.md`
+ * §2, §5). It names the exact record in the same governed words the trigger uses,
+ * so a screen-reader user hears the same thing they activated — never "Details",
+ * never an identifier.
+ *
+ * `categoryLabel` falls back to the stored value only when the category is not
+ * one of the four ratified nouns: the row exists and its category is a stored
+ * fact, so it is shown as stored rather than dropped or prettified into a noun
+ * the enum does not name.
+ */
+export type SupportingRaidPanelRecord = {
+  panelTitle: string;
+  categoryLabel: string;
+  title: string;
+  description: string;
+  status: string;
+  detectionConfidence: number | null;
+  occurrenceCount: number | null;
+  lastDetected: string | null;
+  autoGenerated: boolean;
+};
+
+export function supportingRaidPanelPresentation(record: ProjectRaidRow): SupportingRaidPanelRecord {
+  const category = governedCategoryLabel(record.category);
+  const title = storedLine(record.title) ?? "";
+  return {
+    panelTitle: category === null ? `Supporting record: ${title}` : `Supporting record: ${category} — ${title}`,
+    categoryLabel: category ?? record.category,
+    title,
+    description: record.description,
+    status: record.status,
+    detectionConfidence: recordDetectionConfidence(record),
+    occurrenceCount: Number.isFinite(record.occurrence_count) ? record.occurrence_count : null,
+    lastDetected: storedDetectionDate(record.last_detected_at),
+    autoGenerated: record.auto_generated,
+  };
 }
 
 /**
@@ -371,13 +1058,31 @@ export function resolveVisibleTotal(returnedCount: number, keptCount: number, to
  *
  * WHY THESE THREE AND NOTHING ELSE
  * --------------------------------
- * The RPC computes eight numbers in one statement. Slice 1 renders the three
+ * The RPC computes eight numbers in one statement. Slice 1 renders the two
  * whose meaning can be stated exactly to a PM in one line, and omits the rest:
  *
  *   totalGovernanceEvents  → "Governance events recorded"      ✓ counted rows
- *   decisionRequiredCount  → "Awaiting a governance decision"  ✓ governance_status='decision_required'
  *   violationsCount        → "Governance violations recorded"  ✓ governance_status='violation'
  *
+ *   decisionRequiredCount  OMITTED — and this is the correction PR #610's review
+ *                          asked for. It counts `governance_events` rows whose
+ *                          `governance_status = 'decision_required'`, which is the
+ *                          CLASSIFICATION THE EVENT WAS RAISED UNDER and stays
+ *                          that way forever: `record_operational_decision` writes
+ *                          an `operational_decision_records` row and moves
+ *                          `recommended_actions.status` off `proposed`, and it
+ *                          never rewrites `governance_events.governance_status`.
+ *                          So the number does not fall when the decision is made,
+ *                          and any copy calling it awaiting, pending, needed or
+ *                          required-now is false the moment a PM acts. Zone 3 is
+ *                          the authoritative CURRENT population — proposed
+ *                          recommendations with a governance event, for this
+ *                          workspace and project — and it is counted there, from
+ *                          its own statement. Restating a historical
+ *                          classification beside it under a second label would
+ *                          put two contradicting "decisions outstanding" numbers
+ *                          on one screen, so Execution Health states the facts it
+ *                          can state exactly and leaves the queue to Zone 3.
  *   openRecommendations    OMITTED — it is Zone 3's population exactly, and
  *                          Zone 3 already counts it from its own statement.
  *                          Printing the same number twice from two different
@@ -406,7 +1111,6 @@ export function resolveVisibleTotal(returnedCount: number, keptCount: number, to
  */
 export type ProjectGovernanceFacts = {
   totalGovernanceEvents: number;
-  decisionRequiredCount: number;
   violationsCount: number;
 };
 
@@ -442,11 +1146,10 @@ export function selectProjectGovernanceFacts(
   if (record.projectId !== projectId) return null;
 
   const totalGovernanceEvents = readCount(record, "totalGovernanceEvents");
-  const decisionRequiredCount = readCount(record, "decisionRequiredCount");
   const violationsCount = readCount(record, "violationsCount");
 
-  if (totalGovernanceEvents === null || decisionRequiredCount === null || violationsCount === null) return null;
-  return { totalGovernanceEvents, decisionRequiredCount, violationsCount };
+  if (totalGovernanceEvents === null || violationsCount === null) return null;
+  return { totalGovernanceEvents, violationsCount };
 }
 
 // ─── Execution ─────────────────────────────────────────────────────────────
@@ -491,6 +1194,13 @@ export async function runProjectScopedQuery<T>(
     .eq("workspace_id", query.workspaceId)
     .eq("project_id", query.projectId);
 
+  if (query.ids !== undefined) {
+    // PostgREST `in.(a,b,…)`. ONE statement for the whole referenced set — the
+    // alternative, a read per Recommendation, is the N+1 this descriptor exists
+    // to make impossible. An empty set is never queried; the caller skips the
+    // read entirely rather than asking for `in.()`.
+    builder = builder.in("id", [...query.ids]);
+  }
   if (query.status !== undefined) builder = builder.eq("status", query.status);
   if (query.governed !== undefined) {
     builder = query.governed

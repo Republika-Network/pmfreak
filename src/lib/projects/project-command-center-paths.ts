@@ -101,14 +101,71 @@ export type BreadcrumbNode = {
 /**
  * Optional PMO ancestry, as the screen resolved it.
  *
- * `null` means the project has no PMO (`projects.pmo_id IS NULL`, a first-class
- * state — ADR-PMF-003 rule 4, ADR-PMF-006 Rule 11) OR that its `pmo_id` did not
- * resolve inside the AUTHORIZED workspace. Both collapse to "no PMO node",
- * deliberately: a breadcrumb is not the place to discover cross-tenant data, and
- * a middle crumb invented for an unassigned project would assert a governance
- * structure the project is not in (`03-navigation-contracts.md` §2.3 rule 3).
+ * `null` means NO PMO NODE IS EMITTED. It is deliberately not a statement about
+ * why: a breadcrumb is not the place to discover cross-tenant data, and a middle
+ * crumb invented for an unassigned project would assert a governance structure
+ * the project is not in (`03-navigation-contracts.md` §2.3 rule 3). The trail
+ * carries RESOLVED ancestry only. Which of the several ways ancestry can fail to
+ * resolve actually occurred is `ProjectPmoAncestry` below — a separate value,
+ * because the screen has to tell those apart even though the breadcrumb must not.
  */
 export type ProjectBreadcrumbPmo = { id: string; name: string } | null;
+
+/**
+ * How PMO ancestry resolved — one state per distinguishable outcome.
+ *
+ * The route previously read the optional PMO row, discarded the query error, and
+ * treated a `null` row as one fact: "this project has no PMO". Three genuinely
+ * different situations produce that `null`, and collapsing them made the screen
+ * assert something it had not established:
+ *
+ *   none         `projects.pmo_id IS NULL`. A first-class state (ADR-PMF-003
+ *                rule 4, ADR-PMF-006 Rule 11) and the ONE case in which "this
+ *                project has no PMO ancestry" is a fact the screen holds. No
+ *                query is issued at all.
+ *   resolved     `pmo_id` answered with a PMO in the AUTHORIZED workspace. The
+ *                only case that may put a node in the trail.
+ *   not-visible  `pmo_id` is set and the workspace-scoped read succeeded with no
+ *                row — the PMO is deleted, or it belongs to another workspace and
+ *                RLS plus the `workspace_id` filter correctly withheld it. No
+ *                node, and no message either: saying "there is a PMO you cannot
+ *                see" would turn a breadcrumb into the cross-tenant existence
+ *                oracle the rest of this route refuses to be. Modelled as its own
+ *                state so it is never silently re-labelled `none`, which would
+ *                claim the project is unaffiliated when it is not.
+ *   unavailable  the read FAILED. The screen knows nothing about this project's
+ *                ancestry, and must not report the absence of a PMO as though it
+ *                had looked and found none. Degraded, non-fatally: no node, no
+ *                invented name, no substituted workspace or PMO, and the rest of
+ *                the Project Command Center renders exactly as it would have.
+ *
+ * `pmo` is the breadcrumb input, and it is non-null in `resolved` alone — so no
+ * failure path can fabricate ancestry, by construction rather than by review.
+ *
+ * Pure, and separate from the route, so all four outcomes are assertable without
+ * a database and without rendering.
+ */
+export type ProjectPmoAncestry =
+  | { state: "none"; pmo: null }
+  | { state: "resolved"; pmo: { id: string; name: string } }
+  | { state: "not-visible"; pmo: null }
+  | { state: "unavailable"; pmo: null };
+
+export function resolveProjectPmoAncestry(input: {
+  /** `projects.pmo_id`, read from the project row itself. */
+  pmoId: string | null;
+  /** The workspace-scoped `pmos` row, when the read returned one. */
+  row: { id: string; name: string } | null;
+  /** The read's error, if it failed. Checked BEFORE the row, never discarded. */
+  error: { message: string } | null;
+}): ProjectPmoAncestry {
+  // No `pmo_id` means no read happened, so there is no failure to report and the
+  // absence is a stored fact rather than an unanswered question.
+  if (input.pmoId === null) return { state: "none", pmo: null };
+  if (input.error !== null) return { state: "unavailable", pmo: null };
+  if (input.row === null) return { state: "not-visible", pmo: null };
+  return { state: "resolved", pmo: { id: input.row.id, name: input.row.name } };
+}
 
 /**
  * The Project Command Center breadcrumb:
