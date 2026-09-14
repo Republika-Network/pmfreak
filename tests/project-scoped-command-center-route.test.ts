@@ -1680,9 +1680,10 @@ test("Zone 2 renders Why, then Evidence, then Confidence", () => {
   assert.ok(confidence > evidence, "Confidence follows Evidence");
   // The directive still leads, and the stored basis sits under it.
   assert.ok(zone2.indexOf("{item.title}") < why);
-  // Both sections vanish with their stored basis rather than rendering empty.
+  // Both sections vanish with their stored basis rather than rendering empty —
+  // except that a CITED record which did not load keeps its Evidence notice.
   assert.match(route, /function RecommendationWhy\(\{ why \}[\s\S]{0,140}if \(why === null\) return null;/);
-  assert.match(route, /function RecommendationEvidence\(\{\s*evidence,\s*supporting,[\s\S]{0,220}if \(evidence === null\) return null;/);
+  assert.match(route, /function RecommendationEvidence\(\{\s*evidence,\s*supporting,[\s\S]{0,420}if \(evidence === null && !supportingFailed\) return null;/);
   // Evidence is scoped to the AUTHORIZED project id, never a routed segment.
   assert.equal(zone2.includes("requestedProjectId"), false);
 });
@@ -2370,6 +2371,8 @@ test("Zone 2's population and the earlier corrections are untouched by this chan
 //   9. the panel has an accessible name, a dismissal, Escape, and focus return
 //  10. the interaction is client-owned; the authorization and the reads are not
 //  11. the batched, project-scoped supporting read is untouched
+//  12. a cited record that did not load keeps its Evidence notice even when no
+//      disclosure could be parsed — silence is reserved for no citation at all
 
 /** A resolved lookup for one row, exactly as the page builds it. */
 const resolved = (over: Partial<ProjectRaidRow> = {}) =>
@@ -2575,10 +2578,10 @@ test("with neither a usable snapshot nor a resolved record, no basis is fabricat
     const disclosure = resolveRecommendationDisclosure(null, null, supporting, PROJECT);
     assert.deepEqual(disclosure, { why: null, evidence: null }, `${supporting.state} states nothing`);
   }
-  // Both sections then vanish rather than rendering empty, and the truthful
-  // unavailable notice is the only thing said.
+  // Why vanishes rather than rendering empty. Evidence vanishes only for `none`;
+  // for a cited record the truthful unavailable notice is the only thing said.
   assert.match(route, /function RecommendationWhy\(\{ why \}[\s\S]{0,140}if \(why === null\) return null;/);
-  assert.match(route, /function RecommendationEvidence\(\{\s*evidence,\s*supporting,[\s\S]{0,220}if \(evidence === null\) return null;/);
+  assert.match(route, /function RecommendationEvidence\(\{\s*evidence,\s*supporting,[\s\S]{0,420}if \(evidence === null && !supportingFailed\) return null;/);
   assert.match(route, /Supporting RAID record is temporarily unavailable\./);
   assert.match(route, /Supporting RAID record is not available to open\./);
   // The Recommendation's own directive is never a source for its own basis: the
@@ -2589,6 +2592,106 @@ test("with neither a usable snapshot nor a resolved record, no basis is fabricat
   const body = combiner.slice(0, combiner.indexOf("\n}") + 2);
   for (const name of ["item.title", "item.description", "recommended_action_type"]) {
     assert.equal(body.includes(name), false, `the combiner must not read ${name}`);
+  }
+});
+
+// A cited record that did not load, with no parsable snapshot, is still disclosed.
+
+test("a cited record that did not load keeps its Evidence notice without a parsed disclosure", () => {
+  // Every unusable snapshot shape, against each lookup outcome the page can reach.
+  const unusable: [unknown, unknown][] = [
+    [null, null],
+    [undefined, undefined],
+    [{}, {}],
+    ["not an object", 7],
+    [{ riskText: "   " }, { raidTitle: "   " }],
+  ];
+  const [unavailable, notVisible, none] = UNRESOLVED;
+  assert.equal(unavailable.state, "unavailable");
+  assert.equal(notVisible.state, "not-visible");
+  assert.equal(none.state, "none");
+  for (const [rationale, evidenceSummary] of unusable) {
+    for (const supporting of UNRESOLVED) {
+      // The combiner has nothing honest to name, and invents nothing.
+      assert.equal(resolveRecommendationDisclosure(rationale, evidenceSummary, supporting, PROJECT).evidence, null);
+    }
+  }
+
+  const section = routeBody.slice(
+    routeBody.indexOf("function RecommendationEvidence"),
+    routeBody.indexOf("export default async function ProjectCommandCenterPage"),
+  );
+  // The early exit is decided by the supporting lookup too, not by the parsed
+  // disclosure alone: it returns nothing ONLY when no cited record failed to load.
+  assert.match(
+    section,
+    /const supportingFailed = supporting\.state === "unavailable" \|\| supporting\.state === "not-visible";\s*if \(evidence === null && !supportingFailed\) return null;/,
+  );
+  assert.equal(section.includes("if (evidence === null) return null;"), false, "a null disclosure alone must not silence the notice");
+
+  // A (unavailable) and B (not-visible): the section renders its "Evidence:" label
+  // and the notice unconditionally — neither sits behind the parsed disclosure.
+  const body = section.slice(section.indexOf("return ("));
+  const label = body.indexOf('<span className="font-semibold text-zinc-700">Evidence:</span>');
+  const notice = body.indexOf("<SupportingRaidUnavailable state={supporting.state} />");
+  assert.ok(label > -1 && notice > label, "Evidence label, then the notice");
+  const beforeNotice = body.slice(0, notice);
+  assert.equal(
+    (beforeNotice.match(/\(/g)?.length ?? 0) - (beforeNotice.match(/\)/g)?.length ?? 0),
+    1,
+    "the notice is a direct child of the section, inside no conditional",
+  );
+  assert.match(route, /Supporting RAID record is temporarily unavailable\./);
+  assert.match(route, /Supporting RAID record is not available to open\./);
+  // The notice itself still names nothing and still stays silent for none/resolved.
+  const unavailableNotice = routeBody.slice(
+    routeBody.indexOf("function SupportingRaidUnavailable"),
+    routeBody.indexOf("function RecommendationEvidence"),
+  );
+  assert.match(unavailableNotice, /if \(state === "resolved" \|\| state === "none"\) return null;/);
+  for (const leak of ["workspace", "project_id", "record.title", "record.id", "item.title", "item.description", "evidence."]) {
+    assert.equal(unavailableNotice.includes(leak), false, `the notice must not read ${leak}`);
+  }
+
+  // Without a disclosure, nothing is named and nothing is linked: the inputs map
+  // is skipped, and the collection link needs a parsed disclosure to exist.
+  assert.match(body, /\{evidence\?\.inputs\.map\(\(input, index\) => \(/);
+  assert.match(body, /\{evidence !== null \? \(\s*<p className="mt-0\.5 text-zinc-500">\s*<Link href=\{evidence\.repositoryHref\}/);
+  // The section never reaches for the Recommendation's own directive.
+  for (const name of ["item.title", "item.description", "rationale", "evidence_summary", "raid_item_id"]) {
+    assert.equal(section.includes(name), false, `the Evidence section must not read ${name}`);
+  }
+
+  // C (none): no citation and no disclosure is the one case that renders nothing —
+  // `supportingFailed` is false for it, so the guard returns before any markup.
+  assert.equal(["unavailable", "not-visible"].includes(none.state), false);
+
+  // D (resolved): unchanged. The exact row produces the disclosure with the
+  // CURRENT detection confidence, and only a loaded record gets the panel control.
+  const current = resolveRecommendationDisclosure(
+    null,
+    null,
+    resolved({ category: "dependency", title: "Integration testing is blocked", confidence_score: 64 }),
+    PROJECT,
+  );
+  assert.deepEqual(current.evidence, {
+    inputs: [{ category: "Dependency", name: "Integration testing is blocked", detectedConfidence: 64 }],
+    repositoryHref: projectEvidenceRepositoryPath(PROJECT),
+  });
+  assert.match(
+    section,
+    /const panelRecord = supporting\.state === "resolved" \? supportingRaidPanelPresentation\(supporting\.record\) : null;/,
+  );
+  assert.match(
+    body,
+    /\{panelRecord !== null \? \(\s*<SupportingRaidEvidencePanel label=\{evidenceInputLabel\(input\)\} record=\{panelRecord\} \/>/,
+  );
+  // And a parsed snapshot whose record did not load stays plain, non-navigable
+  // text with no stale confidence, beside the notice.
+  for (const supporting of [unavailable, notVisible]) {
+    const snapshotOnly = resolveRecommendationDisclosure(STORED_RATIONALE, STORED_EVIDENCE, supporting, PROJECT);
+    assert.ok(snapshotOnly.evidence !== null);
+    assert.equal(snapshotOnly.evidence.inputs.every((input) => input.detectedConfidence === null), true);
   }
 });
 

@@ -297,6 +297,14 @@ function SupportingRaidUnavailable({ state }: { state: SupportingRaidLookup["sta
  * The control appears ONLY for a record that actually loaded. There is nothing to
  * open otherwise, and `SupportingRaidUnavailable` says so in its own words.
  *
+ * That notice does NOT depend on a parsed disclosure. A Recommendation whose
+ * `raid_item_id` is set but whose snapshot is absent or malformed, and whose
+ * record did not load, has `evidence === null` — and still cites a record. The
+ * section then renders with the notice alone: no named input, no ancestry and no
+ * wording borrowed from the Recommendation, but never silence, because silence
+ * would read exactly like a Recommendation with no lineage at all. Only `none`
+ * (no citation) with no disclosure renders nothing.
+ *
  * The project's evidence repository is still linked, on its own line and in its
  * own words, because it is a real and authorized destination and a genuinely
  * different one: `/evidence?projectId=…` lists `project_evidence` DOCUMENTS, a
@@ -318,7 +326,9 @@ function RecommendationEvidence({
   evidence: RecommendationEvidenceDisclosure | null;
   supporting: SupportingRaidLookup;
 }) {
-  if (evidence === null) return null;
+  // A cited record that did not load is still disclosed, disclosure or not.
+  const supportingFailed = supporting.state === "unavailable" || supporting.state === "not-visible";
+  if (evidence === null && !supportingFailed) return null;
   // Presentation text, built on the server from the row this page already
   // scope-guarded. No id, no query and no row crosses into the client.
   const panelRecord = supporting.state === "resolved" ? supportingRaidPanelPresentation(supporting.record) : null;
@@ -326,7 +336,7 @@ function RecommendationEvidence({
     <div className="mt-1 text-[11px] text-zinc-600">
       <p>
         <span className="font-semibold text-zinc-700">Evidence:</span>{" "}
-        {evidence.inputs.map((input, index) => (
+        {evidence?.inputs.map((input, index) => (
           <span key={`${input.name}-${index}`}>
             {index > 0 ? <span className="text-zinc-400"> · </span> : null}
             {panelRecord !== null ? (
@@ -344,12 +354,14 @@ function RecommendationEvidence({
         ))}
       </p>
       <SupportingRaidUnavailable state={supporting.state} />
-      <p className="mt-0.5 text-zinc-500">
-        <Link href={evidence.repositoryHref} className="text-cyan-800 underline hover:text-cyan-900">
-          Open project evidence
-        </Link>{" "}
-        — the project&apos;s evidence collection, not this specific item.
-      </p>
+      {evidence !== null ? (
+        <p className="mt-0.5 text-zinc-500">
+          <Link href={evidence.repositoryHref} className="text-cyan-800 underline hover:text-cyan-900">
+            Open project evidence
+          </Link>{" "}
+          — the project&apos;s evidence collection, not this specific item.
+        </p>
+      ) : null}
     </div>
   );
 }
