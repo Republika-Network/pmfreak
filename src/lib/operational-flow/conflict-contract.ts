@@ -41,6 +41,15 @@ export type OperationalFlowConflict = {
   recovery: string;
 };
 
+/** A governed Recommendation already carries its one terminal Decision. */
+const RECOMMENDATION_ALREADY_DECIDED: OperationalFlowConflict = {
+  code: "recommendation_already_decided",
+  message:
+    "This Recommendation already has a final Decision. The recorded Decision is immutable " +
+    "and has not been changed, and no new Decision was recorded. Reload to see it.",
+  recovery: "reload_recorded_decision",
+};
+
 /**
  * Raw RPC signal -> client contract.
  *
@@ -63,6 +72,16 @@ export const OPERATIONAL_FLOW_CONFLICTS: Readonly<Record<string, OperationalFlow
       "immutable and has not been changed. Reload and inspect it before capturing a new one.",
     recovery: "reload_recorded_input",
   },
+  // `record_operational_decision` (20260911000000_p2_decision_terminal_integrity.sql): the
+  // Recommendation already carries its one terminal Decision (accepted / rejected /
+  // modified), so no further Decision — terminal or not — may be recorded against it.
+  // Previously a second terminal Decision leaked the unique-index violation as a 500, and a
+  // later escalation silently reopened the Recommendation.
+  operational_decision_already_terminal: RECOMMENDATION_ALREADY_DECIDED,
+  // The same refusal as seen by a database that does not yet carry that migration: the
+  // one-terminal-Decision partial unique index fires on the INSERT. Mapped so a deploy
+  // ordering gap still answers 409 in the stable vocabulary, never 500 with the index name.
+  operational_decision_terminal_recommendation_uidx: RECOMMENDATION_ALREADY_DECIDED,
 };
 
 /** Fallback for a conflict signal this layer does not yet name explicitly. */
