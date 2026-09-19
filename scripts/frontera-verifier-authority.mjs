@@ -20,11 +20,12 @@
  * so a grant or revocation committed here is only observed if the product really
  * re-reads durable authority on its next attempt.
  */
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createSqliteKernelAuthorityStore } from "@aoc-enterprise/runtime/enterprise";
 import {
-  openOperatorStore,
   provisionPmfreakDispatchAuthority,
   revokePmfreakDispatchAuthority,
   PMFREAK_EXTERNAL_SUBJECT_SYSTEM,
@@ -76,32 +77,70 @@ export function requireDisposableFronteraStore(label, env = process.env) {
   if (!path.isAbsolute(raw)) {
     abort(label, `${STORE_ENV} must be an absolute path, so the verifier and the app cannot resolve it differently.`);
   }
-  if (!/\.(sqlite3?|db)$/i.test(raw)) {
-    abort(label, `${STORE_ENV} must name a SQLite file (.sqlite, .sqlite3 or .db).`);
-  }
-  if (/(^|[^a-z])(prod|production|staging|hosted|shared)([^a-z]|$)/i.test(raw)) {
-    abort(label, `${STORE_ENV} looks like a non-disposable authority store.`);
-  }
-  let parent;
+  const checkName = (candidate) => {
+    if (!/\.(sqlite3?|db)$/i.test(candidate)) {
+      abort(label, `${STORE_ENV} must name a SQLite file (.sqlite, .sqlite3 or .db).`);
+    }
+    if (/(^|[^a-z])(prod|production|staging|hosted|shared)([^a-z]|$)/i.test(candidate)) {
+      abort(label, `${STORE_ENV} looks like a non-disposable authority store.`);
+    }
+  };
+  checkName(raw);
+
+  // Validate the file SQLite will actually open, not just the name supplied.
+  // An existing target must be a regular file and never a symlink: SQLite
+  // follows links, so `/tmp/x.sqlite -> /elsewhere/authority.sqlite` would pass
+  // every lexical check and then write to the link target. A target that does
+  // not exist yet is placed under its canonical parent.
+  let entry = null;
   try {
-    parent = fs.realpathSync(path.dirname(raw));
-  } catch {
-    abort(label, `${STORE_ENV} parent directory does not exist.`);
+    entry = fs.lstatSync(raw);
+  } catch (error) {
+    if (error?.code !== "ENOENT") abort(label, `${STORE_ENV} cannot be inspected.`);
   }
+  let target;
+  if (entry) {
+    if (entry.isSymbolicLink()) abort(label, `${STORE_ENV} must not be a symbolic link.`);
+    if (!entry.isFile()) abort(label, `${STORE_ENV} must be a regular file.`);
+    target = fs.realpathSync(raw);
+  } else {
+    let parent;
+    try {
+      parent = fs.realpathSync(path.dirname(raw));
+    } catch {
+      abort(label, `${STORE_ENV} parent directory does not exist.`);
+    }
+    target = path.join(parent, path.basename(raw));
+  }
+  checkName(target);
+
   const tmp = fs.realpathSync(os.tmpdir());
-  if (parent !== tmp && !parent.startsWith(tmp + path.sep)) {
+  if (!target.startsWith(tmp + path.sep)) {
     abort(label, `${STORE_ENV} must live under the OS temporary directory (${tmp}); these verifiers only write to a disposable store.`);
   }
   const subjectSystem = env.PMFREAK_FRONTERA_EXTERNAL_SUBJECT_SYSTEM?.trim();
   if (subjectSystem && subjectSystem !== PMFREAK_EXTERNAL_SUBJECT_SYSTEM) {
     abort(label, `PMFREAK_FRONTERA_EXTERNAL_SUBJECT_SYSTEM must be unset or "${PMFREAK_EXTERNAL_SUBJECT_SYSTEM}" to match operator provisioning.`);
   }
-  return path.resolve(raw);
+  return target;
 }
+
+/**
+ * The packaged store's default event id is a per-open counter plus the current
+ * millisecond, and this operator reopens the store for every step. Two first
+ * appends in the same millisecond (e.g. verifiers running in parallel against
+ * the shared store) would then mint the same `event_id` primary key. The
+ * store's public `nextId` option supplies a UUID instead — the same
+ * `<prefix>-<uuid>` form the runtime's durable providers use.
+ */
+const openVerifierStore = (storePath) =>
+  createSqliteKernelAuthorityStore(storePath, {
+    nextId: (prefix) => `${prefix}-${randomUUID()}`,
+  });
 
 export function createVerifierFronteraOperator({ storePath, operatorActorId }) {
   async function withStore(fn) {
-    const store = await openOperatorStore(storePath);
+    const store = await openVerifierStore(storePath);
     try {
       return await fn(store);
     } finally {
