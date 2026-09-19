@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  createVerifierFronteraOperator,
+  isGenuineFronteraDecisionId,
+  requireDisposableFronteraStore,
+} from "./frontera-verifier-authority.mjs";
 
 const supabaseUrl = process.env.OPERATIONAL_FLOW_TEST_SUPABASE_URL;
 const anonKey = process.env.OPERATIONAL_FLOW_TEST_ANON_KEY;
@@ -46,6 +54,18 @@ if (appBaseUrl !== "http://localhost:3000") {
   console.error("SAFETY ABORT: browser/runtime origin must be http://localhost:3000.");
   process.exit(2);
 }
+
+// Governed dispatch passes the Frontera enforcement boundary (P0-PKG-06):
+//
+//     FINAL = PMFREAK_PRECONDITIONS AND FRONTERA_AUTHORIZATION
+//
+// A PMFreak role does not imply Frontera authority. This verifier therefore acts
+// as the enterprise operator, OUT OF BAND, and provisions exactly the authority
+// each positive scenario needs — nothing for the actors whose refusal is the point.
+const fronteraOperator = createVerifierFronteraOperator({
+  storePath: requireDisposableFronteraStore("P2-07"),
+  operatorActorId: "operator-p2-07-verifier",
+});
 
 const { createClient } = await import("@supabase/supabase-js");
 const admin = createClient(supabaseUrl, serviceRoleKey, {
@@ -240,6 +260,72 @@ async function proposeAction(
   return result.body;
 }
 
+/**
+ * A genuinely expired Material Action, built by the canonical service as the
+ * real authenticated principal (see scripts/p2-07/expired-material-action-fixture.ts).
+ * The HTTP route no longer accepts a caller-supplied window, and must not; the
+ * service's documented server-side seam is the only honest way to persist one.
+ * Credentials go over stdin, never argv or the environment.
+ */
+function proposeExpiredActionThroughService(user, workspaceId, projectId, decisionId, key, window) {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const run = spawnSync(
+    process.execPath,
+    ["--import", "tsx", path.join("scripts", "p2-07", "expired-material-action-fixture.ts")],
+    {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 60_000,
+      input: JSON.stringify({
+        supabaseUrl,
+        anonKey,
+        email: user.email,
+        password,
+        workspaceId,
+        projectId,
+        action: {
+          decisionId,
+          idempotencyKey: key,
+          actionClass: "external_write",
+          actionType: "schedule_change_proposal",
+          targetResourceType: "project_schedule",
+          targetResourceId: projectId,
+          intendedOperation: "create_internal_execution_task",
+          intendedEffect: `P2-07 governed task ${key}`,
+          risk: "high",
+          reversibility: "partially_reversible",
+          sideEffect: "external",
+          justification: "P2-07 disposable local verifier.",
+        },
+        window: Object.fromEntries(Object.entries(window).map(([name, at]) => [name, at.toISOString()])),
+      }),
+    },
+  );
+  assert.equal(run.status, 0, `expired Action fixture failed: ${String(run.stderr).slice(-600)}`);
+  const line = run.stdout.split("\n").find((entry) => entry.startsWith("P2_07_FIXTURE_RESULT "));
+  assert.ok(line, "expired Action fixture returned no result");
+  return JSON.parse(line.slice("P2_07_FIXTURE_RESULT ".length));
+}
+
+async function readPersistedAction(actionId) {
+  const result = await admin
+    .from("material_action_proposals")
+    .select("id,created_at,expires_at,proposed_by")
+    .eq("id", actionId)
+    .single();
+  assert.ifError(result.error);
+  return result.data;
+}
+
+async function countExecutionsForAction(actionId) {
+  const result = await admin
+    .from("internal_task_executions")
+    .select("id", { count: "exact", head: true })
+    .eq("source_action_id", actionId);
+  assert.ifError(result.error);
+  return result.count ?? 0;
+}
+
 async function dispatch(cookie, workspaceId, projectId, actionId, expectedProposalDigest = null) {
   return api(cookie, {
     operation: "dispatch_material_action_to_task",
@@ -260,15 +346,40 @@ async function countTasksForAction(actionId) {
   return result.count ?? 0;
 }
 
+/** The dispatch traversed the real Frontera runtime and was ALLOWED there. */
+function expectFronteraAllow(response, actionId, label) {
+  check(
+    isGenuineFronteraDecisionId(response.body.fronteraDecisionId, actionId),
+    `${label}: carries a Frontera-minted decision id (real AocKernel ALLOW)`,
+  );
+  return response.body.fronteraDecisionId;
+}
+
+/** Refused AT the Frontera boundary: the dispatch RPC was never reached. */
+function expectFronteraRefusal(response, failureClass, label) {
+  equal(response.status, 409, `${label}: HTTP 409`);
+  equal(response.body.disposition, "denied", `${label}: disposition denied`);
+  equal(response.body.failureClass, failureClass, `${label}: failureClass ${failureClass}`);
+  equal(response.body.reason, "frontera_enforcement_denied", `${label}: refused at the Frontera boundary`);
+  equal(response.body.task, undefined, `${label}: no Task in response`);
+  equal(response.body.fronteraDecisionId, undefined, `${label}: no ALLOW decision id`);
+}
+
 const workspaceA = randomUUID();
 const workspaceB = randomUUID();
 const projectA = randomUUID();
 const projectB = randomUUID();
+// A second project in tenant A. The owner is bound for project A only, so a
+// dispatch here is the wrong-project case.
+const projectC = randomUUID();
 
 await createUser("owner", workspaceA, "owner");
 await createUser("pm", workspaceA, "pm");
 await createUser("viewer", workspaceA, "viewer");
 await createUser("outsider", workspaceB, "owner");
+// Approver in BOTH tenants, and deliberately unbound in Frontera at first: the
+// unknown-principal case, then (bound in A only) the wrong-organization case.
+await createUser("admin", workspaceA, "admin");
 
 assert.ifError(
   (
@@ -294,6 +405,8 @@ assert.ifError(
       { workspace_id: workspaceA, user_id: users.pm.id, role: "pm" },
       { workspace_id: workspaceA, user_id: users.viewer.id, role: "viewer" },
       { workspace_id: workspaceB, user_id: users.outsider.id, role: "owner" },
+      { workspace_id: workspaceA, user_id: users.admin.id, role: "admin" },
+      { workspace_id: workspaceB, user_id: users.admin.id, role: "admin" },
     ])
   ).error,
 );
@@ -313,11 +426,17 @@ assert.ifError(
         user_id: users.outsider.id,
         name: `P2-07 DEMO Project B ${suffix}`,
       },
+      {
+        id: projectC,
+        workspace_id: workspaceA,
+        user_id: users.owner.id,
+        name: `P2-07 DEMO Project C ${suffix}`,
+      },
     ])
   ).error,
 );
 
-for (const label of ["owner", "pm", "viewer", "outsider"]) {
+for (const label of ["owner", "pm", "viewer", "outsider", "admin"]) {
   const inviteId = randomUUID();
   assert.ifError(
     (
@@ -349,6 +468,46 @@ const ownerCookie = await loginCookie(users.owner.email);
 const pmCookie = await loginCookie(users.pm.email);
 const viewerCookie = await loginCookie(users.viewer.email);
 const outsiderCookie = await loginCookie(users.outsider.email);
+const adminCookie = await loginCookie(users.admin.email);
+
+// The authority store is shared with the running app and accumulates across
+// runs, so this run proves it inherits nothing: every principal starts unbound
+// in both tenants. The organizations are this run's fresh workspace ids, so no
+// earlier verifier (P2-08/09/14 or a failed P2-07) can have authority here.
+for (const label of ["owner", "pm", "viewer", "outsider", "admin"]) {
+  for (const workspaceId of [workspaceA, workspaceB]) {
+    equal(
+      await fronteraOperator.binding({ workspaceId, principalUserId: users[label].id }),
+      null,
+      `Frontera store starts with no ${label} binding in ${workspaceId === workspaceA ? "tenant A" : "tenant B"}`,
+    );
+  }
+}
+
+// Minimum authority, provisioned out of band, exact project scope only:
+//   owner  — every positive dispatch in project A
+//   pm     — must REACH the dispatch RPC so PMFreak's requires_approval is
+//            observed; Frontera ALLOW must not rescue it
+//   viewer — deliberately bound: PMFreak's role denial must hold regardless
+// admin and outsider stay unbound until their own scenarios below.
+const ownerAuthority = await fronteraOperator.provision({
+  workspaceId: workspaceA,
+  principalUserId: users.owner.id,
+  projectId: projectA,
+});
+const ownerAuthorityReplay = await fronteraOperator.provision({
+  workspaceId: workspaceA,
+  principalUserId: users.owner.id,
+  projectId: projectA,
+});
+equal(ownerAuthorityReplay.actorId, ownerAuthority.actorId, "operator provisioning replays idempotently");
+for (const label of ["pm", "viewer"]) {
+  await fronteraOperator.provision({
+    workspaceId: workspaceA,
+    principalUserId: users[label].id,
+    projectId: projectA,
+  });
+}
 
 const ownerDecision = await makeDecision(
   ownerCookie,
@@ -379,6 +538,7 @@ const happy = await dispatch(
 );
 equal(happy.status, 201, "authorized Action creates Task");
 equal(happy.body.disposition, "created", "happy disposition created");
+const happyFronteraDecisionId = expectFronteraAllow(happy, happyActionId, "authorized owner dispatch");
 check(Boolean(happy.body.task?.id), "happy Task has id");
 equal(await countTasksForAction(happyActionId), 1, "happy Action has exactly one Task");
 equal(
@@ -417,6 +577,11 @@ equal(replay.status, 200, "idempotent replay returns success");
 equal(replay.body.disposition, "existing", "replay disposition existing");
 equal(replay.body.task.id, happy.body.task.id, "replay returns same Task id");
 equal(await countTasksForAction(happyActionId), 1, "replay still one Task");
+// Frontera is asked on every attempt, replays included; a verdict is never cached.
+check(
+  expectFronteraAllow(replay, happyActionId, "replay dispatch") !== happyFronteraDecisionId,
+  "replay is a fresh Frontera evaluation, not a reused verdict",
+);
 
 const conflict = await dispatch(
   ownerCookie,
@@ -460,8 +625,133 @@ for (const concurrency of [2, 5, 10]) {
     1,
     `${concurrency} concurrent requests persist one Task row`,
   );
-  console.log(`CONCURRENCY ${concurrency}: one Task ${[...taskIds][0]}`);
+  check(
+    responses.every((entry) => isGenuineFronteraDecisionId(entry.body.fronteraDecisionId, actionId)),
+    `${concurrency} concurrent requests were each ALLOWED by Frontera`,
+  );
+  equal(
+    new Set(responses.map((entry) => entry.body.fronteraDecisionId)).size,
+    concurrency,
+    `${concurrency} concurrent requests were each evaluated independently`,
+  );
+  console.log(`CONCURRENCY ${concurrency}: one Task ${[...taskIds][0]}; ${concurrency} Frontera ALLOW decisions`);
 }
+
+// ─── Frontera fail-closed matrix ─────────────────────────────────────────────
+// Each case below uses a Material Action PMFreak would itself execute, so the
+// ONLY refusal is Frontera's. Each is then shown to be valid by dispatching it
+// once the operator has (out of band) supplied exactly the missing authority.
+
+// 1. Unknown principal: a known PMFreak approver with valid application state
+//    and NO Frontera actor binding.
+const unboundDecision = await makeDecision(adminCookie, workspaceA, projectA, `unbound-${suffix}`);
+const unboundAction = await proposeAction(
+  adminCookie,
+  workspaceA,
+  projectA,
+  unboundDecision.decisionId,
+  `unbound-${suffix}`,
+);
+const unboundActionId = unboundAction.proposal.id;
+const unbound = await dispatch(adminCookie, workspaceA, projectA, unboundActionId);
+expectFronteraRefusal(unbound, "frontera_actor_unbound", "unbound principal");
+equal(await countTasksForAction(unboundActionId), 0, "unbound principal creates zero Tasks");
+
+await fronteraOperator.provision({
+  workspaceId: workspaceA,
+  principalUserId: users.admin.id,
+  projectId: projectA,
+});
+const unboundThenBound = await dispatch(adminCookie, workspaceA, projectA, unboundActionId);
+equal(unboundThenBound.status, 201, "same Action dispatches once the operator binds the principal");
+equal(unboundThenBound.body.disposition, "created", "bound principal disposition created");
+expectFronteraAllow(unboundThenBound, unboundActionId, "freshly bound principal");
+equal(await countTasksForAction(unboundActionId), 1, "bound principal creates exactly one Task");
+
+// 2. Wrong organization: the admin is now bound in tenant A only. A valid
+//    tenant-B Action must not borrow tenant-A authority.
+equal(
+  await fronteraOperator.binding({ workspaceId: workspaceB, principalUserId: users.admin.id }),
+  null,
+  "tenant-A binding does not exist in tenant B",
+);
+const crossOrgDecision = await makeDecision(adminCookie, workspaceB, projectB, `cross-org-${suffix}`);
+const crossOrgAction = await proposeAction(
+  adminCookie,
+  workspaceB,
+  projectB,
+  crossOrgDecision.decisionId,
+  `cross-org-${suffix}`,
+);
+const crossOrgActionId = crossOrgAction.proposal.id;
+const crossOrg = await dispatch(adminCookie, workspaceB, projectB, crossOrgActionId);
+expectFronteraRefusal(crossOrg, "frontera_actor_unbound", "principal bound only in another organization");
+equal(await countTasksForAction(crossOrgActionId), 0, "cross-organization authority creates zero Tasks");
+
+// 3. Wrong project: the owner is bound for project A; project C is in the same
+//    tenant but outside the grant's exact resource scope.
+const wrongProjectDecision = await makeDecision(ownerCookie, workspaceA, projectC, `wrong-project-${suffix}`);
+const wrongProjectAction = await proposeAction(
+  ownerCookie,
+  workspaceA,
+  projectC,
+  wrongProjectDecision.decisionId,
+  `wrong-project-${suffix}`,
+);
+const wrongProjectActionId = wrongProjectAction.proposal.id;
+const wrongProject = await dispatch(ownerCookie, workspaceA, projectC, wrongProjectActionId);
+expectFronteraRefusal(wrongProject, "frontera_denied", "grant for project A used on project C");
+equal(await countTasksForAction(wrongProjectActionId), 0, "wrong-project grant creates zero Tasks");
+
+await fronteraOperator.provision({
+  workspaceId: workspaceA,
+  principalUserId: users.owner.id,
+  projectId: projectC,
+});
+const rightProject = await dispatch(ownerCookie, workspaceA, projectC, wrongProjectActionId);
+equal(rightProject.status, 201, "same Action dispatches once project C is granted");
+expectFronteraAllow(rightProject, wrongProjectActionId, "project C grant");
+equal(await countTasksForAction(wrongProjectActionId), 1, "project C grant creates exactly one Task");
+
+// 4. Operator revocation, observed on the very next attempt. The second Action
+//    has never dispatched; the application must rehydrate durable authority
+//    rather than answer from anything it saw before the revocation.
+const postRevocationDecision = await makeDecision(ownerCookie, workspaceA, projectC, `frontera-revoked-${suffix}`);
+const postRevocationAction = await proposeAction(
+  ownerCookie,
+  workspaceA,
+  projectC,
+  postRevocationDecision.decisionId,
+  `frontera-revoked-${suffix}`,
+);
+const postRevocationActionId = postRevocationAction.proposal.id;
+await fronteraOperator.revoke({
+  workspaceId: workspaceA,
+  principalUserId: users.owner.id,
+  projectId: projectC,
+  reason: "P2-07 verifier: operator revocation freshness",
+});
+const afterRevocation = await dispatch(ownerCookie, workspaceA, projectC, postRevocationActionId);
+expectFronteraRefusal(afterRevocation, "frontera_denied", "dispatch after operator revocation");
+equal(await countTasksForAction(postRevocationActionId), 0, "revoked Frontera authority creates zero Tasks");
+
+const replayAfterRevocation = await dispatch(ownerCookie, workspaceA, projectC, wrongProjectActionId);
+expectFronteraRefusal(replayAfterRevocation, "frontera_denied", "replay after operator revocation");
+equal(await countTasksForAction(wrongProjectActionId), 1, "revocation neither duplicates nor removes the earlier Task");
+
+// Revocation was exactly as narrow as the grant: the owner stays bound, and
+// project A authority is untouched (every PMFreak-denial case below reaches the
+// dispatch RPC only because it is).
+equal(
+  (await fronteraOperator.binding({ workspaceId: workspaceA, principalUserId: users.owner.id }))?.status,
+  "active",
+  "project C revocation leaves the owner's actor binding active",
+);
+
+// ─── PMFreak governance matrix ───────────────────────────────────────────────
+// Every case below is ALLOWED by Frontera — the response carries a Frontera
+// decision id — and still refused by PMFreak's dispatch RPC. Frontera narrows;
+// it never rescues a PMFreak denial.
 
 const unavailableSourceLink = await admin
   .from("decision_evidence_links")
@@ -526,6 +816,7 @@ const unavailableDispatch = await dispatch(
   unavailableId,
 );
 equal(unavailableDispatch.status, 409, "unavailable Action rejected");
+expectFronteraAllow(unavailableDispatch, unavailableId, "unavailable governance");
 equal(
   unavailableDispatch.body.governanceState,
   "unavailable",
@@ -555,6 +846,7 @@ const deniedId = deniedAction.proposal.id;
 equal(await countTasksForAction(deniedId), 0, "denied starts with zero Tasks");
 const denied = await dispatch(ownerCookie, workspaceA, projectA, deniedId);
 equal(denied.status, 409, "denied Action rejected");
+expectFronteraAllow(denied, deniedId, "denied governance");
 equal(denied.body.disposition, "denied", "denied disposition");
 equal(denied.body.governanceState, "denied", "denied governance state preserved");
 equal(await countTasksForAction(deniedId), 0, "denied creates zero Tasks");
@@ -576,6 +868,7 @@ const degradedAction = await proposeAction(
 const degradedId = degradedAction.proposal.id;
 const degraded = await dispatch(ownerCookie, workspaceA, projectA, degradedId);
 equal(degraded.status, 409, "degraded Action rejected");
+expectFronteraAllow(degraded, degradedId, "degraded governance");
 equal(degraded.body.governanceState, "degraded", "degraded state preserved");
 equal(await countTasksForAction(degradedId), 0, "degraded creates zero Tasks");
 
@@ -595,6 +888,7 @@ const approvalAction = await proposeAction(
 const approvalId = approvalAction.proposal.id;
 const approval = await dispatch(pmCookie, workspaceA, projectA, approvalId);
 equal(approval.status, 409, "requires-approval Action rejected");
+expectFronteraAllow(approval, approvalId, "requires-approval governance (pm)");
 equal(
   approval.body.governanceState,
   "requires_approval",
@@ -632,37 +926,96 @@ const revokedDispatch = await dispatch(
   revokedId,
 );
 equal(revokedDispatch.status, 409, "revoked Action rejected");
+expectFronteraAllow(revokedDispatch, revokedId, "revoked governance");
 equal(revokedDispatch.body.governanceState, "revoked", "revoked state preserved");
 equal(await countTasksForAction(revokedId), 0, "revoked before dispatch creates zero Tasks");
 
+// A. The browser does not own the governance window (P2-12). A caller-supplied
+//    stale window through the HTTP route is ignored: the server persists its own
+//    one-hour window, so the Action is NOT expired and remains dispatchable.
+const staleClientDecision = await makeDecision(ownerCookie, workspaceA, projectA, `stale-client-window-${suffix}`);
+const staleClientSentAt = Date.now();
+const staleClientAction = await proposeAction(
+  ownerCookie,
+  workspaceA,
+  projectA,
+  staleClientDecision.decisionId,
+  `stale-client-window-${suffix}`,
+  {
+    createdAt: new Date(staleClientSentAt - 3 * 60 * 60_000),
+    evaluationTime: new Date(staleClientSentAt - 2 * 60 * 60_000),
+    expiresAt: new Date(staleClientSentAt - 60 * 60_000),
+  },
+);
+const staleClientAnsweredAt = Date.now();
+const staleClientId = staleClientAction.proposal.id;
+const staleClientRow = await readPersistedAction(staleClientId);
+const staleClientCreatedAt = Date.parse(staleClientRow.created_at);
+const staleClientExpiresAt = Date.parse(staleClientRow.expires_at);
+check(
+  staleClientCreatedAt >= staleClientSentAt - 5_000 && staleClientCreatedAt <= staleClientAnsweredAt + 5_000,
+  "HTTP proposal: created_at is server time, not the caller's stale createdAt",
+);
+check(
+  Math.abs(staleClientExpiresAt - staleClientCreatedAt - 60 * 60_000) < 1_000,
+  "HTTP proposal: expires_at is the server-owned one-hour window",
+);
+check(
+  staleClientExpiresAt > Date.now() + 50 * 60_000,
+  "HTTP proposal: caller-supplied past expiresAt did not expire the Action",
+);
+const staleClientDispatch = await dispatch(ownerCookie, workspaceA, projectA, staleClientId);
+equal(staleClientDispatch.status, 201, "stale client window cannot manufacture an expired Action");
+equal(staleClientDispatch.body.disposition, "created", "stale client window Action dispatches normally");
+expectFronteraAllow(staleClientDispatch, staleClientId, "stale client window Action");
+equal(await countTasksForAction(staleClientId), 1, "stale client window Action creates exactly one Task");
+
+// B. A genuinely expired persisted Action: same real owner, real accepted
+//    Decision, real Evidence lineage, canonical proposal builder and
+//    persist_governed_material_action — with the window pinned in the past
+//    through the service's server-side seam. Dispatched over HTTP, through the
+//    owner's valid Frontera authority:
+//        FRONTERA = ALLOW, PMFREAK = EXPIRED, FINAL = DENY.
 const expiredDecision = await makeDecision(
   ownerCookie,
   workspaceA,
   projectA,
   `expired-${suffix}`,
 );
-const expiredAction = await proposeAction(
-  ownerCookie,
+const expiredWindowBase = Date.now();
+const expiredAction = proposeExpiredActionThroughService(
+  users.owner,
   workspaceA,
   projectA,
   expiredDecision.decisionId,
   `expired-${suffix}`,
   {
-    createdAt: new Date(Date.now() - 3 * 60 * 60_000),
-    evaluationTime: new Date(Date.now() - 2 * 60 * 60_000),
-    expiresAt: new Date(Date.now() - 60 * 60_000),
+    createdAt: new Date(expiredWindowBase - 2 * 60 * 60_000),
+    evaluationTime: new Date(expiredWindowBase - 2 * 60 * 60_000),
+    expiresAt: new Date(expiredWindowBase - 60 * 60_000),
   },
 );
+equal(expiredAction.disposition, "created", "expired fixture persisted by the canonical service");
 const expiredId = expiredAction.proposal.id;
+const expiredRow = await readPersistedAction(expiredId);
+equal(expiredRow.proposed_by, users.owner.id, "expired fixture was proposed by the authenticated owner");
+check(Date.parse(expiredRow.expires_at) < Date.now() - 50 * 60_000, "expired fixture's persisted expires_at is in the past");
+equal(await countTasksForAction(expiredId), 0, "expired Action starts with zero Tasks");
 const expiredDispatch = await dispatch(
   ownerCookie,
   workspaceA,
   projectA,
   expiredId,
+  expiredAction.proposal.proposal_digest,
 );
 equal(expiredDispatch.status, 409, "expired Action rejected");
+equal(expiredDispatch.body.disposition, "denied", "expired disposition denied");
 equal(expiredDispatch.body.failureClass, "expired", "expired failure class");
+equal(expiredDispatch.body.reason, "action_expired", "expired reason");
+equal(expiredDispatch.body.governanceState, "authorized", "expired Action was otherwise authorized");
+expectFronteraAllow(expiredDispatch, expiredId, "expired governance");
 equal(await countTasksForAction(expiredId), 0, "expired creates zero Tasks");
+equal(await countExecutionsForAction(expiredId), 0, "expired creates zero internal executions");
 
 const anonymous = await dispatch(null, workspaceA, projectA, happyActionId);
 equal(anonymous.status, 401, "unauthenticated dispatch rejected");
@@ -674,7 +1027,51 @@ const viewer = await dispatch(
   happyActionId,
 );
 equal(viewer.status, 403, "viewer dispatch rejected");
+equal(await countTasksForAction(happyActionId), 1, "viewer attempt leaves one Task");
 
+// PMFreak DENY + Frontera capability != ALLOW. The viewer holds exact Frontera
+// authority for project A (provisioned above on purpose) and a never-dispatched,
+// executable Action is available; PMFreak's role check still refuses first.
+const viewerTargetDecision = await makeDecision(ownerCookie, workspaceA, projectA, `viewer-target-${suffix}`);
+const viewerTargetAction = await proposeAction(
+  ownerCookie,
+  workspaceA,
+  projectA,
+  viewerTargetDecision.decisionId,
+  `viewer-target-${suffix}`,
+);
+const viewerTargetId = viewerTargetAction.proposal.id;
+equal(
+  (await fronteraOperator.binding({ workspaceId: workspaceA, principalUserId: users.viewer.id }))?.status,
+  "active",
+  "viewer is bound in Frontera for this conjunction proof",
+);
+const boundViewer = await dispatch(viewerCookie, workspaceA, projectA, viewerTargetId);
+equal(boundViewer.status, 403, "Frontera-bound viewer is still refused by PMFreak");
+equal(boundViewer.body.fronteraDecisionId, undefined, "viewer refusal precedes any Frontera ALLOW");
+equal(await countTasksForAction(viewerTargetId), 0, "Frontera-bound viewer creates zero Tasks");
+const ownerTakesViewerTarget = await dispatch(ownerCookie, workspaceA, projectA, viewerTargetId);
+equal(ownerTakesViewerTarget.status, 201, "the viewer's target Action was executable");
+expectFronteraAllow(ownerTakesViewerTarget, viewerTargetId, "owner dispatch of the viewer's target");
+
+// Cross-tenant, first as tenant B's owner holds no Frontera authority at all.
+const crossTenantUnbound = await dispatch(
+  outsiderCookie,
+  workspaceB,
+  projectB,
+  happyActionId,
+);
+expectFronteraRefusal(crossTenantUnbound, "frontera_actor_unbound", "unbound cross-tenant dispatch");
+equal(await countTasksForAction(happyActionId), 1, "unbound cross-tenant attempt leaves one Task");
+
+// Then with minimum authority in tenant B's OWN organization and project. The
+// request now reaches the dispatch RPC, which must still not find (nor reveal)
+// tenant A's Action: Frontera ALLOW in B confers nothing in A.
+await fronteraOperator.provision({
+  workspaceId: workspaceB,
+  principalUserId: users.outsider.id,
+  projectId: projectB,
+});
 const crossTenant = await dispatch(
   outsiderCookie,
   workspaceB,
@@ -683,6 +1080,8 @@ const crossTenant = await dispatch(
 );
 equal(crossTenant.status, 409, "cross-tenant Action dispatch rejected");
 equal(crossTenant.body.failureClass, "not_found", "cross-tenant does not leak existence");
+expectFronteraAllow(crossTenant, happyActionId, "tenant-B authority reaches PMFreak's tenancy check");
+equal(await countTasksForAction(happyActionId), 1, "authorized cross-tenant attempt leaves one Task");
 
 const crossTenantLookup = await taskList(outsiderCookie, projectA);
 equal(crossTenantLookup.status, 403, "cross-tenant Task lookup rejected");
@@ -734,3 +1133,7 @@ console.log(
   `  -> Evidence ${happy.body.task.source_payload.evidenceReferences.join(", ")}`,
 );
 console.log("NO-OUTCOME: task creation reported executed=false, outcomeCreated=false.");
+console.log(`FRONTERA ALLOW: ${happyFronteraDecisionId} (owner, project A, actor ${ownerAuthority.actorId})`);
+console.log("FRONTERA FAIL-CLOSED: unbound principal, other-organization binding, wrong project, operator revocation — zero Tasks each.");
+console.log("FRONTERA CONJUNCTION: unavailable/denied/degraded/requires_approval/revoked/expired and cross-tenant refused by PMFreak after Frontera ALLOW; bound viewer refused by role.");
+console.log(`EXPIRY: client-supplied stale window ignored (Action ${staleClientId} dispatched); service-pinned expired Action ${expiredId} refused as expired after Frontera ALLOW, zero Tasks.`);
