@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import {
+  createVerifierFronteraOperator,
+  isGenuineFronteraDecisionId,
+  requireDisposableFronteraStore,
+} from "./frontera-verifier-authority.mjs";
 
 const supabaseUrl = process.env.OPERATIONAL_FLOW_TEST_SUPABASE_URL;
 const anonKey = process.env.OPERATIONAL_FLOW_TEST_ANON_KEY;
@@ -53,6 +58,15 @@ if (appBaseUrl !== "http://localhost:3000") {
   );
   process.exit(2);
 }
+
+// The governed Task this verifier observes is reached through the Frontera
+// enforcement boundary (P0-PKG-06). Only the tenant-A owner dispatches, so only
+// the owner receives Frontera authority — out of band, for project A alone.
+// Frontera plays no part in Outcome or Observation semantics.
+const fronteraOperator = createVerifierFronteraOperator({
+  storePath: requireDisposableFronteraStore("P2-09"),
+  operatorActorId: "operator-p2-09-verifier",
+});
 
 const { createClient } = await import("@supabase/supabase-js");
 
@@ -203,6 +217,7 @@ async function createGovernedTask(
   workspaceId,
   projectId,
   keySuffix,
+  principalUserId,
 ) {
   const now = new Date().toISOString();
   const correlationId = randomUUID();
@@ -306,15 +321,41 @@ async function createGovernedTask(
   check(Boolean(actionId), "material action id exists");
   check(Boolean(proposalDigest), "material action proposal digest exists");
 
-  const taskCreated = await api(cookie, {
-    operation: "dispatch_material_action_to_task",
+  const dispatch = () =>
+    api(cookie, {
+      operation: "dispatch_material_action_to_task",
+      workspaceId,
+      projectId,
+      actionId,
+      expectedProposalDigest: proposalDigest,
+    });
+
+  // An owner role is not Frontera authority: refused, and nothing written,
+  // until the operator provisions it out of band.
+  const unbound = await dispatch();
+  equal(unbound.status, 409, "unbound owner dispatch refused");
+  equal(unbound.body.failureClass, "frontera_actor_unbound", "unbound owner refused by Frontera");
+  equal(unbound.body.reason, "frontera_enforcement_denied", "refusal happens at the Frontera boundary");
+  const tasksWhileUnbound = await admin
+    .from("execution_tasks")
+    .select("id", { count: "exact", head: true })
+    .eq("source_payload->>sourceActionId", actionId);
+  assert.ifError(tasksWhileUnbound.error);
+  equal(tasksWhileUnbound.count ?? 0, 0, "unbound owner creates zero Tasks");
+
+  await fronteraOperator.provision({
     workspaceId,
+    principalUserId,
     projectId,
-    actionId,
-    expectedProposalDigest: proposalDigest,
   });
 
+  const taskCreated = await dispatch();
+
   equal(taskCreated.status, 201, "fixture governed Task creation");
+  check(
+    isGenuineFronteraDecisionId(taskCreated.body.fronteraDecisionId, actionId),
+    "governed Task dispatch was ALLOWED by the real Frontera runtime",
+  );
 
   const task =
     taskCreated.body.task ??
@@ -327,6 +368,7 @@ async function createGovernedTask(
     actionId,
     decisionId: decision.body.decision.id,
     evidenceId: derived.body.evidence.id,
+    fronteraDecisionId: taskCreated.body.fronteraDecisionId,
   };
 }
 
@@ -482,6 +524,17 @@ assert.ifError(membershipOutsider.error);
 
 const ownerCookie = await authCookie(owner);
 
+// This run's organizations are fresh, so the shared store holds nothing for them.
+for (const actor of [owner, viewer, outsider]) {
+  for (const workspaceId of [workspaceA, workspaceB]) {
+    equal(
+      await fronteraOperator.binding({ workspaceId, principalUserId: actor.id }),
+      null,
+      `Frontera store starts with no ${actor.role} binding`,
+    );
+  }
+}
+
 /*
  * Step 1: Build the governed Task using canonical P2-08 execution lineage.
  */
@@ -490,6 +543,7 @@ const governed = await createGovernedTask(
   workspaceA,
   projectA,
   suffix,
+  owner.id,
 );
 
 const queuedExecution = await internalExecution(
@@ -1112,4 +1166,8 @@ console.log(
 
 console.log(
   "LEARNING: Outcome state changed only through an explicit LIVE evidence-backed Observation.",
+);
+
+console.log(
+  `FRONTERA ALLOW: ${governed.fronteraDecisionId} (owner, project A); before provisioning: frontera_actor_unbound, zero Tasks.`,
 );

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
+import {
+  createVerifierFronteraOperator,
+  isGenuineFronteraDecisionId,
+  requireDisposableFronteraStore,
+} from "./frontera-verifier-authority.mjs";
 
 const supabaseUrl = process.env.OPERATIONAL_FLOW_TEST_SUPABASE_URL;
 const anonKey = process.env.OPERATIONAL_FLOW_TEST_ANON_KEY;
@@ -48,6 +53,16 @@ if (appBaseUrl !== "http://localhost:3000") {
   console.error("SAFETY ABORT: runtime origin must be http://localhost:3000.");
   process.exit(2);
 }
+
+// Governed dispatch passes the Frontera enforcement boundary (P0-PKG-06). Only
+// the tenant-A owner dispatches in this verifier, so only the owner receives
+// Frontera authority — out of band, for project A alone. Frontera governs the
+// Action -> Task dispatch; the internal execution lifecycle below is unchanged
+// PMFreak state and is not re-authorized per transition.
+const fronteraOperator = createVerifierFronteraOperator({
+  storePath: requireDisposableFronteraStore("P2-08"),
+  operatorActorId: "operator-p2-08-verifier",
+});
 
 const { createClient } = await import("@supabase/supabase-js");
 const admin = createClient(supabaseUrl, serviceRoleKey, {
@@ -219,7 +234,7 @@ async function makeDecision(cookie, workspaceId, projectId, keySuffix) {
   };
 }
 
-async function createGovernedTask(cookie, workspaceId, projectId, keySuffix) {
+async function proposeGovernedAction(cookie, workspaceId, projectId, keySuffix) {
   const decision = await makeDecision(cookie, workspaceId, projectId, keySuffix);
   const createdAt = new Date(Date.now() - 30_000);
   const evaluationTime = new Date(Date.now() - 20_000);
@@ -247,21 +262,55 @@ async function createGovernedTask(cookie, workspaceId, projectId, keySuffix) {
   });
   check([200, 201].includes(action.status), "governed Action created/replayed");
 
-  const task = await operational(cookie, {
-    operation: "dispatch_material_action_to_task",
-    workspaceId,
-    projectId,
-    actionId: action.body.proposal.id,
-    expectedProposalDigest: action.body.proposal.proposal_digest,
-  });
-  check([200, 201].includes(task.status), "P2-07 canonical Task created/replayed");
-  check(Boolean(task.body.task?.id), "canonical Task has id");
-
   return {
     decision,
     actionId: action.body.proposal.id,
-    task: task.body.task,
+    proposalDigest: action.body.proposal.proposal_digest,
   };
+}
+
+function dispatchGovernedAction(cookie, workspaceId, projectId, governed) {
+  return operational(cookie, {
+    operation: "dispatch_material_action_to_task",
+    workspaceId,
+    projectId,
+    actionId: governed.actionId,
+    expectedProposalDigest: governed.proposalDigest,
+  });
+}
+
+async function createGovernedTask(cookie, workspaceId, projectId, keySuffix) {
+  const governed = await proposeGovernedAction(cookie, workspaceId, projectId, keySuffix);
+  return dispatchAuthorizedTask(cookie, workspaceId, projectId, governed);
+}
+
+async function dispatchAuthorizedTask(cookie, workspaceId, projectId, governed) {
+  const task = await dispatchGovernedAction(cookie, workspaceId, projectId, governed);
+  equal(task.status, 201, "P2-07 canonical Task created");
+  equal(task.body.disposition, "created", "canonical Task disposition created");
+  check(
+    isGenuineFronteraDecisionId(task.body.fronteraDecisionId, governed.actionId),
+    "canonical Task dispatch was ALLOWED by the real Frontera runtime",
+  );
+  check(Boolean(task.body.task?.id), "canonical Task has id");
+  equal(await countTasksForAction(governed.actionId), 1, "authorized Action has exactly one Task");
+
+  return {
+    decision: governed.decision,
+    actionId: governed.actionId,
+    task: task.body.task,
+    fronteraDecisionId: task.body.fronteraDecisionId,
+  };
+}
+
+async function countTasksForAction(actionId) {
+  const result = await admin
+    .from("execution_tasks")
+    .select("id", { count: "exact", head: true })
+    .eq("source_payload->>source", "governed_action")
+    .eq("source_payload->>sourceActionId", actionId);
+  assert.ifError(result.error);
+  return result.count ?? 0;
 }
 
 async function countExecutions(taskId) {
@@ -352,13 +401,46 @@ const ownerCookie = await loginCookie(users.owner.email);
 const viewerCookie = await loginCookie(users.viewer.email);
 const outsiderCookie = await loginCookie(users.outsider.email);
 
-const lifecycle = await createGovernedTask(
+// This run's organizations are fresh, so the shared store holds nothing for them.
+for (const label of ["owner", "viewer", "outsider"]) {
+  for (const workspaceId of [workspaceA, workspaceB]) {
+    equal(
+      await fronteraOperator.binding({ workspaceId, principalUserId: users[label].id }),
+      null,
+      `Frontera store starts with no ${label} binding`,
+    );
+  }
+}
+
+// An owner role is not Frontera authority: before the operator acts, the same
+// executable Action is refused at the boundary and nothing is written. The
+// ALLOW that follows therefore also proves the running app reads THIS store.
+const lifecycleAction = await proposeGovernedAction(
   ownerCookie,
   workspaceA,
   projectA,
   `lifecycle-${suffix}`,
 );
+const unboundDispatch = await dispatchGovernedAction(ownerCookie, workspaceA, projectA, lifecycleAction);
+equal(unboundDispatch.status, 409, "unbound owner dispatch refused");
+equal(unboundDispatch.body.failureClass, "frontera_actor_unbound", "unbound owner refused by Frontera");
+equal(unboundDispatch.body.reason, "frontera_enforcement_denied", "refusal happens at the Frontera boundary");
+equal(await countTasksForAction(lifecycleAction.actionId), 0, "unbound owner creates zero Tasks");
+
+await fronteraOperator.provision({
+  workspaceId: workspaceA,
+  principalUserId: users.owner.id,
+  projectId: projectA,
+});
+
+const lifecycle = await dispatchAuthorizedTask(ownerCookie, workspaceA, projectA, lifecycleAction);
 equal(await countExecutions(lifecycle.task.id), 0, "governed Task begins with zero execution rows");
+
+const dispatchReplay = await dispatchGovernedAction(ownerCookie, workspaceA, projectA, lifecycleAction);
+equal(dispatchReplay.status, 200, "dispatch replay returns the existing Task");
+equal(dispatchReplay.body.task?.id, lifecycle.task.id, "dispatch replay returns the same Task id");
+equal(await countTasksForAction(lifecycle.actionId), 1, "dispatch replay creates no second Task");
+equal(await countExecutions(lifecycle.task.id), 0, "dispatch replay creates no execution");
 
 const queued = await internalExecution(ownerCookie, lifecycle.task.id, "queue");
 equal(queued.status, 201, "queue creates internal execution");
@@ -409,6 +491,12 @@ equal(transition.body.task.status, "completed", "Task synchronized to completed"
 equal(transition.body.task.progress_percent, 100, "Task progress is 100");
 check(Boolean(transition.body.task.completed_at), "Task completed_at set");
 equal(transition.body.nonOutcome.outcomeCreated, false, "completion does not create Outcome");
+const outcomesAfterCompletion = await admin
+  .from("canonical_task_outcomes")
+  .select("id", { count: "exact", head: true })
+  .eq("task_id", lifecycle.task.id);
+assert.ifError(outcomesAfterCompletion.error);
+equal(outcomesAfterCompletion.count ?? 0, 0, "completion persists zero canonical Outcomes");
 
 const completedReplay = await internalExecution(ownerCookie, lifecycle.task.id, "complete");
 equal(completedReplay.status, 200, "complete replay succeeds");
@@ -627,3 +715,4 @@ console.log(`  -> Decision ${lifecycle.decision.decisionId}`);
 console.log(`  -> Evidence ${lifecycle.decision.evidenceId}`);
 console.log(`  -> Internal Execution ${queued.body.execution.id}`);
 console.log("NO-OUTCOME: internal execution completion reported outcomeCreated=false.");
+console.log(`FRONTERA ALLOW: ${lifecycle.fronteraDecisionId} (owner, project A); before provisioning: frontera_actor_unbound, zero Tasks.`);
