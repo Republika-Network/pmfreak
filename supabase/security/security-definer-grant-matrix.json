@@ -432,8 +432,8 @@
       "intended_caller": "authenticated_rpc",
       "trigger_only": false,
       "search_path": "public",
-      "latest_definition_migration": "20260611000000_operational_evidence_decision_loop.sql",
-      "rationale": "Authenticated human-decision RPC (operational-flow-service.ts:173). Gates on can_access_operational_project and operational_authority_evaluation."
+      "latest_definition_migration": "20260911000000_p2_decision_terminal_integrity.sql",
+      "rationale": "Authenticated human-decision RPC (operational-flow-service.ts:173). Gates on can_access_operational_project and operational_authority_evaluation; serialises on the governed Recommendation row and refuses any Decision after a terminal one (operational_decision_already_terminal)."
     },
     {
       "schema": "public",
