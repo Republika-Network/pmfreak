@@ -227,13 +227,16 @@ const governanceEvent = (over: Row = {}): Row => ({
   id: "gov-1", workspace_id: WS, project_id: PRJ, related_entity_type: "risk_issue_record",
   related_entity_id: "risk-1", protocol_reference: "PMFreak operational governance rules v1",
   rule_key: "scope_change_requires_sponsor", authority_required: "sponsor or PMO",
-  evidence_required: true, governance_status: "decision_required", signal_id: "sig-1",
+  evidence_required: true, governance_status: "decision_required",
   created_at: "2026-08-10T07:08:00Z", ...over,
 });
 
+// Schema-truthful: `recommended_actions` reaches its Finding through `source_signal_id`,
+// and owns no `signal_id`. These fixtures previously carried `signal_id`, which no table
+// defines, so the suite stayed green while the live projection could not resolve a Finding.
 const recommendation = (over: Row = {}): Row => ({
   id: "rec-1", workspace_id: WS, project_id: PRJ, governance_event_id: "gov-1",
-  signal_id: "sig-1", risk_issue_id: "risk-1", title: "Raise a change request",
+  source_signal_id: "sig-1", risk_issue_id: "risk-1", title: "Raise a change request",
   proposed_action: "Raise CR", status: "accepted", urgency: "high",
   suggested_owner_user_id: "user-1", created_at: "2026-08-10T07:09:00Z",
   updated_at: "2026-08-10T07:09:00Z", ...over,
