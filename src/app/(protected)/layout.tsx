@@ -1,6 +1,7 @@
 import { isFounderOrInternalUser, buildAuthUserContext } from "@/lib/auth";
 import { assertRuntimeAuthContinuity } from "@/lib/auth/runtime-auth-continuity";
 import { resolveWriteWorkspace } from "@/lib/workspaces/resolve-write-workspace";
+import { isWorkspaceInviteAcceptancePath } from "@/lib/workspace-team";
 import { OperationalShell } from "@/components/pmfreak/operational-shell";
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/admin";
 import { redirect } from "next/navigation";
@@ -46,6 +47,39 @@ export default async function ProtectedLayout({ children }: { children: React.Re
     const nextParam = encodeURIComponent(currentPath || "/command-center");
     redirect(`/login?next=${nextParam}`);
   }
+
+  /**
+   * Workspace invite acceptance is exempt from WORKSPACE onboarding — and only from that.
+   *
+   * `/accept-invite/<token>` is the one protected route whose entire job is to CREATE the
+   * membership everything below this point would otherwise require it to already hold. Left
+   * in the normal flow it is a circular precondition, and worse than merely useless:
+   *
+   *   - layouts and pages render concurrently, so this layout's onboarding redirect raced
+   *     the page's own `acceptWorkspaceInvite`. The redirect won every observed time, which
+   *     meant the response could be returned BEFORE the membership was committed, and the
+   *     page's `redirect("/team")` never reached the user;
+   *   - an invitee holding no membership had a personal workspace bootstrapped by
+   *     `resolveWriteWorkspace` as a side effect of merely opening their invite; and
+   *   - a genuine refusal (email mismatch, expired, revoked) was swallowed by that
+   *     redirect, so the invitee was sent to onboarding instead of being told.
+   *
+   * Authentication is NOT skipped: `assertRuntimeAuthContinuity` has already run above and
+   * `user` is non-null here, and the page independently calls `requireAuthUser`, validates
+   * the token server-side, enforces the email match and applies both abuse limits. Only the
+   * workspace/onboarding resolution below is bypassed — it has no authority of its own.
+   *
+   * The bare `/accept-invite` early-access route is deliberately NOT matched.
+   */
+  const inviteAcceptanceHeaders = await headers();
+  if (isWorkspaceInviteAcceptancePath(inviteAcceptanceHeaders.get("x-pathname"))) {
+    return (
+      <div className="min-h-screen bg-[#FCFBF9] text-slate-900">
+        <main className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6 sm:py-10">{children}</main>
+      </div>
+    );
+  }
+
   /**
    * Workspace context for the shell AND for the onboarding gate below.
    *

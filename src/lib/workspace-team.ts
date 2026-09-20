@@ -115,6 +115,35 @@ export function assertAssignableWorkspaceRole(actorRole: WorkspaceRole, requeste
  * authorises through the workspace actor role instead and passes no
  * preconditions, and that difference is documented, not implied.
  */
+/**
+ * The one path family that accepts a WORKSPACE invitation: `/accept-invite/<token>`.
+ *
+ * It is declared here, beside the link this module mints, so the route and the predicate
+ * that recognises it cannot drift into two spellings. It is deliberately NOT the bare
+ * `/accept-invite`, which is the separate EARLY-ACCESS surface
+ * (`src/app/(protected)/accept-invite/page.tsx`, `?token=`): that route keeps its existing
+ * behaviour untouched.
+ */
+export const WORKSPACE_INVITE_ACCEPT_PATH_PREFIX = "/accept-invite/";
+
+export function buildWorkspaceInviteAcceptPath(token: string): string {
+  return `${WORKSPACE_INVITE_ACCEPT_PATH_PREFIX}${encodeURIComponent(token)}`;
+}
+
+/**
+ * True only for `/accept-invite/<single non-empty segment>`.
+ *
+ * Exact by construction: a nested path, the bare early-access route, and any other route
+ * all answer false, so this can never widen into a general `/accept-invite*` exemption.
+ */
+export function isWorkspaceInviteAcceptancePath(pathname: string | null | undefined): boolean {
+  if (typeof pathname !== "string") return false;
+  const path = pathname.split("?")[0]!.split("#")[0]!;
+  if (!path.startsWith(WORKSPACE_INVITE_ACCEPT_PATH_PREFIX)) return false;
+  const token = path.slice(WORKSPACE_INVITE_ACCEPT_PATH_PREFIX.length);
+  return token.length > 0 && !token.includes("/");
+}
+
 export async function createWorkspaceInvitationRecord(
   input: { workspaceId: string; companyId: string; inviterUserId: string; actorRole: WorkspaceRole; email: string; role: unknown },
   getSupabaseClient: () => Promise<MinimalSupabaseClient>,
@@ -167,7 +196,7 @@ export async function createWorkspaceInvitationRecord(
     payload: { email: normalizedEmail, role: targetRole, expiresAt },
   });
 
-  return { acceptPath: `/accept-invite/${encodeURIComponent(token)}`, expiresAt };
+  return { acceptPath: buildWorkspaceInviteAcceptPath(token), expiresAt };
 }
 
 type ResolvedWorkspaceInvite = {

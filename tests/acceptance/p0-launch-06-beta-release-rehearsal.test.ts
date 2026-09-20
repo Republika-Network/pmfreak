@@ -28,7 +28,6 @@ import path from "node:path";
 import { readFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 import { acceptWorkspaceInvite, WorkspaceInviteError } from "../../src/lib/workspace-team";
-import { getOnboardingRedirect } from "../../src/lib/auth/onboarding-route-map";
 import { TENANT_A, TENANT_B } from "../../scripts/p2-13/founder-scenario-manifest.mjs";
 import {
   HARNESS_PROCESS_RESIDUE,
@@ -973,25 +972,20 @@ test("D1. TENANT_BINDING and ROLE_BINDING come from the invitation record, serve
   assert.ok(location, "the accept route redirected without a Location header");
   const destination = new URL(location!, base).pathname;
 
-  // The real contract has TWO legitimate successful destinations, and which one occurs
-  // is race-dependent: the accept page ends in redirect("/team"), while (protected)
-  // layout.tsx renders concurrently and redirects a participant without workspace access
-  // to getOnboardingRedirect(state). A participant whose workspace was bootstrapped
-  // moments ago legitimately lands in onboarding instead of /team.
+  // There is now exactly ONE successful destination: the accept page's own
+  // `redirect("/team")`.
   //
-  // The acceptable set is therefore derived from the product's OWN destination map, not
-  // from an observed string, so a route change moves both together. `trial_blocked` is
-  // deliberately EXCLUDED: /trial-inactive is a denial, not a successful landing. This
-  // is not a widening back to "any 3xx" — /login, /trial-inactive, the invite route
-  // itself and every error destination still fail.
-  const successfulDestinations = new Set<string>([
+  // This used to accept the onboarding destinations too, because `(protected)/layout.tsx`
+  // rendered concurrently with the page and its onboarding redirect raced — and beat — the
+  // acceptance. That race was `D1-INVITE-ACCEPT-LAYOUT-RACE`: the layout's answer could be
+  // returned before the membership committed, so a "successful" redirect proved nothing
+  // about admission. The layout now exempts `/accept-invite/<token>` from workspace
+  // onboarding, so the page always owns the outcome and the weaker set would only hide a
+  // regression of exactly that defect.
+  assert.equal(
+    destination,
     "/team",
-    ...(["no_workspace", "needs_project", "needs_task", "execution_started"] as const).map(getOnboardingRedirect),
-  ]);
-  assert.ok(
-    successfulDestinations.has(destination),
-    `the accept route redirected to a destination that is not a successful post-acceptance landing: ${destination} ` +
-      `(accepted: ${[...successfulDestinations].sort().join(", ")})`,
+    `the accept route must land on its own canonical success destination, not an onboarding redirect: ${destination}`,
   );
   assert.notEqual(destination, "/login", "the accept route bounced the participant to login");
   assert.notEqual(destination, "/trial-inactive", "the accept route landed the participant on a denial page");
@@ -1011,19 +1005,19 @@ test("D1. TENANT_BINDING and ROLE_BINDING come from the invitation record, serve
   assert.equal(inTenantA[0]!.role, "pm", "admission did not bind the invited role");
   assert.equal(rows.filter((m) => m.workspace_id === TENANT_B.workspaceId).length, 0, "admission leaked a membership into an uninvited tenant");
 
-  // Every membership outside the invited tenant must be a workspace the participant
-  // itself bootstrapped — nothing else may have been granted by accepting an invite.
+  // Accepting an invite grants the invited membership and NOTHING else.
+  //
+  // This previously tolerated extra memberships, because the layout's `resolveWriteWorkspace`
+  // bootstrapped a personal workspace for an invitee holding none — a side effect of merely
+  // opening the invite link, which made the invited tenant not even their default workspace.
+  // The layout no longer runs for this route, so the correct count is zero.
   const others = rows.filter((m) => m.workspace_id !== TENANT_A.workspaceId);
-  if (others.length > 0) {
-    const owned = await supabase.from("workspaces").select("id").eq("created_by_user_id", participantUserId)
-      .in("id", others.map((m) => m.workspace_id));
-    assert.equal(owned.error, null, `bootstrapped-workspace lookup failed: ${owned.error?.message}`);
-    assert.equal(owned.data?.length, others.length, "the participant holds a membership in a workspace it neither was invited to nor created");
-  }
-  EVIDENCE.inviteAcceptanceBootstrapsPersonalWorkspace =
-    others.length > 0
-      ? `YES — ${others.length} self-created workspace membership alongside the invited tenant ((protected) layout resolveWriteWorkspace bootstrap); observed only because D1 now uses the shipped route`
-      : "NO";
+  assert.deepEqual(
+    others,
+    [],
+    "accepting an invite granted a membership that was never invited (personal-workspace bootstrap on the invite route)",
+  );
+  EVIDENCE.inviteAcceptanceBootstrapsPersonalWorkspace = "NO";
 
   // The post-acceptance destination must not DENY the admitted identity. It is not
   // asserted to be 200: the participant's own workspace was bootstrapped moments ago, so
