@@ -3,13 +3,39 @@
  *
  * One deterministic orchestrator, phased so every checkpoint is attributable.
  *
- * P2_14_DERIVED_17_STEP_ACCEPTANCE
- * --------------------------------
- * The P2-14 prompt requires completion of 17 Founder steps, but the repository contains no
- * independently enumerated historical 1–17 list. The following is the executable
- * 17-checkpoint decomposition derived from the verified P2-11, P2-12, P2-13 and
- * operational-flow contracts. It is not a newly invented domain lifecycle, and it does not
- * overwrite a canonical list — no canonical list exists to overwrite.
+ * P2_14_17_STEP_ACCEPTANCE
+ * ------------------------
+ * The P2-14 prompt requires completion of the 17 Founder steps enumerated in
+ * docs/product-baseline/PMFREAK_FOCUSED_ASSESSMENT_P1.md, "Founder Invite Scenario
+ * Assessment" (#1–#17). That historical list is the requirement. (An earlier revision of
+ * this comment said no such list existed; that was wrong.) The executable STEP_NN
+ * checkpoints below are this spec's own numbering and do not line up 1:1 with it, so the
+ * mapping is stated explicitly — historical step → executable checkpoint(s):
+ *
+ *   1 Register or accept invite ........ STEP_01 (sign-in of a P2-13-seeded member whose
+ *                                        invite the seed already accepted; the browser does
+ *                                        not itself accept an invite)
+ *   2 Enter correct Workspace .......... STEP_02, STEP_03 (refresh), STEP_04 (server scope)
+ *   3 Create/select real Project ....... STEP_05 (P2-13 project, selected by route)
+ *   4 Real signal or explicit fixture .. STEP_06 (DEMO / FIXTURE), STEP_16 (LIVE input)
+ *   5 Normalize with provenance ........ P2-13 seed via real capture/derive RPCs (PRECHECK);
+ *                                        STEP_16 (LIVE Evidence -> Normalized Event, Source)
+ *   6 Detect exposure .................. P2-13 seed via real materialize_operational_chain;
+ *                                        STEP_07 reads the resulting Recommendations
+ *   7 Temporal explainable finding ..... STEP_08 (Why this matters, Evidence, provenance)
+ *   8 Canonical recommendation ......... STEP_07
+ *   9 PM accept/reject/defer ........... STEP_09 (accept); NEGATIVE PM authority (escalate
+ *                                        only). Governed statuses have no `deferred`.
+ *  10 Separate auditable Decision ...... STEP_09/10, STEP_09b
+ *  11 Separate governed Action ......... STEP_11, STEP_11b
+ *  12 AOC authorize/deny/honest mode ... STEP_11 (AOC-E), STEP_11b (writeback false),
+ *                                        STEP_12 (Frontera fronteraDecisionId), NEGATIVE
+ *                                        knowledge_elevation denied
+ *  13 Idempotent Task .................. STEP_12
+ *  14 Execution changes state .......... STEP_13
+ *  15 Observe Outcome separately ....... STEP_14, STEP_15, STEP_16, STEP_16b
+ *  16 PM sees result, why, next ........ STEP_16c
+ *  17 Reconstruct audit chain .......... STEP_17
  *
  * The positive story is driven by BROWSER ACTIONS ONLY. Canonical state is read back
  * through the same authenticated session to VERIFY what the browser produced; no read ever
@@ -239,11 +265,16 @@ test.describe.serial("P2-14 authenticated two-tenant Founder browser story", () 
 
     const drawer = page.getByRole("dialog");
     await expect(drawer).toBeVisible();
-    await expect(drawer.getByRole("heading", { name: "Evidence" })).toBeVisible();
+    // Exact names: since UX-W3 the drawer also carries an "Evidence & governance" heading,
+    // which a substring match on "Evidence" resolves to as well (strict-mode violation).
+    await expect(drawer.getByRole("heading", { name: "Why this matters", exact: true })).toBeVisible();
+    await expect(drawer.getByRole("heading", { name: "Evidence", exact: true })).toBeVisible();
     await expect(drawer.getByRole("heading", { name: "Your decision" })).toBeVisible();
+    await expect(drawer.getByRole("heading", { name: "Evidence & governance", exact: true })).toBeVisible();
+    await expect(drawer.getByText("How PMFreak got here", { exact: true })).toBeVisible();
     await shot("02-recommendation-provenance");
     checkpoint("STEP_07", `${proposedRecommendationIds.length} proposed Recommendation(s) reachable through the real Needs You attention flow; the queue surfaced one for decision`);
-    checkpoint("STEP_08", "drawer exposes Evidence and How PMFreak got here provenance sections before any decision");
+    checkpoint("STEP_08", "drawer exposes Why this matters, Evidence, and the Evidence & governance / How PMFreak got here provenance disclosure before any decision");
   });
 
   // ──────────────────────── STEPS 09–10: DECISION, NO AUTO-ACTION ────────────────────────
@@ -553,20 +584,22 @@ test.describe.serial("P2-14 authenticated two-tenant Founder browser story", () 
     await openCommandCenter();
     // Real product control: open the Command Center notes intake.
     await page.getByRole("button", { name: /Add project notes/i }).first().click();
-    await expect(page.getByRole("group", { name: /How should this input be recorded/i })).toBeVisible();
 
-    // Explicitly classify this as a LIVE operational record, not demo material.
-    await page.getByRole("radio", { name: "LIVE operational record" }).check();
-    // Addressed by role: the radio that selects LIVE mode and this textarea share an
-    // accessible name, so a bare label lookup is ambiguous between them.
-    await page.getByRole("textbox", { name: "Live operational record" }).fill(
+    // Since UX-W0 (UX-P0-01) the customer intake panel records LIVE, always: the PM is no
+    // longer asked to classify their own notes, and DEMO / FIXTURE capture lives only on the
+    // internal governance lab. The browser therefore offers no classification at all — and
+    // must not offer a DEMO / FIXTURE one. That the Evidence is LIVE is still proven below
+    // from the persisted row and its server-selected, non-fixture Source.
+    await expect(page.getByRole("textbox", { name: "Project notes" })).toBeVisible();
+    await expect(page.getByRole("radio", { name: /DEMO \/ FIXTURE/i })).toHaveCount(0);
+    await page.getByRole("textbox", { name: "Project notes" }).fill(
       "Supplier returned a signed scope and approval confirmation on 2026-08-20, covering the disputed additional activity."
     );
     await page.getByLabel("Assertion type").selectOption("FACT");
     await page.getByLabel("Classification").selectOption("DELIVERY");
     await page.getByLabel("Missing data").selectOption("COMPLETE");
     await page.getByLabel("Confidence (0–1)").fill("0.90");
-    await page.getByRole("button", { name: /Capture LIVE record and derive Evidence/ }).click();
+    await page.getByRole("button", { name: "Capture and derive Evidence" }).click();
 
     const summary = await waitForSummary(
       page, TENANT_A.workspaceId, TENANT_A.projectId,
@@ -578,9 +611,9 @@ test.describe.serial("P2-14 authenticated two-tenant Founder browser story", () 
     expect(String(live.fixture_state)).toBe("LIVE");
     expect(live.normalized_event_id, "LIVE Evidence carries canonical provenance").toBeTruthy();
 
-    // The Source identity was selected by the SERVER, not offered by the browser. Since the
-    // review repair the panel sends only the mode the observer chose, so the sole reason
-    // this Evidence is LIVE is that the server resolved the live identity and the contract
+    // The Source identity was selected by the SERVER, not offered by the browser. The panel
+    // sends `capture_live_input` with no Source identity at all, so the sole reason this
+    // Evidence is LIVE is that the server resolved the live identity and the contract
     // confirmed that identity is not a fixture.
     const sourceById = (id: unknown) => (summary.sources ?? []).find((row) => String(row.id) === String(id));
     const liveSource = sourceById(live.source_id);
@@ -670,6 +703,29 @@ test.describe.serial("P2-14 authenticated two-tenant Founder browser story", () 
     // The reconciled row is the original, not a rewritten one.
     expect(String((after.observations ?? [])[0].recorded_at)).toBe(String(persisted.recorded_at));
     checkpoint("STEP_16b", `identical resubmission of Observation ${chainIds.observationId} reconciled 200 existing; still exactly 1, and the original recorded_at is unchanged`);
+  });
+
+  test("STEP 16c — the PM sees the result, why the work existed, and that nothing is pending next", async () => {
+    // Historical Founder step 16 ("PM sees result, why, next") read off the real Command
+    // Center after the Observation, not inferred from the rows above. The journey card is
+    // the product's own post-decision surface (UX-W4); every line is derived from persisted
+    // state, and "Next" is deliberately absent when nothing is pending rather than invented.
+    await openCommandCenter();
+    // A closed loop is filed under the "Closed" disclosure. Wait for it to render before
+    // governedChainRow() decides whether to expand it — right after navigation the queue is
+    // still loading, and an absent disclosure would be skipped rather than opened.
+    await expect(attentionCanvas().getByTestId("cc-closed-chains")).toBeVisible({ timeout: 30_000 });
+    const row = await governedChainRow();
+    await expect(row).toBeVisible();
+    await expect(row).toHaveAttribute("data-testid", "cc-closed-chain-item");
+    await expect(row).toHaveAttribute("data-journey-closure", "loop_closed");
+    await expect(row.getByTestId("cc-journey-state")).toHaveText("The expected result was achieved.");
+    await expect(row.getByTestId("cc-journey-why")).toContainText(
+      "Scope and approval confirmation is required before any supplier commitment."
+    );
+    await expect(row.getByTestId("cc-journey-next")).toHaveCount(0);
+    await shot("06b-result-why-next");
+    checkpoint("STEP_16c", "journey card after the Observation: loop_closed, result 'The expected result was achieved.', why = the Decision's own rationale, no fabricated next step");
   });
 
   // ──────────────────────── STEP 17: LINEAGE + AUDIT ────────────────────────
@@ -861,7 +917,9 @@ test.describe.serial("P2-14 authenticated two-tenant Founder browser story", () 
     expect(duplicates, "duplicate document ids").toEqual([]);
 
     // The attention item is keyboard reachable and activates on Enter, and focus is not lost.
-    const chainButton = await governedChainRow();
+    // Since UX-W4 the row card is a container, not a <button>: its control is the row's own
+    // `<testId>-open` button (a stretched target over the card), so that is what must take focus.
+    const chainButton = (await governedChainRow()).locator('button[data-testid$="-item-open"]');
     await chainButton.focus();
     await expect(chainButton).toBeFocused();
     await page.keyboard.press("Enter");
