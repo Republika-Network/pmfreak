@@ -12,7 +12,7 @@
 - **Unlocks:** P2-13, G3
 - **Risk Level:** high
 - **Expected Review Size:** large
-- **Status:** `NOT_STARTED`
+- **Status:** `VERIFIED` — dependency P2-10 repaired; verified on committed SHA `0fd86b561326c7895980fffb5c47c8aa6b8585c5` 2026-09-20. See Verification Evidence — 2026-09-19 (initial blocker) and Post-Repair Verification — 2026-09-20. (Previously recorded `NOT_STARTED`: stale metadata; the 2026-09-19 exact-head pass recorded `BLOCKED`.)
 - **Migration:** no; forward-only, additive if used; destructive changes prohibited.
 
 ## Role
@@ -104,6 +104,43 @@ Expected areas: `src/app/(protected)/command-center/; src/components/pmfreak/int
 ## Prohibited Changes
 
 Do not enable remote writeback; delete/fuse legacy models; bypass AOC or membership/RLS; use zero/placeholder hashes; insert Evidence directly where Raw/Event is required; auto-create downstream canonical states; treat Task completion as Outcome; show fixtures as live; hardcode success; weaken tenant isolation; run destructive migration; redesign unrelated UI; or modify unrelated CI/dependencies.
+
+## Verification Evidence — 2026-09-19
+
+Exact-head reconciliation run. Status earlier in this file was historical/stale metadata; it is superseded here, not rewritten.
+
+- **SHA:** `95c928b2ceb8f0f40465965c751ef9c3230a1d8c` (`origin/main`, merge of #613), plus the P2-14 spec reconciliation recorded under P2-14.
+- **Environment:** native Linux scratch clone at that SHA; Node v22.23.1 / npm 10.9.8 (`npm ci`); local Supabase `127.0.0.1:54321`/`54322`, 165/165 migrations through `20260911000000`; Frontera `@aoc-enterprise/runtime` 1.2.1 on a disposable OS-temp SQLite store.
+
+- **Result:** `BLOCKED`. The dependency P2-10 is `BLOCKED` (`P2-10-LINEAGE-FINDING-UNRESOLVED`). P2-12's product outcome includes complete lineage, which the live projection does not yet provide for canonical chains.
+- `npx tsx --test tests/operational-flow-contract.test.mjs tests/operational-command-center.test.ts` — 205/205 pass.
+- `tests/p2-12-pm-execution-center-action-to-outcome.test.mjs` — 95/95 pass.
+- Browser, real Chromium (P2-14 STEP_11–STEP_16c, 38/38, run twice):
+  - governed Action, real AOC-E plus Frontera ALLOW;
+  - exactly one Task under retry;
+  - internal execution lifecycle;
+  - Task completion ≠ Outcome;
+  - evidence-backed Observation;
+  - the journey card shows the result, why, and no fabricated next step.
+- Accessibility: keyboard reach and focus, no duplicate ids, drawer accessible close. Responsive: 390, 768 and 1440 px with no horizontal overflow.
+- `npm run typecheck` — PASS. `npm run lint` — 0 errors. `npm run build` — PASS.
+- **Residuals:** as P2-10, plus the non-blocking dev-mode navigation hydration mismatch noted under P2-11.
+
+## Exact-head post-repair verification — 2026-09-20
+
+**Verified executable candidate SHA: `0fd86b561326c7895980fffb5c47c8aa6b8585c5` (C4).**
+
+Chronology, so the record is not read backwards: `95c928b2` is the exact-main baseline on which the blockers were discovered and reproduced — never a SHA carrying the repairs. C1–C3 are the Founder/G2/G3 repair candidate. Exact-head validation of that candidate then surfaced a *pre-existing* governance defect (a revoked Material Action could still be dispatched into a Task and could still start), which reproduces identically at `95c928b2`; C4 repairs it and is the SHA every result in this section was verified on.
+
+The dependency blocker recorded above was repaired under explicit authorization (see P2-10). P2-12 itself needed no product change.
+
+Verified on committed SHA `0fd86b561326c7895980fffb5c47c8aa6b8585c5` (C4 = C1+C2+C3+C4), checked out clean with none of this reconciliation's documentation edits present. Same local environment as the 2026-09-19 pass: Node v22.23.1 / npm 10.9.8, local Supabase `127.0.0.1:54321`/`54322` at migration head `20260911000000` (165/165, unchanged — no migration was added), Frontera `@aoc-enterprise/runtime` 1.2.1 on a fresh disposable OS-temp store.
+
+- **Automated:** `tests/p2-12-pm-execution-center-action-to-outcome.test.mjs` 95/95; focused P2-11/P2-12 command 205/205.
+- **Browser, real Chromium:** the P2-14 journey passed 38/38 on the exact candidate SHA, covering STEP_11 through STEP_16c — governed Action with real AOC-E and Frontera authorization, exactly one Task under retry, the internal execution lifecycle, Task completion ≠ Outcome, an evidence-backed Observation, and the journey card showing result, why and no fabricated next step.
+- **Complete lineage**, the property that was blocked, is now proven live end to end: `completeLineageCount: 1`, `gaps: []`, with the Finding resolved.
+- Accessibility and responsive coverage (390 / 768 / 1440 px) unchanged and passing.
+- **Post-repair status:** `VERIFIED` on `0fd86b561326c7895980fffb5c47c8aa6b8585c5`.
 
 ## Required Delivery Report
 

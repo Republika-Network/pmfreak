@@ -12,7 +12,7 @@
 - **Unlocks:** P2-12, P2-20, G2
 - **Risk Level:** high
 - **Expected Review Size:** large
-- **Status:** `NOT_STARTED`
+- **Status:** `VERIFIED` — `P2-10-LINEAGE-FINDING-UNRESOLVED` repaired under authorization; verified on committed SHA `0fd86b561326c7895980fffb5c47c8aa6b8585c5` 2026-09-20. See Verification Evidence — 2026-09-19 (initial blocker) and Post-Repair Verification — 2026-09-20. (Previously recorded `NOT_STARTED`: stale metadata; the 2026-09-19 exact-head pass recorded `BLOCKED`.)
 - **Migration:** possible additive; forward-only, additive if used; destructive changes prohibited.
 
 ## Role
@@ -104,6 +104,60 @@ Expected areas: `src/lib/operational-flow/; src/lib/decision-outcome-engine/; sr
 ## Prohibited Changes
 
 Do not enable remote writeback; delete/fuse legacy models; bypass AOC or membership/RLS; use zero/placeholder hashes; insert Evidence directly where Raw/Event is required; auto-create downstream canonical states; treat Task completion as Outcome; show fixtures as live; hardcode success; weaken tenant isolation; run destructive migration; redesign unrelated UI; or modify unrelated CI/dependencies.
+
+## Verification Evidence — 2026-09-19
+
+Exact-head reconciliation run. Status earlier in this file was historical/stale metadata; it is superseded here, not rewritten.
+
+- **SHA:** `95c928b2ceb8f0f40465965c751ef9c3230a1d8c` (`origin/main`, merge of #613), plus the P2-14 spec reconciliation recorded under P2-14.
+- **Environment:** native Linux scratch clone at that SHA; Node v22.23.1 / npm 10.9.8 (`npm ci`); local Supabase `127.0.0.1:54321`/`54322`, 165/165 migrations through `20260911000000`; Frontera `@aoc-enterprise/runtime` 1.2.1 on a disposable OS-temp SQLite store.
+
+- **Result:** `BLOCKED`. The implementation exists, and its focused suites pass: `npx tsx --test tests/operational-flow-contract.test.mjs tests/decision-outcome-engine.test.mjs` 79/79, and `tests/p2-10-outcome-review-lineage.test.ts` 44/44. The live runtime shows a lineage defect.
+- **Blocker: `P2-10-LINEAGE-FINDING-UNRESOLVED` (product defect).**
+  - `src/lib/operational-flow/operational-flow-service.ts` resolves the Finding as `recommendation?.signal_id || governance?.signal_id`.
+  - Neither column exists. Governed Recommendations link through `recommended_actions.source_signal_id`, and `governance_events` links through `related_entity_type` / `related_entity_id`.
+  - So for every chain produced by `materialize_operational_chain`, the lineage reports the Finding as missing:
+    - step `finding` has status `missing` ("Finding missing.");
+    - gap: "Finding: no operational finding linked.";
+    - Evidence→Finding and Finding→Recommendation are `unlinked`;
+    - the export reports `completeLineageCount: 0` and `overallStatus: incomplete`.
+  - The data link is intact. The Founder chain's Recommendation carries a `source_signal_id` that resolves to an existing Signal in the same workspace.
+  - Reproduced on two independent browser-created chains, outcomes `155ede1d-…` and `c1aba6e9-…`.
+  - The unit fixtures in `tests/p2-10-outcome-review-lineage.test.ts` and `tests/p2-20-audit-export-compatibility-gate.test.ts` use a `signal_id` column the schema does not have, which is why the suites pass.
+- **Verified live on the same chains:**
+  - correlation-only edges are `isCausal: false`;
+  - `taskCompletionImpliesOutcomeAchievement: false`;
+  - the Observation is evidence-backed and LIVE;
+  - AOC-E governance references are present;
+  - the gap is reported, not synthesised;
+  - cross-tenant reads get 403, and an unauthenticated request gets 401.
+- **Smallest proposed repair** (product source; needs separate authorization; no migration):
+  - resolve the Signal from `recommendation.source_signal_id` (and from `governance.related_entity_id` when `related_entity_type` names a signal);
+  - correct both unit fixtures to the real column names;
+  - add a live assertion that the canonical Founder chain exports `completeLineageCount: 1` with no Finding gap.
+
+## Exact-head post-repair verification — 2026-09-20
+
+**Verified executable candidate SHA: `0fd86b561326c7895980fffb5c47c8aa6b8585c5` (C4).**
+
+Chronology, so the record is not read backwards: `95c928b2` is the exact-main baseline on which the blockers were discovered and reproduced — never a SHA carrying the repairs. C1–C3 are the Founder/G2/G3 repair candidate. Exact-head validation of that candidate then surfaced a *pre-existing* governance defect (a revoked Material Action could still be dispatched into a Task and could still start), which reproduces identically at `95c928b2`; C4 repairs it and is the SHA every result in this section was verified on.
+
+The blocker recorded above was repaired under explicit authorization. The 2026-09-19 finding stands as written; this section records what changed and what now holds.
+
+Verified on committed SHA `0fd86b561326c7895980fffb5c47c8aa6b8585c5` (C4 = C1+C2+C3+C4), checked out clean with none of this reconciliation's documentation edits present. Same local environment as the 2026-09-19 pass: Node v22.23.1 / npm 10.9.8, local Supabase `127.0.0.1:54321`/`54322` at migration head `20260911000000` (165/165, unchanged — no migration was added), Frontera `@aoc-enterprise/runtime` 1.2.1 on a fresh disposable OS-temp store.
+
+- **Repair (product):** `src/lib/operational-flow/operational-flow-service.ts` now resolves the Finding through the one durable reference the canonical chain persists, `recommended_actions.source_signal_id`, written by `materialize_operational_chain` as the detected Signal's id. The previous `recommendation.signal_id || governance.signal_id` read two columns no table defines. The dead `governance_events` lookup that existed only to serve it was removed; the query, its error check and tenancy scoping are unchanged. No migration, no schema or RLS change.
+- **Fixture drift corrected:** `tests/p2-10-outcome-review-lineage.test.ts` and `tests/p2-20-audit-export-compatibility-gate.test.ts` carried `signal_id` on `recommended_actions` rows — a column the schema has never defined — which is why both suites stayed green while the live projection could not resolve a Finding. They now use `source_signal_id`, and the P2-10 governance fixture uses `related_entity_type`/`related_entity_id`.
+- **New regression cover** (`tests/p2-10-outcome-review-lineage.test.ts`): the canonical reference resolves the Finding with no false gap and a continuous Evidence→Finding→Recommendation chain; a legacy-shaped `signal_id` is NOT accepted as a Finding reference; a null `source_signal_id` still reports the gap honestly; and an unresolvable reference is a gap rather than a fabricated node.
+- **Mutation-proved:** reintroducing the defective line fails 4 P2-10 and 2 P2-20 tests, including the pre-existing complete-chain assertions. The suites are now load-bearing for this relationship.
+- **Automated:** `tests/p2-10-outcome-review-lineage.test.ts` 48/48; focused P2-10 command 79/79; `npm test` 14,443 pass / 0 fail / 23 skipped.
+- **Live proof** (authenticated lineage and audit export over two independently browser-created Founder chains, outcomes `0f48d161-…` and `9cf281f7-…`):
+  - the Finding step is `intact` and its id equals the persisted `source_signal_id`, confirmed against the database (`ce3f3fbb-…` for the final chain);
+  - `gaps: []`, `gapCount: 0`, `overallStatus: complete`, `completeLineageCount: 1`, `isComplete: true`;
+  - the full 12-node chain Source → Raw Input → Normalized Event → Evidence → Finding → Recommendation → Decision → Action → Task → Execution → Outcome → Observation is present;
+  - Evidence→Finding and Finding→Recommendation are `direct_reference` rather than `unlinked`.
+- **Preserved:** correlation-only edges remain explicitly non-causal, `taskCompletionImpliesOutcomeAchievement` remains `false`, and the AOC-E governance pointer is unchanged.
+- **Post-repair status:** `VERIFIED` on `0fd86b561326c7895980fffb5c47c8aa6b8585c5`.
 
 ## Required Delivery Report
 

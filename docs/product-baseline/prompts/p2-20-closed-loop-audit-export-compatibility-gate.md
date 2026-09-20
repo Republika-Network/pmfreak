@@ -12,7 +12,7 @@
 - **Unlocks:** P2-12, G2
 - **Risk Level:** medium
 - **Expected Review Size:** medium
-- **Status:** `NOT_STARTED`
+- **Status:** `VERIFIED` — dependency P2-10 repaired; verified on committed SHA `0fd86b561326c7895980fffb5c47c8aa6b8585c5` 2026-09-20. See Verification Evidence — 2026-09-19 (initial blocker) and Post-Repair Verification — 2026-09-20. (Previously recorded `NOT_STARTED`: stale metadata; the 2026-09-19 exact-head pass recorded `BLOCKED`.)
 - **Migration:** no/possible additive; forward-only, additive if used; destructive changes prohibited.
 
 ## Role
@@ -104,6 +104,54 @@ Expected areas: `src/lib/decision-governance/; src/lib/operational-flow/; src/li
 ## Prohibited Changes
 
 Do not enable remote writeback; delete/fuse legacy models; bypass AOC or membership/RLS; use zero/placeholder hashes; insert Evidence directly where Raw/Event is required; auto-create downstream canonical states; treat Task completion as Outcome; show fixtures as live; hardcode success; weaken tenant isolation; run destructive migration; redesign unrelated UI; or modify unrelated CI/dependencies.
+
+## Verification Evidence — 2026-09-19
+
+Exact-head reconciliation run. Status earlier in this file was historical/stale metadata; it is superseded here, not rewritten.
+
+- **SHA:** `95c928b2ceb8f0f40465965c751ef9c3230a1d8c` (`origin/main`, merge of #613), plus the P2-14 spec reconciliation recorded under P2-14.
+- **Environment:** native Linux scratch clone at that SHA; Node v22.23.1 / npm 10.9.8 (`npm ci`); local Supabase `127.0.0.1:54321`/`54322`, 165/165 migrations through `20260911000000`; Frontera `@aoc-enterprise/runtime` 1.2.1 on a disposable OS-temp SQLite store.
+
+- **Result:** `BLOCKED`. The dependency P2-10 is `BLOCKED` by `P2-10-LINEAGE-FINDING-UNRESOLVED`, which also makes every canonical-chain export `incomplete`.
+- `npx tsx --test tests/evidence-linked-decisions.test.mjs tests/operational-flow-contract.test.mjs` — 23/23 pass. `tests/p2-20-audit-export-compatibility-gate.test.ts` — 50/50 pass.
+- **Live behaviour** (authenticated `GET /api/operational-flow?view=audit_export` on the browser-created Founder chain):
+  - owner 200, viewer 200;
+  - Tenant B → Tenant A scope 403, no id leaked;
+  - Tenant B's own scope with A's outcome id returns 0 lineages and 0 records, with "Nothing was synthesised";
+  - unknown outcome: 0 lineages, same honesty notes;
+  - no session: 401.
+- **Redaction probes:** no JWT or bearer token, no `service_role`, no password, no email address, no Tenant B identifiers, no causation claim.
+- **`aocBoundary`:**
+  - `allowDecisionWriteback: false`;
+  - `exportedArtifacts: references_and_status_projections_only`;
+  - `governanceReferences` carry the AOC-E `policyDecisionReference` and grant/approval refs, with `authorityOwner: AOC-E`.
+- **Frontera lineage:** `RESPONSE_ONLY_BUT_NOT_REQUIRED_BY_P2_CONTRACT`.
+  - The export contract names the persisted AOC-E evaluation pointer, which is durable on `execution_tasks.source_payload` (`governanceEvaluationId`, `policyReference`).
+  - The Frontera `fronteraDecisionId` is returned on the dispatch response only.
+  - It is persisted in neither PMFreak nor the Frontera authority store, which holds provisioning events only.
+- **Residuals:**
+  - `integrity.containsFixture` is outcome-scoped, so it reads `false` while upstream Source/Evidence steps are labelled `DEMO / FIXTURE` (non-blocking: step-level labels are preserved);
+  - `eventAssociationComplete: false` is a documented limitation.
+
+## Exact-head post-repair verification — 2026-09-20
+
+**Verified executable candidate SHA: `0fd86b561326c7895980fffb5c47c8aa6b8585c5` (C4).**
+
+Chronology, so the record is not read backwards: `95c928b2` is the exact-main baseline on which the blockers were discovered and reproduced — never a SHA carrying the repairs. C1–C3 are the Founder/G2/G3 repair candidate. Exact-head validation of that candidate then surfaced a *pre-existing* governance defect (a revoked Material Action could still be dispatched into a Task and could still start), which reproduces identically at `95c928b2`; C4 repairs it and is the SHA every result in this section was verified on.
+
+The dependency blocker recorded above was repaired under explicit authorization (see P2-10). P2-20 itself needed no product change.
+
+Verified on committed SHA `0fd86b561326c7895980fffb5c47c8aa6b8585c5` (C4 = C1+C2+C3+C4), checked out clean with none of this reconciliation's documentation edits present. Same local environment as the 2026-09-19 pass: Node v22.23.1 / npm 10.9.8, local Supabase `127.0.0.1:54321`/`54322` at migration head `20260911000000` (165/165, unchanged — no migration was added), Frontera `@aoc-enterprise/runtime` 1.2.1 on a fresh disposable OS-temp store.
+
+- **Automated:** `tests/p2-20-audit-export-compatibility-gate.test.ts` 50/50 (its fixtures now bind to the real `source_signal_id` relationship); focused P2-20 command 23/23.
+- **Live export** on the final browser-created chain (outcome `9cf281f7-…`), authenticated:
+  - Finding included, no false Finding gap, `completeLineageCount: 1`, `overallStatus: complete`, `gaps: []`;
+  - redaction probes clean — no JWT or bearer token, no `service_role`, no password, no email address, no Tenant B identifier, no causation claim;
+  - Tenant B → Tenant A scope 403 with no id leaked; Tenant B's own scope queried with A's outcome id returns 0 lineages and 0 records with "Nothing was synthesised"; an unknown outcome behaves identically; no session 401; viewer 200;
+  - `aocBoundary` unchanged: `allowDecisionWriteback: false`, `exportedArtifacts: references_and_status_projections_only`, `authorityOwner: AOC-E` with the persisted `policyDecisionReference` and grant references.
+- **Frontera lineage classification is unchanged:** `RESPONSE_ONLY_BUT_NOT_REQUIRED_BY_P2_CONTRACT`. No persistence and no migration was added; the durable pointer remains the PMFreak governance evaluation/policy reference carried in task provenance. The dated correction in `docs/release/p0-pkg-06-frontera-enforcement-boundary.md` stands.
+- **Residual (non-blocking, unchanged):** `integrity.containsFixture` is outcome-scoped, so it reads `false` while upstream Source/Evidence steps are labelled `DEMO / FIXTURE`; step-level labels are preserved. `eventAssociationComplete: false` remains a documented limitation.
+- **Post-repair status:** `VERIFIED` on `0fd86b561326c7895980fffb5c47c8aa6b8585c5`.
 
 ## Required Delivery Report
 

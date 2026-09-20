@@ -12,7 +12,7 @@
 - **Unlocks:** P2-10
 - **Risk Level:** high
 - **Expected Review Size:** large
-- **Status:** `NOT_STARTED`
+- **Status:** `VERIFIED` — exact-head verified 2026-09-19 at `95c928b2`; re-verified on committed SHA `0fd86b561326c7895980fffb5c47c8aa6b8585c5` 2026-09-20. See Verification Evidence — 2026-09-19 and Post-Repair Verification — 2026-09-20. (Previously recorded `NOT_STARTED`: stale metadata.)
 - **Migration:** yes additive likely; forward-only, additive if used; destructive changes prohibited.
 
 ## Role
@@ -104,6 +104,33 @@ Expected areas: `src/lib/decision-outcome-engine/; src/lib/operational-decision-
 ## Prohibited Changes
 
 Do not enable remote writeback; delete/fuse legacy models; bypass AOC or membership/RLS; use zero/placeholder hashes; insert Evidence directly where Raw/Event is required; auto-create downstream canonical states; treat Task completion as Outcome; show fixtures as live; hardcode success; weaken tenant isolation; run destructive migration; redesign unrelated UI; or modify unrelated CI/dependencies.
+
+## Verification Evidence — 2026-09-19
+
+Exact-head reconciliation run. Status earlier in this file was historical/stale metadata; it is superseded here, not rewritten.
+
+- **SHA:** `95c928b2ceb8f0f40465965c751ef9c3230a1d8c` (`origin/main`, merge of #613), plus the P2-14 spec reconciliation recorded under P2-14.
+- **Environment:** native Linux scratch clone at that SHA; Node v22.23.1 / npm 10.9.8 (`npm ci`); local Supabase `127.0.0.1:54321`/`54322`, 165/165 migrations through `20260911000000`; Frontera `@aoc-enterprise/runtime` 1.2.1 on a disposable OS-temp SQLite store.
+
+- **Result:** `VERIFIED` on this SHA.
+- `npx tsx --test tests/decision-outcome-engine.test.mjs tests/agent-controlled-execution-result-reconciliation-human-outcome-review.test.mjs` — 180/180 pass.
+- `tests/p2-09-outcome-observation-contract.test.ts` — 7/7 pass.
+- `npm run check:p2-09-db` — PASS, 74 assertions (baseline 74). A completed Task leaves the Outcome `expected`; only an explicit LIVE evidence-backed Observation moves it. The Observation emits `canonical_outcome_learning_candidate.v1`. Fixture Evidence is refused.
+- `npm run check:operational-flow-db` — PASS. `npm run check:aoc-boundaries` — PASS. `npm run check:no-local-auth-bypass` — PASS.
+- `npm run typecheck` — PASS. `npm run lint` — 0 errors. `npm run build` — PASS. `git diff --check` — clean.
+- Browser: the P2-14 journey (STEP_14–STEP_16b, 38/38, run twice) shows Task completion ≠ Outcome achievement, an explicit expected Outcome, an evidence-backed Observation and idempotent retry.
+- **Residuals:** none specific to P2-09.
+
+## Exact-head post-repair verification — 2026-09-20
+
+**Verified executable candidate SHA: `0fd86b561326c7895980fffb5c47c8aa6b8585c5` (C4).**
+
+Chronology, so the record is not read backwards: `95c928b2` is the exact-main baseline on which the blockers were discovered and reproduced — never a SHA carrying the repairs. C1–C3 are the Founder/G2/G3 repair candidate. Exact-head validation of that candidate then surfaced a *pre-existing* governance defect (a revoked Material Action could still be dispatched into a Task and could still start), which reproduces identically at `95c928b2`; C4 repairs it and is the SHA every result in this section was verified on.
+
+Re-verified unchanged on committed SHA `0fd86b561326c7895980fffb5c47c8aa6b8585c5` (C4). Nothing in this prompt's scope was modified by either repair.
+
+- Automated and live evidence re-run and green: the G2 database gates (`operational-flow-db`, `p2-06-db` 50, `p2-07-db` 252, `p2-08-db` 155, `p2-09-db` 74, `p2-13-db`, `p2-14-db` 38), decision integrity (770 assertions, 12 concurrent rounds, zero HTTP 500), this prompt's focused suites, and the P2-14 browser journey at 38/38.
+- `npm run typecheck`, `npm run lint` (0 errors), `npm test` (0 fail) and `npm run build` all pass; `git diff --check` is clean.
 
 ## Required Delivery Report
 
