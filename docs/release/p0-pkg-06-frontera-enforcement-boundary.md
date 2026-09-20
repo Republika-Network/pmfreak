@@ -882,6 +882,29 @@ infrastructure diagnostic are logged server-side and deliberately not returned t
 the client: they are what an operator needs and precisely what an arbitrary
 caller should not learn about another system's authority structure.
 
+> **Correction — 2026-09-19 exact-head reconciliation at `95c928b2`.** Two statements
+> above do not hold, as verified on the running system:
+>
+> 1. **Not reconstructible from Frontera.** The diagram's "Frontera's own audit
+>    trail, correlated by requestId" is not reconstructible after the response.
+>    `AocKernel.evaluate()` keeps its enforcement decision in a per-request,
+>    in-memory store. The durable SQLite authority store holds only operator
+>    provisioning: after two full P2-14 runs that minted real ALLOW decisions,
+>    each store contained 7 `KernelAuthorityEntityProvisioned` events and no
+>    decision.
+> 2. **Not in PMFreak either.** No PMFreak table or column holds the decision id.
+> 3. **Only denials are logged.** "Logged server-side" applies to refusals only;
+>    an ALLOW decision id is not logged.
+> 4. **"Recorded" was not true.** "That limitation is recorded" had no matching
+>    entry in `residual-risk-register.md`. This note is where it is recorded.
+>
+> **What is durable.** The Action → Task edge carries the PMFreak AOC-E governance
+> pointer: `governanceEvaluationId`, `policyReference` and grant references in the
+> immutable `execution_tasks.source_payload`. That pointer is what the P2-20 export
+> contract names. Classification: `RESPONSE_ONLY_BUT_NOT_REQUIRED_BY_P2_CONTRACT`.
+> Durable Frontera decision lineage would need an additive migration in PMFreak or a
+> durable decision record in Frontera, and requires separate authorization.
+
 ## Verification (Phase B (ii), against 1.1.0)
 
 ```

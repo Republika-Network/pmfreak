@@ -197,6 +197,12 @@ The authoritative linked manifest is in [`prompts/README.md`](prompts/README.md)
 
 Update only after real verification; generated code is not progress.
 
+**Gate status — exact-head reconciliation 2026-09-19, authorized repairs 2026-09-20.** The exact-main pass at `95c928b2` found two product defects and recorded G2 `BLOCKED` (`P2-10-LINEAGE-FINDING-UNRESOLVED`, which also blocked P2-20) and G3 `BLOCKED` (that, plus `D1-INVITE-ACCEPT-LAYOUT-RACE` and the P2-12 → P2-14 → P2-15 dependency chain). Both were repaired under explicit authorization. Exact-head validation of that candidate then surfaced a THIRD, pre-existing defect that `95c928b2` shares: governance precedence was decided by `evaluated_at`, a descriptive timestamp supplied by the writer, so a committed and visible revocation could be masked by an authorization that merely sorted newer — a revoked Material Action could still be dispatched into a canonical Task and a revoked queued execution could still start. That is repaired too, by making revocation terminal at both execution boundaries.
+
+**G2 `VERIFIED`** and **G3 `VERIFIED`** on committed SHA `0fd86b561326c7895980fffb5c47c8aa6b8585c5` (C4), verified from a clean checkout carrying C1–C4 and none of this reconciliation's documentation edits.
+
+`95c928b2` is the blocker-discovery baseline and never carried the repairs. The decisive evidence on C4: the canonical chain Source → … → Observation exports complete with the Finding resolved and no false gap; invite acceptance lands on `/team` with the membership already committed and no stray workspace; a revocation recorded with a timestamp deliberately OLDER than the authorization it revokes still refuses both dispatch and start (10/10 each, alongside 10/10 ordinary flows); the P2-14 browser journey passes 38/38; and `check:beta-release` returns CONDITIONAL GO with Dependency Security the only (advisory) warning. Each prompt's "Verification Evidence — 2026-09-19" and "Exact-head post-repair verification — 2026-09-20" sections carry the chronology. P2-03 to P2-08 were re-verified on the same SHA.
+
 | Prompt ID | WP | Track | Status | Branch/Commit | Dependencies | Tests | Gate | Blocker | Next |
 |---|---|---|---|---|---|---|---|---|---|
 | P2-01 | WP1 | A | VERIFIED | `work` / P2-01 commit | none | 242 focused + 6 spine; typecheck/lint/AOC | contributes to G1 | — | P2-02 |
@@ -206,19 +212,19 @@ Update only after real verification; generated code is not progress.
 | P2-05 | WP3 | B | VERIFIED | `build/p2-05-material-action-governance-contract` / P2-05 commit | G1 VERIFIED | 26 focused/AOC/no-bypass; typecheck; lint 0 errors/614 warnings; build 411 pages; targeted ESLint | passed; contract-only, no migration/UI/runtime mutation | — | P2-06 unlocked after review; do not auto-start |
 | P2-06 | WP3 | B/A/C | VERIFIED | `build/p2-06-in-process-aoc-decision-to-action` / P2-06 commit | P2-04 and P2-05 VERIFIED | 30 focused; isolated fresh DB + 46 P2-06 RPC/RLS/concurrency assertions; authenticated browser; Linux Governance Gate 12,907/12,907 passed with 17 skips; typecheck; lint 0 errors/614 warnings; build; AOC/auth-bypass | passed; contributes to G2, which remains NOT VERIFIED | — | P2-07 and P2-11 unlocked; do not auto-start |
 | P2-07 | WP4 | A | VERIFIED | `build/p2-07-canonical-action-to-task-adapter` / P2-07 commit | P2-06 VERIFIED | 10 focused; 108 execution-task regressions; isolated fresh DB; 115 P2-07 RPC/RLS/idempotency/concurrency assertions; concurrency 2/5/10 each produced exactly one Task; P2-06 DB 46 assertions; typecheck; targeted ESLint exit 0; build; AOC/auth-bypass | passed; contributes to G2, which remains NOT VERIFIED | repo-wide lint baseline remains nonzero; P2-07 changed lintable files have zero errors | P2-08 unlocked; do not auto-start |
-| P2-08 | WP4 | — | NOT_STARTED | — | see prompt | — | — | — | — |
-| P2-09 | WP5 | — | NOT_STARTED | — | see prompt | — | — | — | — |
-| P2-10 | WP5 | — | NOT_STARTED | — | see prompt | — | — | — | — |
-| P2-11 | WP6 | — | NOT_STARTED | — | see prompt | — | — | — | — |
-| P2-12 | WP6 | — | NOT_STARTED | — | see prompt | — | — | — | — |
-| P2-13 | WP7 | — | NOT_STARTED | — | see prompt | — | — | — | — |
-| P2-14 | WP7 | — | NOT_STARTED | — | see prompt | — | — | — | — |
-| P2-15 | WP7 | — | NOT_STARTED | — | see prompt | — | — | — | — |
+| P2-08 | WP4 | A/C | VERIFIED | `0fd86b56` (C4) | P2-07 VERIFIED | P2-08 DB 176 assertions (155 + terminal-revocation regression); 130 focused; 13 contract; browser via P2-14 STEP_13 | contributes to G2 | — | — |
+| P2-09 | WP5 | A | VERIFIED | `95c928b2` (2026-09-19); re-verified `0fd86b56` (C4) | P2-08 VERIFIED | P2-09 DB 74 assertions; 180 focused + 7 contract; browser via P2-14 STEP_14–16b | contributes to G2 | — | — |
+| P2-10 | WP5 | A/C | VERIFIED | `0fd86b56` (C4) | P2-09 VERIFIED | 48 P2-10 (4 new finding-resolution) + 79 focused; live lineage/export complete on 2 browser-created chains | contributes to G2 | — (was `P2-10-LINEAGE-FINDING-UNRESOLVED`; repaired) | — |
+| P2-11 | WP6 | C | VERIFIED | `95c928b2` (2026-09-19); re-verified `0fd86b56` (C4) | P2-04, G1, P2-06 VERIFIED | 205 focused + 40 P2-11; browser via P2-14 STEP_07–10 | contributes to G3 | — | — |
+| P2-12 | WP6 | C | VERIFIED | `0fd86b56` (C4) | P2-10 VERIFIED | 205 focused + 95 P2-12; browser STEP_11–16c, a11y, responsive | contributes to G3 | — (was dependency P2-10) | — |
+| P2-13 | WP7 | D | VERIFIED | `95c928b2` (2026-09-19); re-verified `0fd86b56` (C4) | P2-04, G1 VERIFIED | preflight/reseed/verify COMPLETE; check:p2-13-db PASS; 15 + 37 tests; minimum Frontera provisioning audited | contributes to G3 | — | — |
+| P2-14 | WP7 | D | VERIFIED | `0fd86b56` (C4) + spec reconciliation | P2-12, P2-13 VERIFIED | Chromium 38/38; check:p2-14-db 38; invite acceptance 12/12 with 0 stray workspaces; 7 new isolation tests | contributes to G3 | — (was dependency P2-12 + `D1-INVITE-ACCEPT-LAYOUT-RACE`; both repaired) | — |
+| P2-15 | WP7 | D | VERIFIED | `0fd86b56` (C4) | P2-14 VERIFIED | governance/AOC/no-bypass/Frontera/security-definer/release/compliance/fresh-DB PASS; beta-release CONDITIONAL GO with rehearsal 28/28 | G3 VERIFIED | — (was dependency P2-14) | — |
 | P2-16 | WP8 | — | NOT_STARTED | — | see prompt | — | — | — | — |
 | P2-17 | WP9 | — | NOT_STARTED | — | see prompt | — | — | — | — |
 | P2-18 | WP10 | — | NOT_STARTED | — | see prompt | — | — | — | — |
 | P2-19 | WP10 | — | NOT_STARTED | — | see prompt | — | — | — | — |
-| P2-20 | WP5 | — | NOT_STARTED | — | see prompt | — | — | — | — |
+| P2-20 | WP5 | D/A | VERIFIED | `0fd86b56` (C4) | P2-10 VERIFIED | 23 focused + 50 P2-20; live export: Finding included, no false gap, redaction and tenancy PASS | G2 VERIFIED | — (was dependency P2-10) | — |
 
 ## P2 Approval Checklist
 
