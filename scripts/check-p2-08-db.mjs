@@ -572,6 +572,78 @@ equal(startAfterRevoke.body.governanceState, "revoked", "start denial preserves 
 equal(startAfterRevoke.body.executionState, "queued", "queued history preserved after revocation");
 equal(await countExecutions(revokeAfterQueue.task.id), 1, "historical queued execution remains");
 
+// Revocation is TERMINAL, and it is not a race between timestamps.
+//
+// `evaluated_at` is a descriptive time supplied by the writer — the revoke API accepts one
+// from the caller, while a proposal's authorization is stamped separately server-side — so
+// it cannot order two independent transactions. Selecting governance by
+// `order by evaluated_at desc` alone therefore let a committed, visible revocation be
+// masked by an authorization that merely sorted newer, and a revoked queued execution
+// could still start.
+//
+// The revocation here is recorded with a descriptive time deliberately EARLIER than the
+// authorization it revokes. No sleep and no retry: the revoke response is awaited and the
+// persisted rows are read back before `start`, so the only question under test is whether
+// existence beats recency.
+const inverted = await createGovernedTask(
+  ownerCookie,
+  workspaceA,
+  projectA,
+  `revoke-inverted-${suffix}`,
+);
+const invertedQueued = await internalExecution(ownerCookie, inverted.task.id, "queue");
+equal(invertedQueued.status, 201, "inverted-timestamp fixture queues before revocation");
+
+const invertedAuthorization = await admin
+  .from("material_action_governance_evaluations")
+  .select("id,governance_state,evaluated_at")
+  .eq("action_id", inverted.actionId)
+  .eq("governance_state", "authorized")
+  .single();
+assert.ifError(invertedAuthorization.error);
+const invertedAuthorizedAt = new Date(invertedAuthorization.data.evaluated_at);
+
+const invertedRevoke = await operational(ownerCookie, {
+  operation: "revoke_material_action",
+  workspaceId: workspaceA,
+  projectId: projectA,
+  actionId: inverted.actionId,
+  evaluationTime: new Date(invertedAuthorizedAt.getTime() - 1_000).toISOString(),
+  reasonCode: "p2_08_terminal_revocation_inverted_timestamps",
+});
+check([200, 201].includes(invertedRevoke.status), "inverted-timestamp revocation recorded");
+
+// The revocation is durable and visible BEFORE start is attempted, and it really does sort
+// older than the authorization — otherwise this scenario would prove nothing.
+const invertedEvaluations = await admin
+  .from("material_action_governance_evaluations")
+  .select("governance_state,evaluated_at")
+  .eq("action_id", inverted.actionId);
+assert.ifError(invertedEvaluations.error);
+const invertedRevokedRow = invertedEvaluations.data.find((row) => row.governance_state === "revoked");
+check(Boolean(invertedRevokedRow), "inverted-timestamp revocation is persisted before start");
+check(
+  new Date(invertedRevokedRow.evaluated_at) < invertedAuthorizedAt,
+  "the revocation deliberately sorts OLDER than the authorization it revokes",
+);
+check(
+  [...invertedEvaluations.data].sort((a, b) => String(b.evaluated_at).localeCompare(String(a.evaluated_at)))[0]
+    .governance_state === "authorized",
+  "recency ordering alone would select the authorization",
+);
+
+const invertedStart = await internalExecution(ownerCookie, inverted.task.id, "start");
+equal(invertedStart.status, 409, "revoked queued execution cannot start despite a newer authorization timestamp");
+equal(invertedStart.body.governanceState, "revoked", "terminal revocation reports the revoked state");
+equal(invertedStart.body.executionState, "queued", "queued history preserved under terminal revocation");
+equal(await countExecutions(inverted.task.id), 1, "terminal revocation adds no execution row");
+const invertedExecution = await getExecution(ownerCookie, inverted.task.id);
+equal(
+  invertedExecution.body.execution.status,
+  "queued",
+  "terminally revoked execution never transitioned to running",
+);
+
 const anonymous = await internalExecution(null, revokeAfterQueue.task.id, "start");
 equal(anonymous.status, 401, "anonymous execution command rejected");
 

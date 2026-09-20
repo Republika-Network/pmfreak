@@ -336,11 +336,27 @@ test("P2-12 H5: P2-12 introduced no migration and no new API route, and no LATER
   // `search_path`, with the PUBLIC revoke and `authenticated` grant re-issued. It carries
   // its own acceptance in tests/ux-w3-needs-you-interaction-quality.test.mjs.
   //
+  // Terminal revocation ships exactly one: a forward-only `create or replace` of the two
+  // canonical execution boundaries, `dispatch_governed_action_to_internal_task` and
+  // `p2_08_validate_execution_governance`. Both chose governance by `order by evaluated_at
+  // desc` and trusted the winner, but `evaluated_at` is a descriptive time supplied by the
+  // writer — the revoke API accepts one from the caller, while a proposal's authorization is
+  // stamped separately server-side — so a committed, visible revocation could be masked by
+  // an authorization that merely sorted newer: a revoked Action still became a canonical
+  // Task, and a revoked queued execution still started. Both now refuse on the EXISTENCE of
+  // a revoked evaluation for the exact canonical scope, using each boundary's existing
+  // denial vocabulary. No schema, table, column, index, trigger, RLS, policy, data or
+  // signature change; SECURITY DEFINER and pinned `search_path` preserved, and the grants
+  // are re-asserted exactly as 20260910000000 established them. It carries its own
+  // acceptance in scripts/check-p2-07-db.mjs and scripts/check-p2-08-db.mjs, which record a
+  // revocation timestamped OLDER than the authorization it revokes and prove it still wins.
+  //
   // Exact full paths only: no wildcard, no timestamp prefix, no directory grant. Anything
   // not named here still fails this assertion, which is the protection P2-12 actually needs.
   const REVIEWED_LATER_MIGRATIONS = new Set([
     "supabase/migrations/20260907000000_p2_14_intake_source_classification_hardening.sql",
     "supabase/migrations/20260908000000_p2_02_attention_membership_snapshot.sql",
+    "supabase/migrations/20260912000000_material_action_terminal_revocation.sql",
   ]);
   const unreviewedMigrations = changed
     .filter((file) => file.startsWith("supabase/migrations/"))
