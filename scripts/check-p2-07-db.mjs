@@ -930,6 +930,82 @@ expectFronteraAllow(revokedDispatch, revokedId, "revoked governance");
 equal(revokedDispatch.body.governanceState, "revoked", "revoked state preserved");
 equal(await countTasksForAction(revokedId), 0, "revoked before dispatch creates zero Tasks");
 
+// Revocation is TERMINAL, and it is not a race between timestamps.
+//
+// `evaluated_at` is a descriptive time supplied by the writer — the revoke API accepts
+// one from the caller, while a proposal's authorization is stamped separately
+// server-side — so it cannot order two independent transactions. Selecting governance by
+// `order by evaluated_at desc` alone therefore let a committed, visible revocation be
+// masked by an authorization that merely sorted newer: this exact case created a
+// canonical Task for a revoked Action, with a genuine Frontera ALLOW minted for it.
+//
+// The revocation here is recorded with a descriptive time deliberately EARLIER than the
+// authorization it revokes, which is the adversarial ordering. No sleep and no retry: the
+// revoke response is awaited and the persisted rows are read back before dispatch, so the
+// only question under test is whether existence beats recency.
+const invertedDecision = await makeDecision(
+  ownerCookie,
+  workspaceA,
+  projectA,
+  `revoked-inverted-${suffix}`,
+);
+const invertedAction = await proposeAction(
+  ownerCookie,
+  workspaceA,
+  projectA,
+  invertedDecision.decisionId,
+  `revoked-inverted-${suffix}`,
+);
+const invertedId = invertedAction.proposal.id;
+const invertedAuthorization = await admin
+  .from("material_action_governance_evaluations")
+  .select("id,governance_state,evaluated_at")
+  .eq("action_id", invertedId)
+  .eq("governance_state", "authorized")
+  .single();
+assert.ifError(invertedAuthorization.error);
+const invertedAuthorizedAt = new Date(invertedAuthorization.data.evaluated_at);
+const invertedRevokedAt = new Date(invertedAuthorizedAt.getTime() - 1_000);
+const invertedRevoked = await api(ownerCookie, {
+  operation: "revoke_material_action",
+  workspaceId: workspaceA,
+  projectId: projectA,
+  actionId: invertedId,
+  evaluationTime: invertedRevokedAt.toISOString(),
+  reasonCode: "p2_07_terminal_revocation_inverted_timestamps",
+});
+check([200, 201].includes(invertedRevoked.status), "inverted-timestamp revocation recorded");
+
+// The revocation is durable and visible BEFORE dispatch is attempted, and it really does
+// sort older than the authorization — otherwise this scenario would prove nothing.
+const invertedEvaluations = await admin
+  .from("material_action_governance_evaluations")
+  .select("governance_state,evaluated_at")
+  .eq("action_id", invertedId);
+assert.ifError(invertedEvaluations.error);
+const invertedRevokedRow = invertedEvaluations.data.find((row) => row.governance_state === "revoked");
+check(Boolean(invertedRevokedRow), "inverted-timestamp revocation is persisted before dispatch");
+check(
+  new Date(invertedRevokedRow.evaluated_at) < invertedAuthorizedAt,
+  "the revocation deliberately sorts OLDER than the authorization it revokes",
+);
+check(
+  [...invertedEvaluations.data].sort((a, b) => String(b.evaluated_at).localeCompare(String(a.evaluated_at)))[0]
+    .governance_state === "authorized",
+  "recency ordering alone would select the authorization",
+);
+
+const invertedDispatch = await dispatch(ownerCookie, workspaceA, projectA, invertedId);
+equal(invertedDispatch.status, 409, "revoked Action rejected despite a newer authorization timestamp");
+equal(
+  invertedDispatch.body.failureClass,
+  "governance_not_dispatchable",
+  "terminal revocation uses the canonical dispatch refusal",
+);
+equal(invertedDispatch.body.governanceState, "revoked", "terminal revocation reports the revoked state");
+equal(await countTasksForAction(invertedId), 0, "terminally revoked Action creates zero Tasks");
+equal(await countExecutionsForAction(invertedId), 0, "terminally revoked Action creates zero executions");
+
 // A. The browser does not own the governance window (P2-12). A caller-supplied
 //    stale window through the HTTP route is ignored: the server persists its own
 //    one-hour window, so the Action is NOT expired and remains dispatchable.
