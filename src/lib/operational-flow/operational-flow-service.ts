@@ -966,7 +966,6 @@ export async function getCompleteLineageProjection(
     decisionLinksByDecisionId.set(String(link.decision_record_id), list);
   }
   const recommendationsById = new Map((recommendationsRes.data ?? []).map((r) => [String(r.id), r]));
-  const governanceById = new Map((governanceRes.data ?? []).map((r) => [String(r.id), r]));
   const signalsById = new Map((signalsRes.data ?? []).map((r) => [String(r.id), r]));
   const evidenceById = new Map((evidenceRes.data ?? []).map((r) => [String(r.id), r]));
   const eventsById = new Map((eventsRes.data ?? []).map((r) => [String(r.id), r]));
@@ -1014,9 +1013,16 @@ export async function getCompleteLineageProjection(
     const decisionId = action?.source_decision_id || (action?.proposal as Record<string, unknown> | undefined)?.decisionReferenceId;
     const decision = decisionId ? decisionsById.get(String(decisionId)) : undefined;
     const recommendation = decision?.recommendation_id ? recommendationsById.get(String(decision.recommendation_id)) : undefined;
-    const governanceId = decision?.governance_event_id || recommendation?.governance_event_id;
-    const governance = governanceId ? governanceById.get(String(governanceId)) : undefined;
-    const signalId = recommendation?.signal_id || governance?.signal_id;
+    // The Finding is reached through the ONE durable reference the canonical chain
+    // persists: `recommended_actions.source_signal_id`, written by
+    // `materialize_operational_chain` as the detected Signal's id.
+    //
+    // This previously read `recommendation.signal_id || governance.signal_id`. Neither
+    // column exists — `recommended_actions` owns `source_signal_id` and `governance_events`
+    // relates through `related_entity_type`/`related_entity_id` — so the Finding never
+    // resolved for any governed chain, and every lineage reported a false
+    // "Finding: no operational finding linked." gap while the row was right there.
+    const signalId = recommendation?.source_signal_id;
     const signal = signalId ? signalsById.get(String(signalId)) : undefined;
 
     // Upstream evidence for decision

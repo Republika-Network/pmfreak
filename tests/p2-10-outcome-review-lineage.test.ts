@@ -424,7 +424,8 @@ test("P2-10: Mocked complete lineage graph correctly traces Evidence → Finding
         id: recId,
         workspace_id: workspaceId,
         project_id: projectId,
-        signal_id: signalId,
+        // Schema-truthful: the Finding reference `recommended_actions` actually owns.
+        source_signal_id: signalId,
         governance_event_id: "gov-001",
         title: "Request sign-off",
         proposed_action: "Send sign-off packet",
@@ -438,7 +439,9 @@ test("P2-10: Mocked complete lineage graph correctly traces Evidence → Finding
         id: "gov-001",
         workspace_id: workspaceId,
         project_id: projectId,
-        signal_id: signalId,
+        // `governance_events` owns no signal column; it relates by entity type/id.
+        related_entity_type: "operational_signal",
+        related_entity_id: signalId,
         rule_key: "rule:sponsor_signoff_req",
         governance_status: "compliant",
         authority_required: "pm_lead",
@@ -1250,7 +1253,7 @@ test("P2-10 T10: when the primary evidence is not one of the links, all links ar
       id: "rec-r1",
       workspace_id: WS,
       project_id: PRJ,
-      signal_id: "sig-r1",
+      source_signal_id: "sig-r1",
       governance_event_id: null,
       title: "Recommendation",
       proposed_action: "Act",
@@ -1593,4 +1596,105 @@ test("P2-10: API route validates input, tenant scoping, and authorized roles for
   assert.match(apiRouteCode, /view === "lineage"/);
   assert.match(apiRouteCode, /view === "audit"/);
   assert.match(apiRouteCode, /OBSERVATION_STATES\.has\(observationState\)/);
+});
+
+// ─── Finding resolution: the canonical Recommendation → Signal reference ─────
+//
+// Regression cover for `P2-10-LINEAGE-FINDING-UNRESOLVED`. The projection used to read
+// `recommendation.signal_id || governance.signal_id`, and no table defines either column:
+// `recommended_actions` owns `source_signal_id` (written by `materialize_operational_chain`
+// as the detected Signal's id) and `governance_events` relates by entity type/id. Every
+// governed chain therefore reported a Finding gap that did not exist. These tests bind to
+// the real column, so reintroducing the stale one fails here instead of only in production.
+
+const findingSignal = (over: Row = {}): Row => ({
+  id: "sig-r1",
+  workspace_id: WS,
+  project_id: PRJ,
+  evidence_item_id: "ev-r1",
+  signal_type: "scope_creep",
+  severity: "high",
+  confidence_score: 0.91,
+  summary: "Work outside the agreed scope was requested.",
+  created_at: "2026-08-13T07:15:00Z",
+  ...over,
+});
+
+const findingRecommendation = (over: Row = {}): Row => ({
+  id: "rec-r1",
+  workspace_id: WS,
+  project_id: PRJ,
+  source_signal_id: "sig-r1",
+  governance_event_id: null,
+  title: "Request formal scope confirmation",
+  proposed_action: "Raise a change request",
+  urgency: "high",
+  status: "accepted",
+  created_at: "2026-08-13T07:20:00Z",
+  ...over,
+});
+
+const findingDb = (recommendationOver: Row = {}, signals: unknown[] = [findingSignal()]) =>
+  repairDb({
+    canonical_task_outcomes: [repairOutcome()],
+    material_action_proposals: [repairAction()],
+    material_action_governance_evaluations: [repairEvaluation()],
+    operational_decision_records: [repairDecision({ recommendation_id: "rec-r1" })],
+    recommended_actions: [findingRecommendation(recommendationOver)],
+    operational_signals: signals,
+    evidence_items: [repairEvidence()],
+  });
+
+const FINDING_GAP = "Finding: no operational finding linked.";
+
+test("P2-10 finding: recommended_actions.source_signal_id resolves the Finding node, with no false gap", async () => {
+  const proj = await runLineage(findingDb());
+
+  const finding = stepOf(proj, "finding");
+  assert.equal(finding.id, "sig-r1", "the Finding is the Signal the Recommendation references");
+  assert.notEqual(finding.status, "missing");
+  assert.equal(finding.gapReason, null);
+  assert.match(finding.title, /scope creep/);
+  assert.equal((finding.entity as Row | null)?.id, "sig-r1", "the Finding carries the persisted Signal row");
+  assert.ok(!proj.gaps.includes(FINDING_GAP), `unexpected Finding gap: ${JSON.stringify(proj.gaps)}`);
+
+  // The chain is continuous across the Finding rather than broken on both sides of it.
+  for (const [fromKind, toKind] of [["evidence", "finding"], ["finding", "recommendation"]]) {
+    const transition = proj.transitions.find((t) => t.fromKind === fromKind && t.toKind === toKind);
+    assert.ok(transition, `expected a ${fromKind} -> ${toKind} transition`);
+    assert.notEqual(transition.relationship, "unlinked", `${fromKind} -> ${toKind} must not be a lineage gap`);
+  }
+});
+
+test("P2-10 finding: a legacy-shaped `signal_id` is NOT a Finding reference", async () => {
+  // The exact drift that hid the defect: only the non-existent column is present. Resolving
+  // a Finding from it would mean the projection reads a field the schema never persists.
+  const proj = await runLineage(
+    findingDb({ source_signal_id: null, signal_id: "sig-r1" } as Row),
+  );
+
+  const finding = stepOf(proj, "finding");
+  assert.equal(finding.id, null);
+  assert.equal(finding.status, "missing");
+  assert.equal((stepOf(proj, "finding").entity as Row | null) ?? null, null, "no Signal row is attached");
+  assert.ok(proj.gaps.includes(FINDING_GAP), "an unresolvable Finding is still reported as a gap");
+});
+
+test("P2-10 finding: a Recommendation with no source_signal_id reports the gap honestly", async () => {
+  const proj = await runLineage(findingDb({ source_signal_id: null }));
+
+  assert.equal(stepOf(proj, "finding").status, "missing");
+  assert.equal((stepOf(proj, "finding").entity as Row | null) ?? null, null, "no Signal row is attached");
+  assert.ok(proj.gaps.includes(FINDING_GAP));
+  assert.notEqual(proj.lineageStatus, "complete");
+});
+
+test("P2-10 finding: a source_signal_id with no in-scope Signal is a gap, never a fabricated node", async () => {
+  const proj = await runLineage(findingDb({ source_signal_id: "sig-not-in-scope" }, []));
+
+  const finding = stepOf(proj, "finding");
+  assert.equal(finding.status, "missing");
+  assert.equal(finding.id, null, "an unresolvable reference must not be echoed as a canonical id");
+  assert.equal((stepOf(proj, "finding").entity as Row | null) ?? null, null, "no Signal row is attached");
+  assert.ok(proj.gaps.includes(FINDING_GAP));
 });
