@@ -715,6 +715,103 @@ test("P2-17 G4: Findings and Recommendations that are not P2-16 schedule evidenc
   assert.equal(staleFinding.freshness.state, "stale");
 });
 
+// ── Provenance lookups resolve every requested id (G4 P1 review follow-up) ────────────────
+
+/** Ids in a segment ("7…") that sorts before every scenario id ("8000"), so fillers come first. */
+const filler = (segment: string, i: number) => `00000000-0000-4000-${segment}-${i.toString(16).padStart(12, "0")}`;
+
+/**
+ * 300 unrelated Findings and 300 unrelated Recommendations on Orion, each with its own Signal and
+ * Evidence: 600+ Signal ids and 600+ Evidence ids to resolve, all sorting before the P2-16 ones —
+ * which a single 500-row page would therefore drop. Risks and Recommendations stay under their own
+ * 500-row caps, so only the id-keyed lookups are exercised.
+ */
+function withManyUnrelatedSignals(w: ReturnType<typeof world>) {
+  for (let i = 0; i < 600; i++) {
+    const evidenceId = filler("7e00", i);
+    const signalId = filler("7500", i);
+    w.tables.evidence_items.push(ev(evidenceId, ORION));
+    w.tables.operational_signals.push(signal(signalId, ORION, evidenceId, 70));
+    if (i < 300) w.tables.risk_issue_records.push(risk(filler("7100", i), ORION, signalId, "high", { title: `Unrelated finding ${i}` }));
+    else w.tables.recommended_actions.push(rec(filler("7300", i), ORION, signalId, "low", { title: `Unrelated recommendation ${i}` }));
+  }
+  return w;
+}
+
+const idLookups = (queries: Array<{ table: string; filters: Array<{ op: string; column: string; value?: unknown }> }>, table: string) =>
+  queries.filter((q) => q.table === table).map((q) => q.filters.find((f) => f.op === "in" && f.column === "id")?.value as string[] | undefined).filter((v): v is string[] => Array.isArray(v));
+
+test("P2-17 G4: >500 requested Signal ids are all resolved, so P2-16 provenance past the old cutoff is still recognised", async () => {
+  // Schedule read unavailable: the P2-16 records can be recognised only by Signal/Evidence provenance.
+  const w = withManyUnrelatedSignals(withOlderScheduleExposure(world()));
+  const { attention, queries } = await project(w, { fail: ["execution_tasks"] });
+  const signalChunks = idLookups(queries, "operational_signals");
+  const requested = signalChunks.flat();
+  assert.ok(requested.length > 600, "more Signal ids requested than one 500-row page holds");
+  assert.ok(signalChunks.every((chunk) => chunk.length <= PMO_ATTENTION_ROW_CAP), "each query stays within the row window");
+  assert.equal(new Set(requested).size, requested.length, "no id requested twice");
+  assert.ok(requested.includes(u("15a")) && requested.includes(u("15b")));
+  assert.ok(requested.indexOf(u("15b")) >= PMO_ATTENTION_ROW_CAP, "the P2-16 Signal sits beyond the old cutoff");
+
+  const atlas = find(attention, ATLAS)!;
+  assert.equal(atlas.dimensions.schedule, "unavailable");
+  // Neither the current nor the older P2-16 chain leaks into the generic path…
+  assert.ok(!atlas.reasons.some((r) => cites(r, SCHEDULE_DERIVED_IDS)));
+  assert.ok(!JSON.stringify(atlas.reasons).includes("OLD SCHEDULE"));
+  // …so it sets neither the level nor the ranking (with the leak Atlas was critical and led).
+  assert.deepEqual(atlas.reasons.map((r) => [r.ruleId, r.freshness.state]), [["finding.unresolved.high", "current"]]);
+  assert.equal(atlas.attentionLevel, "high");
+  assert.ok(!attention.attention.some((p) => p.attentionLevel === "critical"));
+  assert.ok(!atlas.missingInputs.some((m) => m.code === "schedule_provenance_unresolved"));
+});
+
+test("P2-17 G4: >500 requested Evidence ids are all resolved — none silently degrades to unknown", async () => {
+  const w = withManyUnrelatedSignals(withOlderScheduleExposure(world()));
+  const { attention, queries } = await project(w);
+  const evidenceChunks = idLookups(queries, "evidence_items");
+  const requested = evidenceChunks.flat();
+  assert.ok(requested.length > 600, "more Evidence ids requested than one 500-row page holds");
+  assert.ok(evidenceChunks.every((chunk) => chunk.length <= PMO_ATTENTION_ROW_CAP), "each query stays within the row window");
+  assert.ok(requested.indexOf(u("e5b")) >= PMO_ATTENTION_ROW_CAP, "the P2-16 Evidence sits beyond the old cutoff");
+
+  // Every one of Orion's 300 unrelated Findings and 300 Recommendations found its Evidence.
+  const orion = find(attention, ORION)!;
+  const unrelated = orion.reasons.filter((r) => /Unrelated (finding|recommendation)/.test(r.summary));
+  assert.equal(unrelated.length, 600);
+  assert.ok(unrelated.every((r) => r.freshness.state === "current"), "no reason degraded to unknown by a truncated lookup");
+  // The older P2-16 chain's Evidence was resolved too, so it is recognised, not flagged unresolved.
+  const atlas = find(attention, ATLAS)!;
+  assert.ok(!atlas.reasons.some((r) => (r.kind === "open_finding" || r.kind === "pending_recommendation") && cites(r, SCHEDULE_DERIVED_IDS)));
+  assert.deepEqual(atlas.reasons.map((r) => r.ruleId), ["schedule.severity.critical", "finding.unresolved.high"]);
+  assert.ok(!atlas.missingInputs.some((m) => m.code === "schedule_provenance_unresolved"));
+});
+
+test("P2-17 G4: a schedule_risk Signal whose Evidence cannot be resolved is withheld and reported; unrelated rows keep the degraded-read path", async () => {
+  const w = withTextScheduleRisk(withOlderScheduleExposure(world()));
+  // The older P2-16 Evidence and the Vendor slip's Evidence are unreadable; the schedule is unavailable.
+  w.tables.evidence_items = w.tables.evidence_items.filter((e) => e.id !== u("e5b") && e.id !== u("e1a"));
+  const { attention } = await project(w, { fail: ["execution_tasks"] });
+  const atlas = find(attention, ATLAS)!;
+  // The schedule_risk chain with no resolvable Evidence is not an independent generic reason…
+  assert.ok(!atlas.reasons.some((r) => cites(r, [u("15b"), u("21b"), u("31b")])));
+  assert.ok(atlas.missingInputs.some((m) => m.code === "schedule_provenance_unresolved"));
+  assert.ok(attention.qualifications.includes("stale_inputs"));
+  assert.notEqual(attention.state, "current");
+  assert.ok(!atlas.reasons.some((r) => r.level === "critical"));
+  // …while an unrelated Finding with unreadable Evidence keeps the documented behaviour (unknown freshness)…
+  const vendor = atlas.reasons.find((r) => cites(r, [u("22a")]))!;
+  assert.equal(vendor.freshness.state, "unknown");
+  // …and a schedule_risk detected from readable ordinary Evidence stays a current generic reason.
+  assert.equal(atlas.reasons.find((r) => r.kind === "open_finding" && cites(r, [u("27a")]))?.freshness.state, "current");
+  assert.equal(atlas.reasons.find((r) => r.kind === "pending_recommendation" && cites(r, [u("36a")]))?.freshness.state, "current");
+
+  // A fully unreadable Signal lookup is not this case: nothing is known to be schedule_risk, so the
+  // existing degraded-read contract applies unchanged (see the "unreadable support" test below).
+  const unreadable = find((await project(world(), { fail: ["operational_signals"] })).attention, ATLAS)!;
+  assert.equal(unreadable.reasons.find((r) => r.kind === "open_finding")?.freshness.state, "unknown");
+  assert.ok(!unreadable.missingInputs.some((m) => m.code === "schedule_provenance_unresolved"));
+});
+
 test("P2-17: stale Evidence, an elapsed validity window and unreadable support are labelled, not presented as current", async () => {
   const w = world();
   (w.tables.evidence_items.find((e) => e.id === u("e1a")) as Row).freshness_state = "STALE";

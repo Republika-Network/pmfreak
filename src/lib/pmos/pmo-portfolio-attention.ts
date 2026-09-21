@@ -573,11 +573,17 @@ function assessProject(
   // re-enters as a generic reason — P2-16 Evidence carries no stale_at and nothing supersedes it
   // in persistence, so generic freshness would report an old or since-cleared exposure as current.
   // Schedule risks detected from other Evidence (e.g. a note saying "delayed") are not P2-16
-  // evidence and stay generic.
+  // evidence and stay generic. A schedule_risk Signal whose Evidence cannot be resolved could be
+  // either, so it is withheld and reported rather than trusted as independent attention. Any other
+  // Signal, including an unreadable one, keeps the generic degraded-read path (unknown freshness).
+  let scheduleProvenanceUnresolved = false;
   const isScheduleDerived = (signalId: string) => {
     if (scheduleFindingIds.has(signalId)) return true;
     const sig = lookups.signals.get(signalId);
-    return sig?.signal_type === SCHEDULE_SIGNAL_TYPE && lookups.evidence.get(sig.evidence_item_id)?.source_type === SCHEDULE_EVIDENCE_SOURCE_TYPE;
+    if (sig?.signal_type !== SCHEDULE_SIGNAL_TYPE) return false;
+    const ev = lookups.evidence.get(sig.evidence_item_id);
+    if (!ev) scheduleProvenanceUnresolved = true;
+    return !ev || ev.source_type === SCHEDULE_EVIDENCE_SOURCE_TYPE;
   };
 
   if (dimensions.findings === "assessed" || dimensions.findings === "truncated") {
@@ -632,6 +638,13 @@ function assessProject(
         drillDown: "execution",
       });
     }
+  }
+
+  if (scheduleProvenanceUnresolved) {
+    missingInputs.push({
+      code: "schedule_provenance_unresolved",
+      message: "A schedule-risk Finding or Recommendation could not be traced to its Evidence, so it is withheld: PMFreak cannot tell whether it restates a superseded schedule evaluation.",
+    });
   }
 
   // Outcomes — observed divergence only. Completed work without an observation is "unknown",
@@ -829,7 +842,7 @@ export function buildPmoPortfolioAttention(input: PmoAttentionInput): PmoPortfol
   const qualifications: PmoPortfolioQualification[] = [];
   if (coverage.eligible > 0 && coverage.qualified < coverage.eligible) qualifications.push("partial_coverage");
   if (degraded) qualifications.push("degraded_dimension");
-  const staleInputs = assessments.some((a) => a.freshness === "stale" || a.freshness === "unknown" || a.missingInputs.some((m) => m.code === "schedule_reevaluation_needed"));
+  const staleInputs = assessments.some((a) => a.freshness === "stale" || a.freshness === "unknown" || a.missingInputs.some((m) => m.code === "schedule_reevaluation_needed" || m.code === "schedule_provenance_unresolved"));
   if (staleInputs) qualifications.push("stale_inputs");
   const fixture = assessments.some((a) => a.fixture);
   if (fixture) qualifications.push("fixture_data");
