@@ -9,14 +9,14 @@
     "scripts/check-fresh-db-migrations.mjs"
   ],
   "totals": {
-    "security_definer_total": 30,
+    "security_definer_total": 33,
     "public_executable": 0,
     "anon_executable": 0,
-    "authenticated_executable": 23,
-    "service_role_executable": 30,
+    "authenticated_executable": 26,
+    "service_role_executable": 33,
     "by_intended_caller": {
       "authenticated_rls_helper": 7,
-      "authenticated_rpc": 16,
+      "authenticated_rpc": 19,
       "service_role": 3,
       "internal_security_definer_only": 3,
       "trigger_only": 1
@@ -122,6 +122,21 @@
     },
     {
       "schema": "public",
+      "name": "capture_schedule_exposure_evaluation",
+      "identity_arguments": "uuid,uuid,jsonb,timestamptz,timestamptz,uuid,uuid",
+      "signature": "public.capture_schedule_exposure_evaluation(uuid,uuid,jsonb,timestamptz,timestamptz,uuid,uuid)",
+      "public": false,
+      "anon": false,
+      "authenticated": true,
+      "service_role": true,
+      "intended_caller": "authenticated_rpc",
+      "trigger_only": false,
+      "search_path": "pg_catalog, public, extensions",
+      "latest_definition_migration": "20260913000000_p2_16_schedule_exposure_adapter.sql",
+      "rationale": "P2-16 schedule intake RPC (src/lib/critical-path/schedule-exposure-service.ts, via /api/critical-path/schedule-exposure on createSupabaseServerClient). Rejects anonymous callers with schedule_exposure_unauthenticated, then gates on can_write_operational_project; the engine Source key and idempotency key are derived server-side."
+    },
+    {
+      "schema": "public",
       "name": "commit_upload_quota",
       "identity_arguments": "uuid,text",
       "signature": "public.commit_upload_quota(uuid,text)",
@@ -149,6 +164,21 @@
       "search_path": "pg_catalog, public, extensions",
       "latest_definition_migration": "20260902000000_evidence_derivation_provenance.sql",
       "rationale": "Authenticated evidence-derivation RPC (operational-flow-service.ts:96). Rejects anonymous callers with evidence_unauthenticated, then evidence_access_denied via can_write_operational_project."
+    },
+    {
+      "schema": "public",
+      "name": "derive_schedule_exposure_evidence",
+      "identity_arguments": "uuid,uuid,uuid",
+      "signature": "public.derive_schedule_exposure_evidence(uuid,uuid,uuid)",
+      "public": false,
+      "anon": false,
+      "authenticated": true,
+      "service_role": true,
+      "intended_caller": "authenticated_rpc",
+      "trigger_only": false,
+      "search_path": "pg_catalog, public, extensions",
+      "latest_definition_migration": "20260913000000_p2_16_schedule_exposure_adapter.sql",
+      "rationale": "P2-16 Evidence derivation RPC (schedule-exposure-service.ts). Rejects anonymous callers with evidence_unauthenticated, then evidence_access_denied via can_write_operational_project; accepts only schedule_exposure.evaluated v1 events under the engine Source."
     },
     {
       "schema": "public",
@@ -299,6 +329,21 @@
       "search_path": "public",
       "latest_definition_migration": "20260611000000_operational_evidence_decision_loop.sql",
       "rationale": "Authenticated evidence-to-chain RPC (operational-flow-service.ts:158). Gates on can_write_operational_project or raises operational_write_denied."
+    },
+    {
+      "schema": "public",
+      "name": "materialize_schedule_exposure_finding",
+      "identity_arguments": "uuid",
+      "signature": "public.materialize_schedule_exposure_finding(uuid)",
+      "public": false,
+      "anon": false,
+      "authenticated": true,
+      "service_role": true,
+      "intended_caller": "authenticated_rpc",
+      "trigger_only": false,
+      "search_path": "pg_catalog, public, extensions",
+      "latest_definition_migration": "20260913000000_p2_16_schedule_exposure_adapter.sql",
+      "rationale": "P2-16 Finding/Recommendation RPC (schedule-exposure-service.ts). Rejects anonymous callers with schedule_exposure_unauthenticated, then operational_write_denied via can_write_operational_project; creates no Decision, Action, Task or Outcome."
     },
     {
       "schema": "public",

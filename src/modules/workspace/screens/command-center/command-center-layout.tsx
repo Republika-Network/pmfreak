@@ -40,6 +40,7 @@ import { DetailDrawer } from "../../presentation/command-center/detail-drawer";
 import { VaultIntakePanel } from "../../presentation/command-center/vault-intake-panel";
 import { CloseIcon } from "../../presentation/command-center/icons";
 import { WorkspaceOnboardingPanel } from "@/components/pmfreak/onboarding/workspace-onboarding-panel";
+import { ScheduleExposurePanel } from "@/components/pmfreak/schedule-exposure/schedule-exposure-panel";
 
 function nextId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -685,7 +686,19 @@ export function CommandCenterLayout({
                 </div>
               ) : null
             }
-            footerSlot={<WorkspaceOnboardingPanel surface="dashboard" />}
+            footerSlot={
+              <div className="space-y-5">
+                {/* P2-16: project schedule exposure. Its Recommendations also enter the
+                    attention queue above through the canonical operational flow. */}
+                <ScheduleExposurePanel
+                  key={selectedProject.id}
+                  workspaceId={workspaceId}
+                  projectId={selectedProject.id}
+                  onRecorded={() => void mutateFlow()}
+                />
+                <WorkspaceOnboardingPanel surface="dashboard" />
+              </div>
+            }
           />
         </main>
       </div>
