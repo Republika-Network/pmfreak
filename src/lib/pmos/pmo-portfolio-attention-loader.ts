@@ -187,7 +187,7 @@ export async function loadPmoPortfolioAttention(
   const evidence = evidenceIds.length === 0
     ? EMPTY<PmoEvidenceRow>()
     : await collection<PmoEvidenceRow>(
-        client.from("evidence_items").select("id,project_id,fixture_state,freshness_state,lifecycle,stale_at")
+        client.from("evidence_items").select("id,project_id,source_type,fixture_state,freshness_state,lifecycle,stale_at")
           .eq("workspace_id", workspaceId).in("project_id", ids).in("id", evidenceIds)
           .order("id", { ascending: true }).limit(cap),
       );

@@ -114,6 +114,21 @@ function Reason({ reason, executionHref }: { reason: PmoAttentionReason; executi
   );
 }
 
+/** Superseded schedule reasons: provenance only, never counted toward the project's attention. */
+function SupersededReasons({ project }: { project: PmoProjectAssessment }) {
+  if (project.superseded.length === 0) return null;
+  return (
+    <div className="mt-2" data-testid="pmo-attention-superseded">
+      <p className="text-[11px] uppercase tracking-[0.12em] text-slate-500">Superseded · not counted toward attention</p>
+      <ul className="mt-1 space-y-2">
+        {project.superseded.map((reason) => (
+          <Reason key={`${reason.ruleId}:${reason.evidence[0]?.id ?? ""}`} reason={reason} executionHref={project.drillDown.execution} />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function ProjectCard({ project }: { project: PmoProjectAssessment }) {
   return (
     <li className="rounded-2xl border border-slate-200 bg-slate-50 p-4" data-testid="pmo-attention-project" data-project-id={project.projectId}>
@@ -133,6 +148,7 @@ function ProjectCard({ project }: { project: PmoProjectAssessment }) {
           <Reason key={`${reason.ruleId}:${reason.evidence[0]?.id ?? ""}`} reason={reason} executionHref={project.drillDown.execution} />
         ))}
       </ul>
+      <SupersededReasons project={project} />
       {project.missingInputs.length > 0 ? (
         <ul className="mt-2 list-disc pl-5 text-xs text-slate-600">
           {project.missingInputs.map((m) => <li key={m.code}>{m.message}</li>)}
@@ -249,6 +265,7 @@ function ProjectList({ title, projects, testId }: { title: string; projects: Pmo
                 {p.missingInputs.map((m) => <li key={m.code}>{m.message}</li>)}
               </ul>
             ) : null}
+            <SupersededReasons project={p} />
             <Link href={p.drillDown.project} aria-label={`Open project: ${p.projectName}`} className="mt-1 inline-block text-xs font-medium text-cyan-800 underline-offset-2 hover:underline">
               Open project
             </Link>
