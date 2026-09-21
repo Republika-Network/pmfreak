@@ -17,7 +17,8 @@
  *   - Absence of a signal is not health. A project with no canonical basis for a dimension is
  *     reported as missing inputs, never as "no attention needed".
  *   - Freshness is carried per reason. A schedule exposure recorded against a schedule that has
- *     since changed is SUPERSEDED (stale), not current.
+ *     since changed is SUPERSEDED (stale), not current, and is kept apart from the reasons as
+ *     provenance: it never sets a level, a ranking or a confidence.
  *   - Cross-project dependencies and resource conflicts are reported as unsupported/unavailable
  *     because PMFreak holds no canonical contract for them (see the constants below).
  *   - Identical membership + canonical state + evaluation clock yields identical content; the
@@ -155,6 +156,8 @@ export type PmoSignalRow = { id: string; project_id: string; evidence_item_id: s
 export type PmoEvidenceRow = {
   id: string;
   project_id: string;
+  /** `schedule_evaluation` marks P2-16 schedule Evidence (see SCHEDULE_EVIDENCE_SOURCE_TYPE). */
+  source_type: string;
   fixture_state: string;
   freshness_state: string;
   lifecycle: string;
@@ -249,6 +252,12 @@ export type PmoProjectAssessment = {
   /** Highest reason level; null means no supported attention signal (NOT "healthy"). */
   attentionLevel: PmoAttentionLevel | null;
   reasons: PmoAttentionReason[];
+  /**
+   * Schedule reasons from exposures recorded against a schedule that has since changed (e.g. it
+   * was fixed and re-evaluated to no exposure, which P2-16 does not record). Provenance only:
+   * never counted in `attentionLevel`, ordering, confidence or attention/quiet placement.
+   */
+  superseded: PmoAttentionReason[];
   dimensions: Record<PmoDimensionKey, PmoDimensionState>;
   missingInputs: PmoMissingInput[];
   /** Weakest recorded confidence among this project's reasons; null when none is recorded. */
@@ -427,6 +436,10 @@ export function selectEvaluatedProjectIds(projects: readonly PmoAttentionProject
 
 // ── Per-project assessment ──────────────────────────────────────────────────────────────
 
+/** P2-16 schedule Evidence and the Signal type its Finding is recorded with. */
+const SCHEDULE_EVIDENCE_SOURCE_TYPE = "schedule_evaluation";
+const SCHEDULE_SIGNAL_TYPE = "schedule_risk";
+
 type ProjectBatch = {
   risks: PmoRiskRow[];
   recommendations: PmoRecommendationRow[];
@@ -435,8 +448,10 @@ type ProjectBatch = {
 
 function scheduleReasons(
   schedule: NonNullable<PmoProjectSignalInput["schedule"]>,
-): { reasons: PmoAttentionReason[]; freshness: PmoFreshnessState[]; missing: PmoMissingInput[]; findingIds: Set<string> } {
-  const findingIds = new Set<string>();
+): { reasons: PmoAttentionReason[]; superseded: PmoAttentionReason[]; freshness: PmoFreshnessState[]; missing: PmoMissingInput[]; findingIds: Set<string> } {
+  // Every listed exposure's Finding — current or superseded — is schedule evidence. Only the
+  // considered records below describe the schedule; older ones must not resurface elsewhere.
+  const findingIds = new Set(schedule.exposures.flatMap((e) => (e.finding ? [e.finding.id] : [])));
   const reasons: PmoAttentionReason[] = [];
   const missing: PmoMissingInput[] = [];
   const freshness: PmoFreshnessState[] = [];
@@ -448,11 +463,10 @@ function scheduleReasons(
   if (superseded) {
     missing.push({
       code: "schedule_reevaluation_needed",
-      message: "The schedule changed after its last recorded exposure evaluation; the exposure shown is superseded until it is re-evaluated.",
+      message: "The schedule changed after its last recorded exposure evaluation; that exposure is superseded and does not count toward attention until the schedule is re-evaluated.",
     });
   }
   for (const record of considered) {
-    if (record.finding) findingIds.add(record.finding.id);
     const fresh: PmoFreshness = superseded
       ? { state: "stale", basis: "schedule changed since this evaluation (snapshot superseded)", recordedAt: isoOrNull(record.recordedAt) }
       : record.freshnessState !== "CURRENT"
@@ -502,7 +516,9 @@ function scheduleReasons(
       });
     }
   }
-  return { reasons, freshness, missing, findingIds };
+  // A superseded exposure does not describe the current schedule — which may no longer be exposed
+  // at all — so it is reported as provenance and never ranked as current attention.
+  return superseded ? { reasons: [], superseded: reasons, freshness, missing, findingIds } : { reasons, superseded: [], freshness, missing, findingIds };
 }
 
 function assessProject(
@@ -515,6 +531,7 @@ function assessProject(
   evaluatedAtMs: number,
 ): PmoProjectAssessment {
   const reasons: PmoAttentionReason[] = [];
+  const superseded: PmoAttentionReason[] = [];
   const missingInputs: PmoMissingInput[] = [];
   const freshness: PmoFreshnessState[] = [];
   const dimensions: Record<PmoDimensionKey, PmoDimensionState> = {
@@ -534,6 +551,7 @@ function assessProject(
     dimensions.schedule = "assessed";
     const s = scheduleReasons(signal.schedule);
     reasons.push(...s.reasons);
+    superseded.push(...s.superseded);
     freshness.push(...s.freshness);
     missingInputs.push(...s.missing);
     scheduleFindingIds = s.findingIds;
@@ -550,10 +568,27 @@ function assessProject(
   dimensions.findings = governanceBasis === "assessed" ? batchState.risks ?? "assessed" : governanceBasis;
   dimensions.recommendations = governanceBasis === "assessed" ? batchState.recommendations ?? "assessed" : governanceBasis;
 
+  // One canonical fact, one reason: a P2-16 schedule-derived Finding/Recommendation is evidence
+  // behind the Schedule dimension, which alone represents the CURRENT schedule. It never
+  // re-enters as a generic reason — P2-16 Evidence carries no stale_at and nothing supersedes it
+  // in persistence, so generic freshness would report an old or since-cleared exposure as current.
+  // Schedule risks detected from other Evidence (e.g. a note saying "delayed") are not P2-16
+  // evidence and stay generic. A schedule_risk Signal whose Evidence cannot be resolved could be
+  // either, so it is withheld and reported rather than trusted as independent attention. Any other
+  // Signal, including an unreadable one, keeps the generic degraded-read path (unknown freshness).
+  let scheduleProvenanceUnresolved = false;
+  const isScheduleDerived = (signalId: string) => {
+    if (scheduleFindingIds.has(signalId)) return true;
+    const sig = lookups.signals.get(signalId);
+    if (sig?.signal_type !== SCHEDULE_SIGNAL_TYPE) return false;
+    const ev = lookups.evidence.get(sig.evidence_item_id);
+    if (!ev) scheduleProvenanceUnresolved = true;
+    return !ev || ev.source_type === SCHEDULE_EVIDENCE_SOURCE_TYPE;
+  };
+
   if (dimensions.findings === "assessed" || dimensions.findings === "truncated") {
     for (const risk of rows.risks) {
-      // One canonical fact, one reason: a schedule-derived Finding is already the schedule reason.
-      if (scheduleFindingIds.has(risk.signal_id)) continue;
+      if (isScheduleDerived(risk.signal_id)) continue;
       const ruleId = risk.severity === "critical" ? "finding.unresolved.critical" : risk.severity === "high" ? "finding.unresolved.high" : null;
       if (!ruleId) continue;
       const sig = lookups.signals.get(risk.signal_id);
@@ -579,7 +614,7 @@ function assessProject(
 
   if (dimensions.recommendations === "assessed" || dimensions.recommendations === "truncated") {
     for (const rec of rows.recommendations) {
-      if (rec.source_signal_id && scheduleFindingIds.has(rec.source_signal_id)) continue;
+      if (rec.source_signal_id && isScheduleDerived(rec.source_signal_id)) continue;
       const ruleId: PmoAttentionRuleId =
         rec.urgency === "immediate" ? "recommendation.pending.immediate" : rec.urgency === "high" ? "recommendation.pending.high" : "recommendation.pending.other";
       const sig = rec.source_signal_id ? lookups.signals.get(rec.source_signal_id) : undefined;
@@ -603,6 +638,13 @@ function assessProject(
         drillDown: "execution",
       });
     }
+  }
+
+  if (scheduleProvenanceUnresolved) {
+    missingInputs.push({
+      code: "schedule_provenance_unresolved",
+      message: "A schedule-risk Finding or Recommendation could not be traced to its Evidence, so it is withheld: PMFreak cannot tell whether it restates a superseded schedule evaluation.",
+    });
   }
 
   // Outcomes — observed divergence only. Completed work without an observation is "unknown",
@@ -644,6 +686,7 @@ function assessProject(
   }
 
   reasons.sort(reasonOrder);
+  superseded.sort(reasonOrder);
   const assessedAny = PMO_DIMENSIONS.some((d) => dimensions[d] === "assessed" || dimensions[d] === "truncated");
   const unavailableAny = PMO_DIMENSIONS.some((d) => dimensions[d] === "unavailable");
   const evaluation: PmoProjectEvaluation = assessedAny ? "qualified" : unavailableAny ? "unavailable" : "missing_inputs";
@@ -656,11 +699,12 @@ function assessProject(
     evaluation,
     attentionLevel,
     reasons,
+    superseded,
     dimensions,
     missingInputs,
     confidence: weakest(reasons.map((r) => r.confidence)),
     freshness: worstFreshness(freshness),
-    fixture: reasons.some((r) => r.fixture) || (evidenceBasis !== null && evidenceBasis.canonical > 0 && evidenceBasis.live === 0),
+    fixture: reasons.some((r) => r.fixture) || superseded.some((r) => r.fixture) || (evidenceBasis !== null && evidenceBasis.canonical > 0 && evidenceBasis.live === 0),
     drillDown: {
       project: projectCommandCenterPath(workspaceId, project.id),
       execution: workspaceCommandCenterPath(workspaceId, { projectId: project.id }),
@@ -676,6 +720,7 @@ function notEvaluated(project: PmoAttentionProjectRow, evaluation: "not_evaluate
     evaluation,
     attentionLevel: null,
     reasons: [],
+    superseded: [],
     dimensions: { schedule: "not_evaluated", findings: "not_evaluated", recommendations: "not_evaluated", outcomes: "not_evaluated" },
     missingInputs:
       evaluation === "not_evaluated_lifecycle"
@@ -797,7 +842,7 @@ export function buildPmoPortfolioAttention(input: PmoAttentionInput): PmoPortfol
   const qualifications: PmoPortfolioQualification[] = [];
   if (coverage.eligible > 0 && coverage.qualified < coverage.eligible) qualifications.push("partial_coverage");
   if (degraded) qualifications.push("degraded_dimension");
-  const staleInputs = assessments.some((a) => a.freshness === "stale" || a.freshness === "unknown" || a.missingInputs.some((m) => m.code === "schedule_reevaluation_needed"));
+  const staleInputs = assessments.some((a) => a.freshness === "stale" || a.freshness === "unknown" || a.missingInputs.some((m) => m.code === "schedule_reevaluation_needed" || m.code === "schedule_provenance_unresolved"));
   if (staleInputs) qualifications.push("stale_inputs");
   const fixture = assessments.some((a) => a.fixture);
   if (fixture) qualifications.push("fixture_data");
@@ -846,7 +891,7 @@ export function buildPmoPortfolioAttention(input: PmoAttentionInput): PmoPortfol
           "Weakest recorded confidence: each reason carries its source record's own confidence re-expressed on the 0–1 scale (0–100 columns divided by 100). A project's and the portfolio's confidence is the lowest of them, so it states how certain the least certain claim on screen is. It says nothing about coverage.",
       },
       freshness:
-        "Evidence freshness_state/lifecycle as persisted, recorded stale_at compared with evaluatedAt, and P2-16 schedule exposures compared with the digest of the current schedule (a changed schedule supersedes the exposure).",
+        "Evidence freshness_state/lifecycle as persisted, recorded stale_at compared with evaluatedAt, and P2-16 schedule exposures compared with the digest of the current schedule (a changed schedule supersedes the exposure; a superseded exposure is reported under `superseded` and never ranked).",
       summaries: PMO_ATTENTION_SUMMARY_SOURCE,
       evaluationLimit: PMO_ATTENTION_EVALUATION_LIMIT,
       rowCap: PMO_ATTENTION_ROW_CAP,

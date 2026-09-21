@@ -71,6 +71,23 @@ async function collection<T>(query: PromiseLike<Page>): Promise<PmoCollection<T>
 
 const EMPTY = <T>(): PmoCollection<T> => ({ ok: true, rows: [], truncated: false });
 
+/**
+ * Resolves a KNOWN, finite set of ids completely: one query per chunk of at most
+ * PMO_ATTENTION_ROW_CAP ids, each limited to its own chunk size. An id-keyed provenance lookup
+ * must never silently keep only the first page of ids it was asked for. Any failed chunk fails
+ * the whole lookup, so a partial result is never mistaken for a complete one.
+ */
+async function lookupByIds<T extends { id: string }>(ids: readonly string[], query: (chunk: string[]) => PromiseLike<Page>): Promise<PmoCollection<T>> {
+  const rows: T[] = [];
+  for (let start = 0; start < ids.length; start += PMO_ATTENTION_ROW_CAP) {
+    const chunk = ids.slice(start, start + PMO_ATTENTION_ROW_CAP);
+    const { data, error } = await query(chunk);
+    if (error) return { ok: false };
+    rows.push(...((data ?? []) as T[]));
+  }
+  return { ok: true, rows: rows.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)), truncated: false };
+}
+
 async function count(query: PromiseLike<{ count: number | null; error: { message: string } | null }>): Promise<number | null> {
   const { count: n, error } = await query;
   return error || n === null ? null : n;
@@ -174,23 +191,19 @@ export async function loadPmoPortfolioAttention(
             .eq("workspace_id", workspaceId).in("project_id", ids).in("outcome_id", outcomeIds)
             .order("id", { ascending: true }).limit(cap),
         ),
-    signalIds.length === 0
-      ? EMPTY<PmoSignalRow>()
-      : collection<PmoSignalRow>(
-          client.from("operational_signals").select("id,project_id,evidence_item_id,confidence_score,signal_type")
-            .eq("workspace_id", workspaceId).in("project_id", ids).in("id", signalIds)
-            .order("id", { ascending: true }).limit(cap),
-        ),
+    lookupByIds<PmoSignalRow>(signalIds, (chunk) =>
+      client.from("operational_signals").select("id,project_id,evidence_item_id,confidence_score,signal_type")
+        .eq("workspace_id", workspaceId).in("project_id", ids).in("id", chunk)
+        .order("id", { ascending: true }).limit(chunk.length),
+    ),
   ]);
 
   const evidenceIds = [...new Set(signals.ok ? signals.rows.map((s) => s.evidence_item_id) : [])].sort();
-  const evidence = evidenceIds.length === 0
-    ? EMPTY<PmoEvidenceRow>()
-    : await collection<PmoEvidenceRow>(
-        client.from("evidence_items").select("id,project_id,fixture_state,freshness_state,lifecycle,stale_at")
-          .eq("workspace_id", workspaceId).in("project_id", ids).in("id", evidenceIds)
-          .order("id", { ascending: true }).limit(cap),
-      );
+  const evidence = await lookupByIds<PmoEvidenceRow>(evidenceIds, (chunk) =>
+    client.from("evidence_items").select("id,project_id,source_type,fixture_state,freshness_state,lifecycle,stale_at")
+      .eq("workspace_id", workspaceId).in("project_id", ids).in("id", chunk)
+      .order("id", { ascending: true }).limit(chunk.length),
+  );
 
   const perProjectList = await mapLimited(ids, PER_PROJECT_CONCURRENCY, (projectId) => loadProjectSignals(client, workspaceId, projectId, deps));
   const perProject = Object.fromEntries(ids.map((id, index) => [id, perProjectList[index]]));

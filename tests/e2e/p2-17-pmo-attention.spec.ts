@@ -245,18 +245,31 @@ test.describe.serial("P2-17 PMO attention — authenticated PMO browser scenario
     await shot(page, "03b-drill-supporting-detail", true);
   });
 
-  test("STEP 04 stale: a planner edits Atlas's schedule — the exposure is shown as superseded, not current", async ({ page }) => {
+  test("STEP 04 stale: a planner edits Atlas's schedule — the exposure is shown as superseded and no longer ranks Atlas", async ({ page }) => {
     const a = tenants.a;
     must(await admin.from("execution_tasks").update({ title: "Design (re-scoped)" }).eq("id", a.schedule.design), "planner edit");
     await signIn(page, a.users.viewer);
     await openAttention(page, a);
-    const atlas = attention(page).getByTestId("pmo-attention-project").filter({ hasText: `Atlas A ${suffix}` });
-    const reason = atlas.locator('[data-rule="schedule.severity.high"]');
+    // The superseded exposure was Atlas's only reason, so Atlas no longer needs attention…
+    await expect(attention(page).getByTestId("pmo-attention-project").filter({ hasText: `Atlas A ${suffix}` })).toHaveCount(0);
+    // …and is listed as assessed, with the exposure kept as superseded provenance.
+    const atlas = attention(page).getByTestId("pmo-attention-quiet").locator(`[data-project-id="${a.projects.atlas}"]`);
+    const reason = atlas.getByTestId("pmo-attention-superseded").locator('[data-rule="schedule.severity.high"]');
+    await expect(atlas.getByTestId("pmo-attention-superseded")).toContainText("Superseded · not counted toward attention");
     await expect(reason.getByTestId("pmo-attention-freshness")).toHaveText("Stale");
     await expect(reason).toContainText("schedule changed since this evaluation (snapshot superseded)");
     await expect(atlas).toContainText("The schedule changed after its last recorded exposure evaluation");
     await expect(attention(page).getByTestId("pmo-attention-state")).toContainText("Some inputs are stale or superseded.");
     await shot(page, "04-stale-superseded");
+
+    // The API — not only the view — carries the same semantics.
+    const body = await (await page.request.get(`/api/pmos/${a.pmoId}/attention?workspaceId=${a.workspaceId}`)).json();
+    expect(body.attention.attention.map((p: { projectId: string }) => p.projectId)).not.toContain(a.projects.atlas);
+    const projected = body.attention.quiet.find((p: { projectId: string }) => p.projectId === a.projects.atlas);
+    expect(projected.attentionLevel).toBeNull();
+    expect(projected.reasons).toEqual([]);
+    expect(projected.superseded.map((r: { ruleId: string; freshness: { state: string } }) => [r.ruleId, r.freshness.state])).toEqual([["schedule.severity.high", "stale"]]);
+    expect(projected.missingInputs.map((m: { code: string }) => m.code)).toContain("schedule_reevaluation_needed");
   });
 
   test("STEP 05 caller metrics: forged query metrics do not change the server-derived projection", async ({ page }) => {

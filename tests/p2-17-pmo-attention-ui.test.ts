@@ -26,7 +26,7 @@ function input(options: { stale?: boolean; fixture?: boolean; bare?: boolean; qu
     { id: u("102"), name: "Orion", status: options.statuses?.[1] ?? "active" },
     ...(options.bare ? [{ id: u("104"), name: "Bare", status: "active" }] : []),
   ];
-  const evidence = (id: string, project: string) => ({ id, project_id: project, fixture_state: options.fixture ? "DEMO_FIXTURE" : "LIVE", freshness_state: options.stale ? "STALE" : "CURRENT", lifecycle: "RECORDED", stale_at: null });
+  const evidence = (id: string, project: string) => ({ id, project_id: project, source_type: "manual_note", fixture_state: options.fixture ? "DEMO_FIXTURE" : "LIVE", freshness_state: options.stale ? "STALE" : "CURRENT", lifecycle: "RECORDED", stale_at: null });
   const risks = options.quietOnly ? [] : [
     { id: u("21"), project_id: u("101"), signal_id: u("11"), type: "risk", title: "Vendor slip", severity: "critical", status: "open", updated_at: EVAL },
     { id: u("22"), project_id: u("102"), signal_id: u("12"), type: "issue", title: "Scope dispute", severity: "high", status: "monitoring", updated_at: EVAL },
@@ -125,6 +125,26 @@ test("P2-17 UI: stale inputs are labelled on the reason and in the portfolio ban
   assert.match(t, /Stale · operational_signals|Stale Inference/);
   assert.match(t, /Evidence freshness STALE/);
   assert.doesNotMatch(t, /with current inputs/);
+});
+
+test("P2-17 UI: a superseded schedule exposure is shown as provenance, never as attention", () => {
+  const i = input({ quietOnly: true });
+  // Atlas's only schedule exposure was recorded against a schedule that has since changed.
+  const exposure = {
+    evidenceId: u("e5"), materializationState: "complete", confidence: 0.8, freshnessState: "CURRENT", fixtureState: "LIVE",
+    recordedAt: EVAL, snapshotDigest: "sha256:old", severity: "critical",
+    exposures: [{ milestoneId: u("m1"), title: "Go-live", isCritical: true, networkSlipDays: 15, forecastVarianceDays: null }],
+    finding: { id: u("15") }, recommendation: { id: u("31"), status: "proposed" },
+  } as unknown as NonNullable<PmoProjectSignalInput["schedule"]>["exposures"][number];
+  i.perProject = { ...i.perProject, [u("101")]: { ...basis, schedule: { exposures: [exposure], currentSnapshotDigest: "sha256:new" } } };
+  const html = ready(i);
+  const t = text(html);
+  assert.match(t, /Need attention 0/);
+  assert.doesNotMatch(t, /Critical attention/);
+  assert.match(html, /data-testid="pmo-attention-superseded"/);
+  assert.match(t, /Superseded · not counted toward attention Critical Stale/);
+  assert.match(t, /schedule changed since this evaluation \(snapshot superseded\)/);
+  assert.match(t, /does not count toward attention until the schedule is re-evaluated/);
 });
 
 test("P2-17 UI: fixture records are labelled and cannot pass as live intelligence", () => {
