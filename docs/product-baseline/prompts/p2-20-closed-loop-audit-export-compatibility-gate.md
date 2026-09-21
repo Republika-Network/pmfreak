@@ -141,7 +141,7 @@ Chronology, so the record is not read backwards: `95c928b2` is the exact-main ba
 
 The dependency blocker recorded above was repaired under explicit authorization (see P2-10). P2-20 itself needed no product change.
 
-Verified on committed SHA `0fd86b561326c7895980fffb5c47c8aa6b8585c5` (C4 = C1+C2+C3+C4), checked out clean with none of this reconciliation's documentation edits present. Same local environment as the 2026-09-19 pass: Node v22.23.1 / npm 10.9.8, local Supabase `127.0.0.1:54321`/`54322` at migration head `20260911000000` (165/165, unchanged — no migration was added), Frontera `@aoc-enterprise/runtime` 1.2.1 on a fresh disposable OS-temp store.
+Verified on committed SHA `0fd86b561326c7895980fffb5c47c8aa6b8585c5` (C4 = C1+C2+C3+C4), checked out clean with none of this reconciliation's documentation edits present. Same local environment as the 2026-09-19 pass: Node v22.23.1 / npm 10.9.8, local Supabase `127.0.0.1:54321`/`54322` at migration head `20260912000000` (166/166 — C4 adds exactly one forward migration, `20260912000000_material_action_terminal_revocation.sql`, which replaces two function bodies and changes no table, column or RLS policy), Frontera `@aoc-enterprise/runtime` 1.2.1 on a fresh disposable OS-temp store.
 
 - **Automated:** `tests/p2-20-audit-export-compatibility-gate.test.ts` 50/50 (its fixtures now bind to the real `source_signal_id` relationship); focused P2-20 command 23/23.
 - **Live export** on the final browser-created chain (outcome `9cf281f7-…`), authenticated:
