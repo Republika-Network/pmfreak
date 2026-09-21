@@ -7,8 +7,8 @@ import {
   type ExecutionTaskDependencyRow,
   type ProjectMilestoneRow,
 } from "@/lib/db/database-contract";
-import { resolveTaskDuration } from "./duration";
-import type { NormalizedDAG, CriticalPathEdge } from "./types";
+import { buildNormalizedDag } from "./normalize-graph";
+import type { NormalizedDAG } from "./types";
 
 const TASK_SELECT = EXECUTION_TASK_SELECTABLE_COLUMNS.join(",");
 const DEP_SELECT = EXECUTION_TASK_DEPENDENCY_SELECTABLE_COLUMNS.join(",");
@@ -46,34 +46,7 @@ export async function loadGraph(input: { projectId: string }): Promise<
   const deps = depsResult.data ?? [];
   const milestones = milestonesResult.data ?? [];
 
-  const taskSet = new Set(tasks.map((t) => t.id));
-
-  const nodes = new Map<string, { task: ExecutionTaskRow; duration: number }>();
-  for (const task of tasks) {
-    nodes.set(task.id, { task, duration: resolveTaskDuration(task) });
-  }
-
-  const edges: CriticalPathEdge[] = [];
-  const predecessorMap = new Map<string, string[]>();
-  const successorMap = new Map<string, string[]>();
-
-  for (const task of tasks) {
-    predecessorMap.set(task.id, []);
-    successorMap.set(task.id, []);
-  }
-
-  for (const dep of deps) {
-    if (!taskSet.has(dep.predecessor_task_id) || !taskSet.has(dep.successor_task_id)) {
-      continue;
-    }
-    edges.push({
-      predecessorId: dep.predecessor_task_id,
-      successorId: dep.successor_task_id,
-      lagDays: dep.lag_days ?? 0,
-    });
-    predecessorMap.get(dep.successor_task_id)!.push(dep.predecessor_task_id);
-    successorMap.get(dep.predecessor_task_id)!.push(dep.successor_task_id);
-  }
-
-  return { ok: true, dag: { nodes, edges, predecessorMap, successorMap, milestones } };
+  // Edges whose endpoint is not a loaded task are left out, exactly as before.
+  const { dag } = buildNormalizedDag(tasks, deps, milestones);
+  return { ok: true, dag };
 }
