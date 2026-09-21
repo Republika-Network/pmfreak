@@ -203,6 +203,21 @@ Update only after real verification; generated code is not progress.
 
 C4 (`0fd86b561326c7895980fffb5c47c8aa6b8585c5`) certified the candidate as it stood; PR review of that candidate then found that the restored Finding projection rendered a Signal's persisted 0-100 confidence on the 0-1 lineage scale (92 → `9200.0%`), a defect this branch made reachable. C7 repairs it and is the final exact executable verification SHA. The per-prompt sections below record C4 because that is the SHA they were run on, and are left as they were.
 
+**Pre-rebase → `main` SHA map.** PR #614 was merged with a rebase, so every SHA quoted in these records was replayed onto `main` under a new id. The originals remain resolvable through the PR ref (`refs/pull/614/head`) but are NOT in `main`'s history, so `git show` against `main` alone will not find them. Each pair below was confirmed to have an identical tree, so the evidence is unaffected — only the name changed.
+
+| Commit | Pre-rebase SHA (as recorded in these documents) | On `main` after rebase |
+|---|---|---|
+| C1 canonical Finding lineage | `d0e26fefa9b502a227d54ca13243bdc6f066decb` | `0536317dd03a28a89cce32fe9050ef9f875da462` |
+| C2 workspace invite acceptance | `e9c3addfd7060139525cfc9e54d95cf6699533d2` | `4e2f5f48ff37d5ed91fb602f3bee5d02c9e839db` |
+| C3 Founder story reconciliation | `da7c5fbbfc426165e8ef237e1cfd2c1b1a693a14` | `534c02f74582c8498bfacffa90ef41cef8d4a61c` |
+| **C4 terminal revocation** | `0fd86b561326c7895980fffb5c47c8aa6b8585c5` | `97d7d59873fde2a67f215b4f49b0d1622831b91a` |
+| C5 exact-head G2/G3 record | `8c8142d221a7ffdf54d609c31e3eadcf4703df0e` | `1f879543768578ccaa4430d2608440cc72262489` |
+| C6 migration-count correction | `3245e0bccb692734c97d958c365e94807b1213b0` | `dd1188b3bb901408fef1578cb0276084b3986056` |
+| **C7 final exact executable verification SHA** | `75816028089a0296b1216372c3d9c45f90cb83bf` | `7cd64e9cded628b7cc3d70efd2d09941729e4ea6` |
+| C8 final-SHA reconciliation | `c9d5dcd801064e8689d229a8eefecd9baceac8e4` | `311a52de89c6bcee14a508718ad4fcb6b46e9c12` |
+
+The per-prompt evidence sections keep quoting the pre-rebase SHAs, because those are the ids the runs were actually performed against. This table is the one place that reconciles them with `main`.
+
 `95c928b2` is the blocker-discovery baseline and never carried the repairs. The decisive evidence on C4: the canonical chain Source → … → Observation exports complete with the Finding resolved and no false gap; invite acceptance lands on `/team` with the membership already committed and no stray workspace; a revocation recorded with a timestamp deliberately OLDER than the authorization it revokes still refuses both dispatch and start (10/10 each, alongside 10/10 ordinary flows); the P2-14 browser journey passes 38/38; and `check:beta-release` returns CONDITIONAL GO with Dependency Security the only (advisory) warning. Each prompt's "Verification Evidence — 2026-09-19" and "Exact-head post-repair verification — 2026-09-20" sections carry the chronology. P2-03 to P2-08 were re-verified on the same SHA.
 
 | Prompt ID | WP | Track | Status | Branch/Commit | Dependencies | Tests | Gate | Blocker | Next |
