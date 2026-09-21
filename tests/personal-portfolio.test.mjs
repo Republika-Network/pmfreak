@@ -577,73 +577,49 @@ test("api/personal-portfolio/projects: POST returns 201 on success", () => {
   assert.match(routeProjects, /status: 201/);
 });
 
-// ── API: snapshot route ────────────────────────────────────────────────────────
+// ── API: retired caller-metric routes (P2-17) ──────────────────────────────────
+//
+// snapshot, prioritize, attention, neglect and command-center used to compute on
+// caller-supplied `projectMetrics` (healthScore, riskScore, status, counts) and treat
+// them as truth — `snapshot` even persisted the results. P2-17 retired them: each
+// authenticates, then refuses with 410 before the body is read. The executed 410
+// behaviour is proven in tests/module-mocks/p2-17-personal-portfolio-caller-metrics.test.mjs;
+// these scans pin that no route can quietly start reading the body again.
 
-test("api/personal-portfolio/snapshot: exports POST", () => {
-  assert.match(routeSnapshot, /export async function POST/);
+const retiredRoutes = {
+  snapshot: routeSnapshot,
+  prioritize: routePrioritize,
+  attention: routeAttention,
+  neglect: routeNeglect,
+  "command-center": routeCommandCenter,
+};
+
+for (const [name, source] of Object.entries(retiredRoutes)) {
+  test(`api/personal-portfolio/${name}: exports POST`, () => {
+    assert.match(source, /export async function POST\(\)/);
+  });
+
+  test(`api/personal-portfolio/${name}: authenticates, then refuses caller metrics`, () => {
+    assert.match(source, /requireAuthenticatedUser\(\)/);
+    assert.match(source, /status: 401/);
+    assert.match(source, /return callerMetricsRetiredResponse\(\)/);
+  });
+
+  test(`api/personal-portfolio/${name}: never reads the request body or calls a metric engine`, () => {
+    assert.doesNotMatch(source, /request\.json\(|body\.projectMetrics|PortfolioProjectMetric/);
+    assert.doesNotMatch(source, /from "@\/lib\/personal-portfolio"/);
+    assert.doesNotMatch(source, /generatePortfolioSnapshot|rankPortfolioProjects|generateAttentionAllocation|generateNeglectConsequences|generatePersonalCommandCenter/);
+  });
+}
+
+test("api/personal-portfolio: the refusal is a 410 with a stable failure class", () => {
+  const retired = fs.readFileSync("src/lib/personal-portfolio/caller-metrics-retired.ts", "utf8");
+  assert.match(retired, /status: 410/);
+  assert.match(retired, /CALLER_METRICS_FAILURE_CLASS = "caller_metrics_not_accepted"/);
 });
 
-test("api/personal-portfolio/snapshot: requires portfolioId", () => {
-  assert.match(routeSnapshot, /portfolioId/);
-});
-
-test("api/personal-portfolio/snapshot: requires projectMetrics array", () => {
-  assert.match(routeSnapshot, /projectMetrics/);
-});
-
-// ── API: prioritize route ──────────────────────────────────────────────────────
-
-test("api/personal-portfolio/prioritize: exports POST", () => {
-  assert.match(routePrioritize, /export async function POST/);
-});
-
-test("api/personal-portfolio/prioritize: requires projectMetrics array", () => {
-  assert.match(routePrioritize, /projectMetrics/);
-});
-
-// ── API: attention route ───────────────────────────────────────────────────────
-
-test("api/personal-portfolio/attention: exports POST", () => {
-  assert.match(routeAttention, /export async function POST/);
-});
-
-test("api/personal-portfolio/attention: requires projectMetrics array", () => {
-  assert.match(routeAttention, /projectMetrics/);
-});
-
-// ── API: neglect route ─────────────────────────────────────────────────────────
-
-test("api/personal-portfolio/neglect: exports POST", () => {
-  assert.match(routeNeglect, /export async function POST/);
-});
-
-test("api/personal-portfolio/neglect: returns 400 when projectMetrics not array", () => {
-  assert.match(routeNeglect, /400/);
-  assert.match(routeNeglect, /projectMetrics array is required/);
-});
-
-test("api/personal-portfolio/neglect: returns single consequence when projectId specified", () => {
-  assert.match(routeNeglect, /consequence/);
-  assert.match(routeNeglect, /analyzeProjectNeglect/);
-});
-
-test("api/personal-portfolio/neglect: returns full analysis when no projectId", () => {
-  assert.match(routeNeglect, /generateNeglectConsequences/);
-  assert.match(routeNeglect, /consequences/);
-});
-
-// ── API: command-center route ──────────────────────────────────────────────────
-
-test("api/personal-portfolio/command-center: exports POST", () => {
-  assert.match(routeCommandCenter, /export async function POST/);
-});
-
-test("api/personal-portfolio/command-center: requires projectMetrics", () => {
-  assert.match(routeCommandCenter, /projectMetrics/);
-});
-
-test("api/personal-portfolio/command-center: response includes commandCenter field", () => {
-  assert.match(routeCommandCenter, /commandCenter/);
+test("api/personal-portfolio: legacy snapshots are served labelled as caller-supplied", () => {
+  assert.match(routeMain, /LEGACY_SNAPSHOT_PROVENANCE/);
 });
 
 // ── Database schema ────────────────────────────────────────────────────────────

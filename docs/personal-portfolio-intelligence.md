@@ -246,7 +246,7 @@ All routes require authentication via `requireAuthenticatedUser()`. Unauthentica
 ### `GET /api/personal-portfolio`
 
 - No `portfolioId` param → returns `{ ok: true, portfolios: PersonalPortfolioRow[] }` (owner's active portfolios)
-- With `portfolioId` param → returns `{ ok: true, snapshot: PersonalPortfolioSnapshot }` (404 if not found)
+- With `portfolioId` param → returns `{ ok: true, snapshot: PersonalPortfolioSnapshot, provenance: "caller_supplied_unverified", note }` (404 if not found)
 - Workspace: `workspaceId` query param or `user.companyId`
 
 ### `POST /api/personal-portfolio`
@@ -279,36 +279,23 @@ Returns: `{ ok: true }`
 
 Errors: 404 (not found)
 
-### `POST /api/personal-portfolio/snapshot`
+### Retired in P2-17: `snapshot`, `prioritize`, `attention`, `neglect`, `command-center`
 
-Body: `{ portfolioId: string, projectMetrics: PortfolioProjectMetric[] }`
+`POST /api/personal-portfolio/{snapshot,prioritize,attention,neglect,command-center}` used to accept
+`projectMetrics: PortfolioProjectMetric[]` — healthScore, riskScore, status and task/decision counts —
+from the request body and treat those values as truth (`snapshot` also persisted the results). No
+server-side source can rebuild them without inventing a health metric, so the endpoints are retired
+rather than re-sourced:
 
-Returns: `{ ok: true, snapshot: PersonalPortfolioSnapshot, attentionItems: [...] }`
+- Unauthenticated → HTTP 401, as before.
+- Authenticated → HTTP 410 `{ ok: false, failureClass: "caller_metrics_not_accepted", error, replacement }`,
+  returned before the body is read. No caller value reaches a computation or a table.
 
-### `POST /api/personal-portfolio/prioritize`
-
-Body: `{ projectMetrics: PortfolioProjectMetric[] }`
-
-Returns: `{ ok: true, ranking: PortfolioRanking }`
-
-### `POST /api/personal-portfolio/attention`
-
-Body: `{ projectMetrics: PortfolioProjectMetric[] }`
-
-Returns: `{ ok: true, plan: AttentionAllocationPlan }`
-
-### `POST /api/personal-portfolio/neglect`
-
-Body: `{ projectMetrics: PortfolioProjectMetric[], projectId?: string }`
-
-- With `projectId` → returns `{ ok: true, consequence: NeglectConsequence }`
-- Without `projectId` → returns `{ ok: true, consequences, mostCriticalProjectId, generatedAt }`
-
-### `POST /api/personal-portfolio/command-center`
-
-Body: `{ projectMetrics: PortfolioProjectMetric[], portfolioId?: string }`
-
-Returns: `{ ok: true, commandCenter, today, criticalProjects, recommendedOrder, summary }`
+Snapshots persisted before retirement stay readable through `GET /api/personal-portfolio?portfolioId=…`
+and are returned with `provenance: "caller_supplied_unverified"`. The pure engines below remain as a
+bounded compatibility library. Server-derived portfolio attention — with coverage, confidence,
+freshness and a membership snapshot — lives on the PMO Command Center
+(`GET /api/pmos/{pmoId}/attention?workspaceId=…`, `src/lib/pmos/pmo-portfolio-attention.ts`).
 
 ---
 

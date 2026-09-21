@@ -5,6 +5,7 @@ import {
   listPortfolios,
   getLatestPortfolioSnapshot,
 } from "@/lib/personal-portfolio";
+import { LEGACY_SNAPSHOT_PROVENANCE } from "@/lib/personal-portfolio/caller-metrics-retired";
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
   let user;
@@ -25,7 +26,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       const status = snapshotResult.failureClass === "not_found" ? 404 : 500;
       return NextResponse.json({ ok: false, error: snapshotResult.error }, { status });
     }
-    return NextResponse.json({ ok: true, snapshot: snapshotResult.data });
+    // Every persisted snapshot was computed from caller-supplied metrics (P2-17 retired that
+    // path), so it is served labelled rather than as server-verified portfolio state.
+    return NextResponse.json({ ok: true, snapshot: snapshotResult.data, ...LEGACY_SNAPSHOT_PROVENANCE });
   }
 
   const listResult = await listPortfolios({ workspaceId, ownerId: user.id });
