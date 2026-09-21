@@ -798,6 +798,17 @@ test("P2-17: DEMO / FIXTURE records are labelled wherever they surface", async (
   assert.ok(attention.qualifications.includes("fixture_data"));
   const live = await project();
   assert.equal(live.attention.fixture, false);
+
+  // A superseded fixture exposure is still shown (as provenance), so it is still labelled — even
+  // though it is not a reason and the project also has live Evidence.
+  const superseded = world({ atlasTitleSuffixNow: " (renamed)" });
+  (superseded.tables.evidence_items.find((e) => e.id === u("e5a")) as Row).fixture_state = "DEMO_FIXTURE";
+  const s = await project(superseded);
+  const atlas = find(s.attention, ATLAS)!;
+  assert.equal(atlas.superseded[0].fixture, true);
+  assert.ok(!atlas.reasons.some((r) => r.fixture));
+  assert.equal(atlas.fixture, true);
+  assert.ok(s.attention.qualifications.includes("fixture_data"));
 });
 
 test("P2-17: every published rule has a distinct id and a level from the fixed vocabulary", () => {

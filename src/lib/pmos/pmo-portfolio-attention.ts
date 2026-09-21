@@ -691,7 +691,7 @@ function assessProject(
     missingInputs,
     confidence: weakest(reasons.map((r) => r.confidence)),
     freshness: worstFreshness(freshness),
-    fixture: reasons.some((r) => r.fixture) || (evidenceBasis !== null && evidenceBasis.canonical > 0 && evidenceBasis.live === 0),
+    fixture: reasons.some((r) => r.fixture) || superseded.some((r) => r.fixture) || (evidenceBasis !== null && evidenceBasis.canonical > 0 && evidenceBasis.live === 0),
     drillDown: {
       project: projectCommandCenterPath(workspaceId, project.id),
       execution: workspaceCommandCenterPath(workspaceId, { projectId: project.id }),
