@@ -34,7 +34,7 @@ function record(ev: ScheduleExposureEvaluation, tasks: ExecutionTaskRow[]): Sche
   const payload = buildScheduleExposurePayload(ev, tasks) as Record<string, unknown>;
   const pct = Math.round((ev.confidence ?? 0) * 100 * 100) / 100; // what the SQL persists on the Signal
   return {
-    evidenceId: "evd-1", title: String(payload.title), content: String(payload.content),
+    evidenceId: "evd-1", materializationState: "complete", title: String(payload.title), content: String(payload.content),
     confidence: ev.confidence!, confidenceMethod: ev.confidenceMethod, confidenceDrivers: ev.confidenceDrivers,
     missingDataState: ev.missingDataState, missingData: ev.missingData, engineLimitations: ev.engineLimitations,
     freshnessState: "CURRENT", fixtureState: "LIVE", assertionType: "INFERENCE",
@@ -54,11 +54,13 @@ const cyclic = evaluation(completeTasks, [dep, { ...dep, id: "d0000000-0000-4000
 const insufficient = evaluateScheduleExposure({ tasks: [task("a", "Design", null, null), task("b", "Build", null, null, milestone.id)], dependencies: [dep], milestones: [milestone], trigger, evaluatedAt: "2026-09-20T12:00:00.000Z" });
 const candidates = [
   { kind: "dependency_change" as const, entityId: dep.id, label: "Design → Build", status: "active", changedAt: day(3) },
-  { kind: "milestone_date_change" as const, entityId: milestone.id, label: "Go-live", status: "planned", changedAt: day(4) },
+  { kind: "milestone_state_evaluation" as const, entityId: milestone.id, label: "Go-live", status: "planned", changedAt: day(4) },
 ];
 const markup = (node: React.ReactElement) => renderToStaticMarkup(node);
 
 const completeRecord = record(complete, completeTasks);
+/** Evidence committed, Finding/Recommendation did not — exactly what listScheduleExposures returns then. */
+const incompleteRecord: ScheduleExposureRecord = { ...completeRecord, evidenceId: "evd-incomplete", materializationState: "incomplete", finding: null, recommendation: null };
 console.log(JSON.stringify({
   statuses: { complete: complete.status, partial: partial.status, cyclic: cyclic.status, insufficient: insufficient.status },
   confidence: { evidence: formatEvidenceConfidence(completeRecord.confidence), finding: formatFindingScore(completeRecord.finding!.confidenceScore), persistedFinding: completeRecord.finding!.confidenceScore },
@@ -74,5 +76,7 @@ console.log(JSON.stringify({
   insufficient: markup(<ScheduleExposureView state={{ kind: "ready", exposures: [], candidates, canEvaluate: true }} feedback={{ kind: "not_recorded", evaluation: insufficient }} />),
   evaluateDenied: markup(<ScheduleExposureView state={{ kind: "ready", exposures: [], candidates, canEvaluate: true }} feedback={{ kind: "denied" }} />),
   busy: markup(<ScheduleExposureView state={{ kind: "ready", exposures: [], candidates, canEvaluate: true }} busyEntityId={dep.id} />),
+  incomplete: markup(<ScheduleExposureView state={{ kind: "ready", exposures: [incompleteRecord], candidates, canEvaluate: true }} />),
+  incompleteViewer: markup(<ScheduleExposureView state={{ kind: "ready", exposures: [incompleteRecord], candidates, canEvaluate: false }} />),
   fixture: markup(<ScheduleExposureView state={{ kind: "ready", exposures: [{ ...completeRecord, fixtureState: "DEMO_FIXTURE" }], candidates: [], canEvaluate: false }} />),
 }));

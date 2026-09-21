@@ -536,6 +536,20 @@ export const PRIVILEGED_ACCESS_REGISTRY: readonly PrivilegedAccessEntry[] = [
     strictCriteriaMet: "L3",
     needsRlsBeforeSwap: false,
   },
+  {
+    file: "src/lib/critical-path/schedule-exposure-trusted-writer.ts",
+    purpose:
+      "P2-16 trusted write transport for the three schedule-exposure adapter RPCs. The database cannot recompute the H9 critical-path engine, so a client-callable RPC would let any project writer record hand-written output attributed to the deterministic schedule engine. The RPCs are therefore service_role-only and reached solely from /api/critical-path/schedule-exposure after the server has authenticated the human, checked project write access, read the schedule through the human's RLS client and run the engine itself.",
+    riskLevel: "HIGH",
+    mitigations: [
+      "Created only after requireAuthenticatedUser, requireProjectAccess(write) and a workspace-membership role check (owner/admin/pm)",
+      "Used for the three schedule-exposure RPC writes only — never for reads, which stay on the request-scoped RLS client",
+      "Every RPC receives the authenticated human as p_actor_user_id; the database re-verifies that actor's current owner/admin/pm membership of the exact workspace + project and refuses non-service callers in-body",
+      "Persisted attribution is the verified human actor, never the service role; logged to security telemetry via createPrivilegedSupabaseClient",
+    ],
+    strictCriteriaMet: "L3",
+    needsRlsBeforeSwap: false,
+  },
 ] as const;
 
 export function assertPrivilegedAccessJustified(file: string): void {

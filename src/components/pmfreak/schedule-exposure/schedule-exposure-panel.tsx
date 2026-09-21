@@ -90,6 +90,45 @@ function EvaluationFeedback({ feedback }: { feedback: ScheduleExposureEvaluation
   );
 }
 
+/**
+ * A chain whose Evidence committed but whose Finding/Recommendation did not. It must never look
+ * like a finished exposure: it states what is missing and offers to resume that exact Evidence.
+ */
+function IncompleteExposureCard({
+  record,
+  canResume,
+  busy,
+  onResume,
+}: {
+  record: ScheduleExposureRecord;
+  canResume: boolean;
+  busy: boolean;
+  onResume?: (record: ScheduleExposureRecord) => void;
+}) {
+  return (
+    <li data-testid="schedule-exposure-incomplete" role="alert" className="rounded-xl border border-amber-400/30 bg-amber-400/[0.06] px-3 py-3">
+      <h3 className="text-sm font-medium text-amber-100">{record.title}</h3>
+      <p className="mt-1 text-xs text-amber-100/90">
+        Schedule evaluation recorded, but the Finding and Recommendation did not finish materializing. No decision or action has been created.
+      </p>
+      <p className="mt-1 break-all font-mono text-[11px] text-amber-100/60">Evidence {record.evidenceId}</p>
+      {canResume ? (
+        <button
+          type="button"
+          data-testid="schedule-exposure-resume"
+          disabled={busy}
+          onClick={() => onResume?.(record)}
+          className="mt-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-2.5 py-1 text-xs font-medium text-amber-100 hover:bg-amber-400/20 disabled:opacity-50"
+        >
+          {busy ? "Resuming…" : "Resume materialization"}
+        </button>
+      ) : (
+        <p className="mt-2 text-xs text-amber-100/70">A project owner, admin or PM can resume it.</p>
+      )}
+    </li>
+  );
+}
+
 function ExposureCard({ record }: { record: ScheduleExposureRecord }) {
   const headingId = useId();
   const coverageTone = record.missingDataState === "COMPLETE" ? "ok" : "warn";
@@ -186,12 +225,14 @@ export function ScheduleExposureView({
   feedback = null,
   busyEntityId = null,
   onEvaluate,
+  onResume,
   onRetry,
 }: {
   state: ScheduleExposureLoadState;
   feedback?: ScheduleExposureEvaluationFeedback | null;
   busyEntityId?: string | null;
   onEvaluate?: (candidate: ScheduleTriggerCandidate) => void;
+  onResume?: (record: ScheduleExposureRecord) => void;
   onRetry?: () => void;
 }) {
   const headingId = useId();
@@ -224,11 +265,23 @@ export function ScheduleExposureView({
 
           {state.exposures.length === 0 ? (
             <p data-testid="schedule-exposure-empty" className="mt-2 text-sm text-zinc-400">
-              No schedule exposure has been recorded for this project. Evaluate a dependency or milestone change below to check it against the critical path.
+              No schedule exposure has been recorded for this project. Evaluate a dependency change or a milestone&apos;s current state below to check it against the critical path.
             </p>
           ) : (
             <ul className="mt-2 space-y-2">
-              {state.exposures.map((record) => <ExposureCard key={record.evidenceId} record={record} />)}
+              {state.exposures.map((record) =>
+                record.materializationState === "incomplete" ? (
+                  <IncompleteExposureCard
+                    key={record.evidenceId}
+                    record={record}
+                    canResume={state.canEvaluate}
+                    busy={busyEntityId !== null}
+                    onResume={onResume}
+                  />
+                ) : (
+                  <ExposureCard key={record.evidenceId} record={record} />
+                ),
+              )}
             </ul>
           )}
 
@@ -239,7 +292,7 @@ export function ScheduleExposureView({
                 {state.candidates.map((candidate) => (
                   <li key={`${candidate.kind}:${candidate.entityId}`} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-white/5 px-2.5 py-1.5">
                     <span className="min-w-0 text-xs text-zinc-300">
-                      <span className="text-zinc-500">{candidate.kind === "dependency_change" ? "Dependency" : "Milestone"}: </span>
+                      <span className="text-zinc-500">{candidate.kind === "dependency_change" ? "Dependency change" : "Milestone (current state)"}: </span>
                       {candidate.label} <span className="text-zinc-500">({candidate.status})</span>
                     </span>
                     <button
@@ -247,7 +300,7 @@ export function ScheduleExposureView({
                       data-testid="schedule-exposure-evaluate"
                       disabled={busyEntityId !== null}
                       onClick={() => onEvaluate?.(candidate)}
-                      aria-label={`Evaluate exposure for ${candidate.kind === "dependency_change" ? "dependency" : "milestone"} ${candidate.label}`}
+                      aria-label={candidate.kind === "dependency_change" ? `Evaluate exposure for dependency ${candidate.label}` : `Evaluate current state of milestone ${candidate.label}`}
                       className="rounded-lg border border-white/15 bg-white/[0.05] px-2.5 py-1 text-xs font-medium text-zinc-200 hover:bg-white/10 disabled:opacity-50"
                     >
                       {busyEntityId === candidate.entityId ? "Evaluating…" : "Evaluate exposure"}
@@ -327,5 +380,26 @@ export function ScheduleExposurePanel({ workspaceId, projectId, onRecorded }: { 
     }
   }, [workspaceId, projectId, load, onRecorded]);
 
-  return <ScheduleExposureView state={state} feedback={feedback} busyEntityId={busyEntityId} onEvaluate={evaluate} onRetry={load} />;
+  const resume = useCallback(async (record: ScheduleExposureRecord) => {
+    setBusyEntityId(record.evidenceId);
+    setFeedback(null);
+    try {
+      const response = await fetch("/api/critical-path/schedule-exposure", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId, projectId, action: "resume_materialization", evidenceId: record.evidenceId }),
+      });
+      if (response.status === 401 || response.status === 403) return setFeedback({ kind: "denied" });
+      const body = (await response.json()) as { ok?: boolean; error?: string };
+      if (!response.ok || !body.ok) return setFeedback({ kind: "error", message: body.error ?? "Materialization could not be resumed." });
+      onRecorded?.();
+      await load();
+    } catch {
+      setFeedback({ kind: "error", message: "Materialization could not be resumed." });
+    } finally {
+      setBusyEntityId(null);
+    }
+  }, [workspaceId, projectId, load, onRecorded]);
+
+  return <ScheduleExposureView state={state} feedback={feedback} busyEntityId={busyEntityId} onEvaluate={evaluate} onResume={resume} onRetry={load} />;
 }
