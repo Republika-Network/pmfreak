@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Suspense } from "react";
 import { requireAuthUser } from "@/lib/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { resolveRoutedPmo } from "@/lib/pmos/routed-pmo";
@@ -6,6 +7,8 @@ import { pmoCommandCenterBreadcrumb, pmoCommandCenterPath } from "@/lib/pmos/pmo
 import { pmoHomePath } from "@/lib/pmos/pmo-paths";
 import { projectHomePath } from "@/lib/projects/project-paths";
 import { PmoNotAvailable } from "@/components/pmfreak/pmos/pmo-route-states";
+import { PmoAttentionView, type PmoAttentionViewState } from "@/components/pmfreak/pmos/pmo-attention-panel";
+import { loadPmoPortfolioAttention } from "@/lib/pmos/pmo-portfolio-attention-loader";
 import {
   pmoProjectsQuery,
   pmoRaidQuery,
@@ -141,6 +144,42 @@ function PmoHeader({ workspaceId, pmo }: { workspaceId: string; pmo: PmoIdentity
       </p>
     </header>
   );
+}
+
+/**
+ * P2-17 — PMO Attention. The qualified portfolio projection over THIS PMO's own projects,
+ * read with the caller's RLS client and the already-authorized workspace. Streamed behind a
+ * Suspense boundary so the rollup below renders first and loading is a real, labelled state.
+ * A failure here degrades this section only and says so — it never renders a partial
+ * assessment as though it were complete.
+ */
+async function PmoAttentionSection({
+  supabase,
+  workspaceId,
+  pmoId,
+  projects,
+}: {
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>;
+  workspaceId: string;
+  pmoId: string;
+  projects: PmoProjectRow[];
+}) {
+  let state: PmoAttentionViewState;
+  try {
+    const attention = await loadPmoPortfolioAttention(supabase as never, { workspaceId, pmoId, projects });
+    state = { kind: "ready", attention };
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "pmo_command_center.attention_unavailable",
+        workspaceId,
+        pmoId,
+        reason: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    state = { kind: "error", retryHref: pmoCommandCenterPath(workspaceId, pmoId) };
+  }
+  return <PmoAttentionView state={state} />;
 }
 
 export default async function PmoCommandCenterPage({
@@ -323,6 +362,10 @@ export default async function PmoCommandCenterPage({
         </section>
       ) : (
         <>
+          <Suspense fallback={<PmoAttentionView state={{ kind: "loading" }} />}>
+            <PmoAttentionSection supabase={supabase} workspaceId={workspaceId} pmoId={pmoId} projects={projects} />
+          </Suspense>
+
           <section className="grid gap-3 sm:grid-cols-4">
             {[
               { label: "Projects in this PMO", value: rollup.total, tone: "text-slate-900" },

@@ -61,6 +61,8 @@ uploads/
 /artifacts/p2-14/
 # P2-16 schedule exposure browser screenshots (tests/e2e/p2-16-schedule-exposure.spec.ts).
 /artifacts/p2-16/
+# P2-17 PMO attention browser screenshots (tests/e2e/p2-17-pmo-attention.spec.ts).
+/artifacts/p2-17/
 /test-results/
 /playwright-report/
 /.playwright/
