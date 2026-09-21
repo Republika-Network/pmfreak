@@ -218,6 +218,18 @@ C4 (`0fd86b561326c7895980fffb5c47c8aa6b8585c5`) certified the candidate as it st
 
 The per-prompt evidence sections keep quoting the pre-rebase SHAs, because those are the ids the runs were actually performed against. This table is the one place that reconciles them with `main`.
 
+**P2-16 pre-rebase → `main` SHA map.** PR #616 was also merged with a rebase, so the P2-16 SHAs quoted in its records were replayed onto `main` under new ids. The originals remain resolvable through `refs/pull/616/head` but are NOT in `main`'s history. Each pair below was confirmed to have an identical tree, and the final `main` tree is identical to the verified PR head tree (`b5e39d74fcf28fb4919d662464298a9ba57f5946`), so the evidence is unaffected — only the name changed.
+
+| P2-16 commit | Pre-rebase SHA (as recorded in these documents) | On `main` after rebase |
+|---|---|---|
+| Initial candidate (historical) | `b602363ec5f3536a16fdfc1a6368ffd004b8f027` | `fcc219689fd0a06b55c128ee676bb5740d9ec0c1` |
+| Initial verification record | `1e4c510e8fff6d8c5ca39154bf255aad62cbd53b` | `86d082b7403aa6087ed35557cdb3920fe0191369` |
+| CodeQL test-only fix | `ba2ef081d17a773b038510629fd0c7cac02b7d00` | `17353ff72502f01d114d6c598ee569797b625896` |
+| **Final executable verification SHA** (review remediation) | `d001345dbf6a70e362e9d0abbc4c8d2625ef5246` | `131f46b5dde2bbe9bc88a131bfe1796e598bdcc4` |
+| Final review verification record | `553ab12dd3ed4d6a01eae815a6d56637283feefa` | `cc16d1f785cac7e573f0975e5fccdbe502180a0b` |
+
+As with the PR #614 map, the P2-16 evidence sections keep quoting the pre-rebase SHAs because those are the ids the runs were performed against; this table reconciles them with `main`.
+
 `95c928b2` is the blocker-discovery baseline and never carried the repairs. The decisive evidence on C4: the canonical chain Source → … → Observation exports complete with the Finding resolved and no false gap; invite acceptance lands on `/team` with the membership already committed and no stray workspace; a revocation recorded with a timestamp deliberately OLDER than the authorization it revokes still refuses both dispatch and start (10/10 each, alongside 10/10 ordinary flows); the P2-14 browser journey passes 38/38; and `check:beta-release` returns CONDITIONAL GO with Dependency Security the only (advisory) warning. Each prompt's "Verification Evidence — 2026-09-19" and "Exact-head post-repair verification — 2026-09-20" sections carry the chronology. P2-03 to P2-08 were re-verified on the same SHA.
 
 | Prompt ID | WP | Track | Status | Branch/Commit | Dependencies | Tests | Gate | Blocker | Next |
