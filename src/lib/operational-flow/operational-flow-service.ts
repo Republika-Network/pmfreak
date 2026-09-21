@@ -1214,12 +1214,28 @@ export async function getCompleteLineageProjection(
 
     // 5. Finding (Signal)
     if (signal) {
+      /**
+       * The Signal is the ONE confidence on this projection persisted as a percentage.
+       *
+       * `operational_signals.confidence_score` is `numeric(5,2) check (between 0 and 100)`
+       * and the detector writes values like 92; the deterministic risk derivation compares
+       * it the same way (`confidence_score >= 85`). Evidence and Observation confidence are
+       * `numeric(5,4)` fractions (0.50–0.98), and every consumer of a `LineageStepNode`
+       * — the review panel's `formatPct`, and the P2-20 audit export that carries
+       * `confidenceScore` verbatim — multiplies by 100.
+       *
+       * So the projection normalizes here, at the one boundary where the two scales meet,
+       * rather than teaching each consumer to guess which scale a number is on. Without
+       * this, a Finding of 92 rendered as `9200.0%`. That was unreachable until the
+       * `source_signal_id` repair made the Finding resolve, which is why it surfaced now.
+       */
+      const signalConfidence = Number(signal.confidence_score) / 100;
       steps.push({
         kind: "finding",
         id: String(signal.id),
         title: `Finding: ${String(signal.signal_type).replace(/_/g, " ")}`,
         status: "intact",
-        summary: `Severity: ${signal.severity}, Confidence: ${(Number(signal.confidence_score) * 100).toFixed(1)}% — ${signal.summary}`,
+        summary: `Severity: ${signal.severity}, Confidence: ${(signalConfidence * 100).toFixed(1)}% — ${signal.summary}`,
         entity: signal,
         correlationId: null,
         causationId: null,
@@ -1229,7 +1245,7 @@ export async function getCompleteLineageProjection(
         occurredAt: String(signal.created_at || ""),
         recordedAt: String(signal.created_at || ""),
         actorId: null,
-        confidenceScore: Number(signal.confidence_score),
+        confidenceScore: signalConfidence,
       });
     } else {
       steps.push({

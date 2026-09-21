@@ -670,6 +670,17 @@ test("P2-20 G: legitimate audit metadata survives redaction", async () => {
   assert.equal(evidenceStep.correlationId, CORR);
   assert.equal(evidenceStep.causationId, "norm-1");
 
+  // The export carries `confidenceScore` verbatim, so the two persisted scales must already
+  // be reconciled upstream: `operational_signals.confidence_score` is 0-100 (this fixture
+  // persists 85, as the detector does), Evidence is a 0-1 fraction, and both arrive here on
+  // the canonical 0-1 lineage scale. An un-normalized Finding would export 85 and render
+  // 8500.0%.
+  const findingStep = stepOf(lineage, "finding");
+  assert.equal(findingStep.entityFields?.confidence_score, 85, "fixture keeps the persisted 0-100 scale");
+  assert.equal(findingStep.confidenceScore, 0.85, "exported on the canonical 0-1 lineage scale");
+  assert.match(findingStep.summary, /Confidence: 85\.0%/);
+  assert.doesNotMatch(findingStep.summary, /8500\.0%/);
+
   const actionStep = stepOf(lineage, "material_action");
   assert.equal(actionStep.entityFields?.proposal_digest, "e".repeat(64));
   assert.equal(actionStep.entityFields?.action_class, "ordinary_business_write");
