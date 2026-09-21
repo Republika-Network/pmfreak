@@ -1042,7 +1042,7 @@ test("D1. TENANT_BINDING and ROLE_BINDING come from the invitation record, serve
   EVIDENCE.inviteDestinationRedirectHops = String(chain.hops);
   EVIDENCE.inviteFinalDestination = finalDestination;
   EVIDENCE.inviteFinalDestinationStatus = String(finalStatus);
-  EVIDENCE.inviteAcceptanceSurface = `PARTICIPANT_FACING_ROUTE GET ${inviteAcceptPath.replace(/\/[^/]+$/, "/<token>")} -> ${accepted.status} Location ${chain.firstDestination} (a successful post-acceptance landing; /team and the onboarding destinations are both legitimate and race-dependent). THE RETURNED DESTINATION WAS THEN WALKED TO A TERMINAL RESPONSE with the same participant session: ${chain.firstDestination}${chain.hops > 0 ? ` -> ${finalDestination}` : ""} -> ${finalStatus} (every hop same-origin, bounded to ${chain.hops} continuation(s), never an authentication-loss destination)`;
+  EVIDENCE.inviteAcceptanceSurface = `PARTICIPANT_FACING_ROUTE GET ${inviteAcceptPath.replace(/\/[^/]+$/, "/<token>")} -> ${accepted.status} Location ${chain.firstDestination} (/team is the ONLY successful acceptance destination: the invite page owns its own success redirect, and a workspace-onboarding destination is NOT an accepted outcome for this route). THE RETURNED DESTINATION WAS THEN WALKED TO A TERMINAL RESPONSE with the same participant session: ${chain.firstDestination}${chain.hops > 0 ? ` -> ${finalDestination}` : ""} -> ${finalStatus} (every hop same-origin, bounded to ${chain.hops} continuation(s), never an authentication-loss destination)`;
   EVIDENCE.inviteAcceptanceIdentitySource = "SESSION_DERIVED (requireAuthUser on the shipped route), not caller-supplied";
 });
 

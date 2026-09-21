@@ -456,7 +456,8 @@ test("P2-10: Mocked complete lineage graph correctly traces Evidence → Finding
         evidence_item_id: evidenceId,
         signal_type: "readiness_clearance",
         severity: "low",
-        confidence_score: 0.95,
+        // operational_signals.confidence_score is the 0-100 persisted scale.
+        confidence_score: 95,
         summary: "Readiness criteria satisfied",
         created_at: "2026-08-13T07:10:00Z",
       },
@@ -1270,7 +1271,7 @@ test("P2-10 T10: when the primary evidence is not one of the links, all links ar
       evidence_item_id: "ev-signal",
       signal_type: "readiness_clearance",
       severity: "low",
-      confidence_score: 0.95,
+      confidence_score: 95,
       summary: "Signal evidence outside the link set",
       created_at: "2026-08-13T07:15:00Z",
     },
@@ -1614,7 +1615,7 @@ const findingSignal = (over: Row = {}): Row => ({
   evidence_item_id: "ev-r1",
   signal_type: "scope_creep",
   severity: "high",
-  confidence_score: 0.91,
+  confidence_score: 92,
   summary: "Work outside the agreed scope was requested.",
   created_at: "2026-08-13T07:15:00Z",
   ...over,
@@ -1697,4 +1698,46 @@ test("P2-10 finding: a source_signal_id with no in-scope Signal is a gap, never 
   assert.equal(finding.id, null, "an unresolvable reference must not be echoed as a canonical id");
   assert.equal((stepOf(proj, "finding").entity as Row | null) ?? null, null, "no Signal row is attached");
   assert.ok(proj.gaps.includes(FINDING_GAP));
+});
+
+// ─── Confidence scale: one normalization boundary, not two contracts ─────────
+//
+// `operational_signals.confidence_score` is `numeric(5,2)` on a 0-100 scale (the detector
+// writes 92, and the risk derivation compares `>= 85`), while `evidence_items` and
+// `canonical_outcome_observations` are `numeric(5,4)` fractions. Every consumer of a
+// `LineageStepNode.confidenceScore` multiplies by 100 — the review panel's `formatPct` and
+// the P2-20 export, which carries the value verbatim. The projection therefore normalizes
+// the Signal at that boundary. Before it did, a Finding of 92 rendered as `9200.0%`; that
+// was unreachable until `source_signal_id` made the Finding resolve at all.
+
+test("P2-10 confidence: a Signal persisted as 92 projects 0.92 and renders 92.0%", async () => {
+  const proj = await runLineage(findingDb());
+  const finding = stepOf(proj, "finding");
+
+  assert.equal((finding.entity as Row).confidence_score, 92, "fixture uses the persisted 0-100 scale");
+  assert.equal(finding.confidenceScore, 0.92, "projected onto the canonical 0-1 lineage scale");
+  assert.match(finding.summary, /Confidence: 92\.0%/);
+  assert.doesNotMatch(finding.summary, /9200\.0%/, "the percentage must not be multiplied twice");
+  // What `formatPct` (and any other consumer) will render from the projected value.
+  assert.equal(`${(Number(finding.confidenceScore) * 100).toFixed(1)}%`, "92.0%");
+});
+
+test("P2-10 confidence: the 0-100 Signal scale is normalized across its range", async () => {
+  for (const [persisted, projected] of [[0, 0], [80, 0.8], [95, 0.95], [100, 1]] as const) {
+    const proj = await runLineage(findingDb({}, [findingSignal({ confidence_score: persisted })]));
+    const finding = stepOf(proj, "finding");
+    assert.equal(finding.confidenceScore, projected, `${persisted} must project to ${projected}`);
+    assert.match(finding.summary, new RegExp(`Confidence: ${projected * 100}\\.0%`));
+  }
+});
+
+test("P2-10 confidence: Evidence keeps its own 0-1 persisted contract, undivided", async () => {
+  // The repair must distinguish the two persisted scales rather than normalizing everything.
+  const proj = await runLineage(findingDb());
+  const evidence = stepOf(proj, "evidence");
+
+  assert.equal((evidence.entity as Row).confidence_score, 0.9, "evidence_items persists a fraction");
+  assert.equal(evidence.confidenceScore, 0.9, "evidence confidence is passed through unchanged");
+  assert.match(evidence.summary, /Confidence: 90\.0%/);
+  assert.doesNotMatch(evidence.summary, /0\.9%/, "evidence confidence must not be divided by 100");
 });
