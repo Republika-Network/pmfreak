@@ -16,7 +16,16 @@ const r = JSON.parse(
     maxBuffer: 32 * 1024 * 1024,
   }).trim(),
 );
-const text = (html) => html.replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&#x27;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/\s+/g, " ");
+// `&amp;` is decoded LAST, so every encoded entity is unescaped at most once (CodeQL js/double-escaping).
+const text = (html) => html.replace(/<[^>]+>/g, " ").replace(/&#x27;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/\s+/g, " ");
+
+test("P2-16 UI: the markup-to-text helper decodes each entity exactly once", () => {
+  assert.equal(text("&amp;quot;"), "&quot;", "an encoded entity must not be double-unescaped");
+  assert.equal(text("&amp;#x27;"), "&#x27;");
+  assert.equal(text("&quot;"), '"');
+  assert.equal(text("&amp;"), "&");
+  assert.equal(text("&#x27;"), "'");
+});
 
 test("P2-16 UI: the harness fixtures really exercise each engine outcome", () => {
   assert.deepEqual(r.statuses, { complete: "qualified", partial: "qualified", cyclic: "invalid_topology", insufficient: "insufficient_data" });
