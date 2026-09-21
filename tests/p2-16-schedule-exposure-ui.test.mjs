@@ -101,12 +101,25 @@ test("P2-16 UI: insufficient data states the gaps and records nothing", () => {
 
 test("P2-16 UI: evaluation actions are keyboard-reachable buttons with accessible names, and withheld from viewers", () => {
   assert.match(r.empty, /<button type="button" data-testid="schedule-exposure-evaluate" aria-label="Evaluate exposure for dependency Design → Build"/);
-  assert.match(r.empty, /aria-label="Evaluate exposure for milestone Go-live"/);
+  assert.match(r.empty, /aria-label="Evaluate current state of milestone Go-live"/);
+  assert.match(text(r.empty), /Milestone \(current state\): Go-live/, "finding #4: the milestone path is labelled as a current-state evaluation");
+  assert.doesNotMatch(text(r.empty), /date change/i);
   assert.doesNotMatch(r.viewer, /schedule-exposure-evaluate/);
   assert.match(text(r.viewer), /Only project owners, admins and PMs can evaluate schedule changes\./);
   assert.match(r.busy, /disabled=""[^>]*>Evaluating…<\/button>/);
   assert.match(r.evaluateDenied, /role="alert"/);
   assert.match(text(r.duplicate), /Already recorded for this schedule state and change — nothing new was created\./);
+});
+
+test("P2-16 UI finding #5: an incomplete chain is an alert with a resume action, never a normal exposure", () => {
+  assert.match(r.incomplete, /data-testid="schedule-exposure-incomplete" role="alert"/);
+  const t = text(r.incomplete);
+  assert.match(t, /Schedule evaluation recorded, but the Finding and Recommendation did not finish materializing\. No decision or action has been created\./);
+  assert.match(r.incomplete, /<button type="button" data-testid="schedule-exposure-resume"[^>]*>Resume materialization<\/button>/);
+  assert.doesNotMatch(r.incomplete, /data-testid="schedule-exposure-item"/, "it is not rendered as a complete exposure");
+  assert.doesNotMatch(t, /Confidence \d+%|Recommendation \(proposed/);
+  assert.doesNotMatch(r.incompleteViewer, /schedule-exposure-resume/, "a viewer is not offered resume");
+  assert.match(text(r.incompleteViewer), /A project owner, admin or PM can resume it\./);
 });
 
 test("P2-16 UI: fixture data can never be mistaken for live", () => {

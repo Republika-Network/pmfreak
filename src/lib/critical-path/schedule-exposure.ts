@@ -66,13 +66,20 @@ export type ScheduleExposureTrigger =
       changedAt: string;
     }
   | {
-      kind: "milestone_date_change";
+      /**
+       * An explicit PM evaluation of a milestone's CURRENT schedule state. H8 keeps no durable
+       * milestone date-change history, so this is never presented as an observed date change.
+       */
+      kind: "milestone_state_evaluation";
       entityType: "project_milestone";
       entityId: string;
+      title: string;
+      status: string;
       targetDate: string | null;
       forecastDate: string | null;
       baselineDate: string | null;
-      changedAt: string;
+      /** The milestone row's updated_at — source-row provenance only; any field edit moves it. */
+      sourceUpdatedAt: string;
     };
 
 export type ScheduleSnapshot = {
@@ -166,9 +173,10 @@ function sha256(value: string): string {
 const byId = <T extends { id: string }>(a: T, b: T) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 /**
- * Content address of the schedule state the engine evaluates. Ordered tuples of exactly the
- * fields the engine and the milestone projection read — never updated_at or any clock — so
- * an identical schedule always digests identically and any material edit changes it.
+ * Content address of the schedule state the engine evaluates. Ordered tuples of every field
+ * the engine, the milestone projection or the rendered canonical payload read — never
+ * updated_at or any clock — so an identical schedule always digests identically and any edit
+ * that would change the recorded content changes the identity.
  */
 export function computeScheduleSnapshot(
   tasks: ExecutionTaskRow[],
@@ -178,8 +186,11 @@ export function computeScheduleSnapshot(
   const canonical = {
     canonicalization: SCHEDULE_SNAPSHOT_CANONICALIZATION,
     engine: SCHEDULE_ENGINE_KEY,
+    // Titles are bound because the canonical payload renders them: a rename must be a new
+    // snapshot, never the same identity with different content.
     tasks: [...tasks].sort(byId).map((t) => [
       t.id,
+      t.title,
       isoOrNull(t.planned_start_date),
       isoOrNull(t.planned_finish_date),
       isoOrNull(t.forecast_finish_date),
@@ -195,6 +206,7 @@ export function computeScheduleSnapshot(
     ]),
     milestones: [...milestones].sort(byId).map((m) => [
       m.id,
+      m.title,
       isoOrNull(m.target_date),
       isoOrNull(m.forecast_date),
       isoOrNull(m.baseline_date),
@@ -281,7 +293,7 @@ export function evaluateScheduleExposure(input: ScheduleExposureInput): Schedule
       entityIds: [trigger.entityId],
     });
   }
-  if (trigger.kind === "milestone_date_change" && !milestones.some((m) => m.id === trigger.entityId)) {
+  if (trigger.kind === "milestone_state_evaluation" && !milestones.some((m) => m.id === trigger.entityId)) {
     base.topologyIssues.push({
       type: "trigger_outside_graph",
       message: "The changed milestone is not in this project's schedule.",
@@ -450,7 +462,7 @@ function describeTrigger(trigger: ScheduleExposureTrigger, taskTitles: Map<strin
   }
   const target = trigger.targetDate ? trigger.targetDate.slice(0, 10) : "no target";
   const forecast = trigger.forecastDate ? trigger.forecastDate.slice(0, 10) : "no forecast";
-  return `Milestone dates recorded: target ${target}, forecast ${forecast}.`;
+  return `Current state of milestone "${trigger.title}" evaluated on request (${trigger.status}; target ${target}, forecast ${forecast}).`;
 }
 
 /**
@@ -488,7 +500,7 @@ export function buildScheduleExposurePayload(
   const recommendation =
     evaluation.trigger.kind === "dependency_change"
       ? `Confirm whether the dependency is required as modelled; if it is, re-plan the linked work or the target date of "${lead.title}" and record the chosen response as a Decision.`
-      : `Review the recorded dates for "${lead.title}" against the dependency network and record the chosen response (re-plan, mitigate or accept) as a Decision.`;
+      : `Review the current dates of "${lead.title}" against the dependency network and record the chosen response (re-plan, mitigate or accept) as a Decision.`;
 
   return {
     schemaVersion: 1,

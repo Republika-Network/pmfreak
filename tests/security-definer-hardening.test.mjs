@@ -42,9 +42,10 @@ const SCRIPT = path.join(ROOT, "scripts/check-security-definer-hardening.mjs");
 const MATRIX_PATH = path.join(ROOT, "supabase/security/security-definer-grant-matrix.json");
 const REMEDIATION = "supabase/migrations/20260910000000_security_definer_effective_grant_hardening.sql";
 
-// 30 through P2-15; P2-16 adds the three narrow schedule-exposure authenticated RPCs.
+// 30 through P2-15; P2-16 adds three schedule-exposure RPCs that are service_role-only (trusted
+// server-side adapter boundary), so the authenticated count is unchanged.
 const EXPECTED_TOTAL = 33;
-const EXPECTED_AUTHENTICATED = 26;
+const EXPECTED_AUTHENTICATED = 23;
 
 // The four functions whose only legitimate invocation path is another
 // SECURITY DEFINER function or a privileged/scheduled context. No client role

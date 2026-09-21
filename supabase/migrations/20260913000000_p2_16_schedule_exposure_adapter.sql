@@ -35,6 +35,19 @@
 --   5. materialize_schedule_exposure_finding — Finding (operational_signals)
 --      + risk + governance event + governed `proposed` Recommendation.
 --
+-- TRUSTED WRITE BOUNDARY
+--
+-- The database cannot recompute the H9 engine, so it cannot tell a genuine
+-- engine result from a hand-written one. The three contracts are therefore
+-- executable by service_role ONLY (PUBLIC, anon and authenticated revoked) and
+-- each refuses any other caller in-body. They are reached only from the
+-- authenticated route, after the server has itself run the engine on rows read
+-- through the user's RLS client. The service role is a technical write
+-- transport, never business authority: every call names the human actor, and
+-- each contract independently re-verifies that the actor exists and currently
+-- holds owner/admin/pm on exactly this workspace + project before writing.
+-- Persisted attribution is that verified human, never the service role.
+--
 -- WHAT IT DOES NOT DO
 --
 --   * no new table, no new column, no RLS/policy change, no data change;
@@ -81,6 +94,7 @@ alter table public.evidence_items add constraint evidence_items_source_type_chec
 create or replace function public.capture_schedule_exposure_evaluation(
   p_workspace_id uuid,
   p_project_id uuid,
+  p_actor_user_id uuid,
   p_payload jsonb,
   p_occurred_at timestamptz,
   p_evaluated_at timestamptz,
@@ -91,7 +105,7 @@ language plpgsql security definer
 set search_path = pg_catalog, public, extensions
 as $$
 declare
-  v_actor uuid := auth.uid();
+  v_actor uuid := p_actor_user_id;
   v_source_key constant text := 'schedule-engine:h9-v1';
   v_source public.operational_sources;
   v_raw public.operational_raw_inputs;
@@ -106,8 +120,16 @@ declare
   v_duplicate boolean := false;
   v_audit_id uuid;
 begin
-  if v_actor is null then raise exception 'schedule_exposure_unauthenticated'; end if;
-  if not public.can_write_operational_project(p_workspace_id, p_project_id) then raise exception 'schedule_exposure_access_denied'; end if;
+  -- Trusted boundary: only the server-side adapter (service_role transport) may record an
+  -- engine evaluation, and only on behalf of a human who may write this project right now.
+  if not public.operational_is_service_role() then raise exception 'schedule_exposure_trusted_writer_required'; end if;
+  if v_actor is null then raise exception 'schedule_exposure_actor_required'; end if;
+  if not exists (
+    select 1 from public.projects p
+    join public.workspace_memberships wm on wm.workspace_id = p.workspace_id
+    join auth.users u on u.id = wm.user_id
+    where p.id = p_project_id and p.workspace_id = p_workspace_id and wm.user_id = v_actor and wm.role in ('owner','admin','pm')
+  ) then raise exception 'schedule_exposure_access_denied'; end if;
   if p_correlation_id is null then raise exception 'schedule_exposure_correlation_id_required'; end if;
   if p_occurred_at is null or p_occurred_at > now() + interval '5 minutes' then raise exception 'schedule_exposure_occurred_at_invalid'; end if;
   if p_evaluated_at is null or p_evaluated_at > now() + interval '5 minutes' then raise exception 'schedule_exposure_evaluated_at_invalid'; end if;
@@ -135,7 +157,7 @@ begin
 
   -- Trigger: a typed change of an entity that belongs to THIS project.
   v_trigger := p_payload->'trigger';
-  if v_trigger is null or v_trigger->>'kind' not in ('dependency_change','milestone_date_change')
+  if v_trigger is null or v_trigger->>'kind' not in ('dependency_change','milestone_state_evaluation')
      or coalesce(v_trigger->>'entityId','') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then
     raise exception 'schedule_exposure_trigger_invalid';
   end if;
@@ -214,12 +236,12 @@ begin
     'auditEventId', v_audit_id, 'idempotencyKey', v_idempotency_key, 'evidenceCreated', false);
 end $$;
 
-revoke all on function public.capture_schedule_exposure_evaluation(uuid,uuid,jsonb,timestamptz,timestamptz,uuid,uuid) from public;
-revoke execute on function public.capture_schedule_exposure_evaluation(uuid,uuid,jsonb,timestamptz,timestamptz,uuid,uuid) from public, anon;
-grant execute on function public.capture_schedule_exposure_evaluation(uuid,uuid,jsonb,timestamptz,timestamptz,uuid,uuid) to authenticated, service_role;
+revoke all on function public.capture_schedule_exposure_evaluation(uuid,uuid,uuid,jsonb,timestamptz,timestamptz,uuid,uuid) from public;
+revoke execute on function public.capture_schedule_exposure_evaluation(uuid,uuid,uuid,jsonb,timestamptz,timestamptz,uuid,uuid) from public, anon, authenticated;
+grant execute on function public.capture_schedule_exposure_evaluation(uuid,uuid,uuid,jsonb,timestamptz,timestamptz,uuid,uuid) to service_role;
 
-comment on function public.capture_schedule_exposure_evaluation(uuid,uuid,jsonb,timestamptz,timestamptz,uuid,uuid) is
-  'P2-16 schedule intake. Records one qualified H7–H9 exposure evaluation as an immutable Raw Input + schedule_exposure.evaluated v1 Normalized Event under the pinned engine Source. Idempotent on (snapshot digest, trigger). Never creates Evidence.';
+comment on function public.capture_schedule_exposure_evaluation(uuid,uuid,uuid,jsonb,timestamptz,timestamptz,uuid,uuid) is
+  'P2-16 schedule intake (service_role transport only; human actor re-verified in-body). Records one qualified H7–H9 exposure evaluation as an immutable Raw Input + schedule_exposure.evaluated v1 Normalized Event under the pinned engine Source. Idempotent on (snapshot digest, trigger). Never creates Evidence.';
 
 -- ----------------------------------------------------------------------------
 -- 4. Evidence derived ONLY from a schedule_exposure.evaluated event.
@@ -231,13 +253,17 @@ comment on function public.capture_schedule_exposure_evaluation(uuid,uuid,jsonb,
 create or replace function public.derive_schedule_exposure_evidence(
   p_workspace_id uuid,
   p_project_id uuid,
-  p_normalized_event_id uuid
+  p_normalized_event_id uuid,
+  p_actor_user_id uuid
 ) returns jsonb
 language plpgsql security definer
 set search_path = pg_catalog, public, extensions
 as $$
 declare
-  v_actor uuid := auth.uid();
+  -- Authorship is the human recorded on the trusted upstream Raw Input; the requester is
+  -- authority-checked separately and never replaces it.
+  v_actor uuid;
+  v_requester uuid := p_actor_user_id;
   v_event public.operational_normalized_events;
   v_raw public.operational_raw_inputs;
   v_source public.operational_sources;
@@ -252,8 +278,14 @@ declare
   v_digest text;
   v_audit_id uuid;
 begin
-  if v_actor is null then raise exception 'evidence_unauthenticated'; end if;
-  if not public.can_write_operational_project(p_workspace_id, p_project_id) then raise exception 'evidence_access_denied'; end if;
+  if not public.operational_is_service_role() then raise exception 'schedule_exposure_trusted_writer_required'; end if;
+  if v_requester is null then raise exception 'schedule_exposure_actor_required'; end if;
+  if not exists (
+    select 1 from public.projects p
+    join public.workspace_memberships wm on wm.workspace_id = p.workspace_id
+    join auth.users u on u.id = wm.user_id
+    where p.id = p_project_id and p.workspace_id = p_workspace_id and wm.user_id = v_requester and wm.role in ('owner','admin','pm')
+  ) then raise exception 'evidence_access_denied'; end if;
 
   select * into v_event from public.operational_normalized_events
     where id = p_normalized_event_id and workspace_id = p_workspace_id and project_id = p_project_id;
@@ -264,6 +296,7 @@ begin
   select * into v_raw from public.operational_raw_inputs where id = v_event.raw_input_id and workspace_id = p_workspace_id and project_id = p_project_id;
   if v_raw.id is null then raise exception 'evidence_missing_raw_input_provenance'; end if;
   if v_raw.status <> 'received' then raise exception 'raw_input_not_derivable_%', v_raw.status; end if;
+  v_actor := v_raw.actor_user_id;
   select * into v_source from public.operational_sources where id = v_event.source_id and workspace_id = p_workspace_id and project_id = p_project_id;
   if v_source.id is null then raise exception 'evidence_missing_source_provenance'; end if;
   if v_source.source_kind <> 'engine' or v_source.is_fixture then raise exception 'schedule_exposure_source_kind_mismatch'; end if;
@@ -311,7 +344,7 @@ begin
   ) returning * into v_evidence;
 
   insert into public.platform_events(workspace_id, project_id, actor_id, actor_type, event_type, event_category, event_payload, source, correlation_id, causation_id, visibility, sensitivity_level, learning_eligible, raw_reference_table, raw_reference_id, metadata, occurred_at)
-  values (p_workspace_id, p_project_id, v_actor, 'user', 'EVIDENCE_DERIVED_V1', 'provenance',
+  values (p_workspace_id, p_project_id, v_requester, 'user', 'EVIDENCE_DERIVED_V1', 'provenance',
     jsonb_build_object('eventVersion', 1, 'evidenceId', v_evidence.id, 'normalizedEventId', v_event.id, 'rawInputId', v_raw.id, 'sourceId', v_source.id,
       'digest', v_digest, 'canonicalizationVersion', 'evidence:v1', 'assertionType', 'INFERENCE', 'classification', 'RISK',
       'confidence', v_confidence, 'missingDataState', v_missing, 'freshnessState', v_freshness, 'fixtureState', 'LIVE',
@@ -323,12 +356,12 @@ begin
   return jsonb_build_object('disposition', 'created', 'evidence', to_jsonb(v_evidence), 'source', to_jsonb(v_source), 'rawInput', to_jsonb(v_raw), 'normalizedEvent', to_jsonb(v_event), 'auditEventId', v_audit_id, 'intelligenceRan', false);
 end $$;
 
-revoke all on function public.derive_schedule_exposure_evidence(uuid,uuid,uuid) from public;
-revoke execute on function public.derive_schedule_exposure_evidence(uuid,uuid,uuid) from public, anon;
-grant execute on function public.derive_schedule_exposure_evidence(uuid,uuid,uuid) to authenticated, service_role;
+revoke all on function public.derive_schedule_exposure_evidence(uuid,uuid,uuid,uuid) from public;
+revoke execute on function public.derive_schedule_exposure_evidence(uuid,uuid,uuid,uuid) from public, anon, authenticated;
+grant execute on function public.derive_schedule_exposure_evidence(uuid,uuid,uuid,uuid) to service_role;
 
-comment on function public.derive_schedule_exposure_evidence(uuid,uuid,uuid) is
-  'P2-16 Evidence derivation. Creates INFERENCE/RISK Evidence only from an accepted schedule_exposure.evaluated v1 event under the engine Source; confidence and missing-data state come from the persisted event. Never runs intelligence.';
+comment on function public.derive_schedule_exposure_evidence(uuid,uuid,uuid,uuid) is
+  'P2-16 Evidence derivation (service_role transport only; requester re-verified, authorship from the upstream Raw Input). Creates INFERENCE/RISK Evidence only from an accepted schedule_exposure.evaluated v1 event under the engine Source; confidence and missing-data state come from the persisted event. Never runs intelligence.';
 
 -- ----------------------------------------------------------------------------
 -- 5. Finding + governed Recommendation from schedule Evidence.
@@ -338,13 +371,13 @@ comment on function public.derive_schedule_exposure_evidence(uuid,uuid,uuid) is
 -- Signal's persisted 0-100 scale. The Recommendation is `proposed` and linked
 -- through source_signal_id. Nothing downstream of Recommendation is created.
 -- ----------------------------------------------------------------------------
-create or replace function public.materialize_schedule_exposure_finding(p_evidence_item_id uuid)
+create or replace function public.materialize_schedule_exposure_finding(p_evidence_item_id uuid, p_actor_user_id uuid)
 returns jsonb
 language plpgsql security definer
 set search_path = pg_catalog, public, extensions
 as $$
 declare
-  v_actor uuid := auth.uid();
+  v_requester uuid := p_actor_user_id;
   v_detector constant text := 'system/deterministic:schedule_exposure_adapter_v1';
   e public.evidence_items;
   v_event public.operational_normalized_events;
@@ -362,10 +395,16 @@ declare
   v_existing boolean;
   v_run_id uuid;
 begin
-  if v_actor is null then raise exception 'schedule_exposure_unauthenticated'; end if;
+  if not public.operational_is_service_role() then raise exception 'schedule_exposure_trusted_writer_required'; end if;
+  if v_requester is null then raise exception 'schedule_exposure_actor_required'; end if;
   select * into e from public.evidence_items where id = p_evidence_item_id;
   if e.id is null then raise exception 'evidence_not_found'; end if;
-  if not public.can_write_operational_project(e.workspace_id, e.project_id) then raise exception 'operational_write_denied'; end if;
+  if not exists (
+    select 1 from public.projects p
+    join public.workspace_memberships wm on wm.workspace_id = p.workspace_id
+    join auth.users u on u.id = wm.user_id
+    where p.id = e.project_id and p.workspace_id = e.workspace_id and wm.user_id = v_requester and wm.role in ('owner','admin','pm')
+  ) then raise exception 'operational_write_denied'; end if;
   if e.source_type <> 'schedule_evaluation' or e.normalized_event_id is null then raise exception 'schedule_exposure_evidence_required'; end if;
   if e.missing_data_state = 'UNKNOWN' then raise exception 'schedule_exposure_insufficient_data'; end if;
   if e.lifecycle <> 'RECORDED' or e.freshness_state <> 'CURRENT' then raise exception 'schedule_exposure_evidence_not_current'; end if;
@@ -392,6 +431,9 @@ begin
   v_recommendation := coalesce(nullif(trim(v_payload->>'recommendation'), ''),
     'Review the schedule exposure with the project owner and record the agreed response.');
 
+  -- Serialise every materialisation of this Evidence, so the existence check below sees any
+  -- concurrent winner's committed rows and exactly one call records the detector run.
+  perform pg_advisory_xact_lock(hashtextextended('schedule-materialize:' || e.id::text, 0));
   select exists(select 1 from public.operational_signals where evidence_item_id = e.id and signal_type = 'schedule_risk') into v_existing;
 
   insert into public.operational_signals(workspace_id, project_id, evidence_item_id, signal_type, severity, confidence_score, summary, rationale, detected_by, status)
@@ -440,9 +482,9 @@ begin
     'decisionCreated', false, 'actionCreated', false, 'taskCreated', false, 'outcomeCreated', false);
 end $$;
 
-revoke all on function public.materialize_schedule_exposure_finding(uuid) from public;
-revoke execute on function public.materialize_schedule_exposure_finding(uuid) from public, anon;
-grant execute on function public.materialize_schedule_exposure_finding(uuid) to authenticated, service_role;
+revoke all on function public.materialize_schedule_exposure_finding(uuid,uuid) from public;
+revoke execute on function public.materialize_schedule_exposure_finding(uuid,uuid) from public, anon, authenticated;
+grant execute on function public.materialize_schedule_exposure_finding(uuid,uuid) to service_role;
 
-comment on function public.materialize_schedule_exposure_finding(uuid) is
-  'P2-16 Finding. From schedule Evidence only (never UNKNOWN, never stale), records one schedule_risk Signal (0-100 scale), risk, governance event and a governed proposed Recommendation linked by source_signal_id. Idempotent. Creates no Decision, Action, Task, Outcome or Observation.';
+comment on function public.materialize_schedule_exposure_finding(uuid,uuid) is
+  'P2-16 Finding (service_role transport only; requester re-verified; serialised per Evidence). From schedule Evidence only (never UNKNOWN, never stale), records one schedule_risk Signal (0-100 scale), risk, governance event and a governed proposed Recommendation linked by source_signal_id. Idempotent. Creates no Decision, Action, Task, Outcome or Observation.';

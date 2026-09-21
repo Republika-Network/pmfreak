@@ -14,6 +14,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
+import { evaluateAndRecordScheduleExposure } from "../../src/lib/critical-path/schedule-exposure-service";
 
 const supabaseUrl = process.env.OPERATIONAL_FLOW_TEST_SUPABASE_URL ?? "";
 const serviceRoleKey = process.env.OPERATIONAL_FLOW_TEST_SERVICE_ROLE_KEY ?? "";
@@ -24,7 +25,7 @@ const day = (d: number) => new Date(Date.UTC(2026, 9, d)).toISOString();
 
 const admin = createClient(supabaseUrl || "http://127.0.0.1:54321", serviceRoleKey || "missing", { auth: { persistSession: false, autoRefreshToken: false } });
 
-type Tenant = { workspaceId: string; projectId: string; users: Record<string, string>; schedule: Record<string, string> };
+type Tenant = { workspaceId: string; projectId: string; users: Record<string, string>; userIds: Record<string, string>; schedule: Record<string, string> };
 const tenants: Record<"a" | "b", Tenant> = {} as never;
 
 function must<T>(result: { data: T; error: { message: string } | null }, label: string): T {
@@ -71,7 +72,11 @@ async function seedTenant(key: "a" | "b", roles: Array<[string, string]>) {
   must(await admin.from("execution_tasks").insert([task(s.a, "Design", 1, 6), task(s.b, "Build", 6, 16, s.milestone), task(s.c, "Training plan", 1, 6)]), "tasks");
   must(await admin.from("execution_task_dependencies").insert({ id: s.dep, ...scope, predecessor_task_id: s.a, successor_task_id: s.b, dependency_type: "finish_to_start", status: "active", lag_days: 0 }), "dependency");
 
-  tenants[key] = { workspaceId, projectId, users: Object.fromEntries(roles.map(([label], i) => [label, actors[i].email])), schedule: s };
+  tenants[key] = {
+    workspaceId, projectId, schedule: s,
+    users: Object.fromEntries(roles.map(([label], i) => [label, actors[i].email])),
+    userIds: Object.fromEntries(roles.map(([label], i) => [label, actors[i].id])),
+  };
 }
 
 async function signIn(page: Page, email: string) {
@@ -189,6 +194,38 @@ test.describe.serial("P2-16 schedule exposure — authenticated PM browser scena
     must(await admin.from("execution_task_dependencies").update({ status: "invalidated" }).eq("id", cycle), "invalidate cycle");
   });
 
+  test("STEP 05b incomplete: a chain whose materialisation failed is a visible degraded state that resumes to a complete exposure", async ({ page }) => {
+    // Reproduce a transient materialisation failure after Evidence committed: the real service,
+    // with the real trusted writer, whose materialise call fails once. A new lag makes it a new snapshot.
+    must(await admin.from("execution_task_dependencies").update({ lag_days: 2 }).eq("id", tenants.a.schedule.dep), "lag");
+    const pmClient = createClient(supabaseUrl, process.env.OPERATIONAL_FLOW_TEST_ANON_KEY ?? "", { auth: { persistSession: false, autoRefreshToken: false } });
+    const signedIn = await pmClient.auth.signInWithPassword({ email: tenants.a.users.pm, password });
+    if (signedIn.error) throw new Error(signedIn.error.message);
+    const failingWriter = new Proxy(admin, {
+      get(target, prop) {
+        if (prop === "rpc") return (name: string, args: Record<string, unknown>) => (name === "materialize_schedule_exposure_finding" ? Promise.resolve({ data: null, error: { message: "forced_materialize_failure" } }) : target.rpc(name, args));
+        return Reflect.get(target, prop);
+      },
+    });
+    await expect(evaluateAndRecordScheduleExposure(pmClient, failingWriter, { workspaceId: tenants.a.workspaceId, projectId: tenants.a.projectId, userId: tenants.a.userIds.pm, role: "pm" }, { kind: "dependency_change", entityId: tenants.a.schedule.dep })).rejects.toThrow(/forced_materialize_failure/);
+
+    await signIn(page, tenants.a.users.pm);
+    await openPanel(page, tenants.a);
+    const incomplete = panel(page).getByTestId("schedule-exposure-incomplete");
+    await expect(incomplete).toHaveCount(1);
+    await expect(incomplete).toHaveAttribute("role", "alert");
+    await expect(incomplete).toContainText("Schedule evaluation recorded, but the Finding and Recommendation did not finish materializing. No decision or action has been created.");
+    await expect(incomplete).not.toContainText("Confidence");
+    const completeBefore = await panel(page).getByTestId("schedule-exposure-item").count();
+    mkdirSync(SHOTS, { recursive: true });
+    await incomplete.screenshot({ path: `${SHOTS}/05b-incomplete.png` });
+    await incomplete.getByRole("button", { name: "Resume materialization" }).click();
+    await expect(panel(page).getByTestId("schedule-exposure-incomplete")).toHaveCount(0);
+    await expect(panel(page).getByTestId("schedule-exposure-item")).toHaveCount(completeBefore + 1);
+    await expect(panel(page).getByTestId("schedule-exposure-item").filter({ hasText: "6 day(s) past target" }).first()).toContainText("a Decision is recorded separately");
+    must(await admin.from("execution_task_dependencies").update({ lag_days: 0 }).eq("id", tenants.a.schedule.dep), "restore lag");
+  });
+
   test("STEP 06 error: a failed read is an explicit, retryable error — never an empty 'healthy' state", async ({ page }) => {
     await signIn(page, tenants.a.users.pm);
     await page.route("**/api/critical-path/schedule-exposure?**", (route) => route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ ok: false, error: "Schedule exposure could not be evaluated. Please retry." }) }));
@@ -234,7 +271,9 @@ test.describe.serial("P2-16 schedule exposure — authenticated PM browser scena
     await openPanel(page, tenants.a);
     const region = page.getByRole("region", { name: "Schedule exposure" });
     await expect(region.getByRole("heading", { name: "Schedule exposure", level: 2 })).toBeVisible();
-    const button = region.getByRole("button", { name: "Evaluate exposure for milestone Go-live" });
+    await expect(region).toContainText("Milestone (current state): Go-live");
+    await expect(region).not.toContainText(/date change/i);
+    const button = region.getByRole("button", { name: "Evaluate current state of milestone Go-live" });
     await button.focus();
     await expect(button).toBeFocused();
     await page.keyboard.press("Enter");

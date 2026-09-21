@@ -7,12 +7,14 @@ import {
   evaluateAndRecordScheduleExposure,
   listScheduleExposures,
   listScheduleTriggerCandidates,
+  resumeScheduleExposureMaterialization,
   type ScheduleTriggerRef,
 } from "@/lib/critical-path/schedule-exposure-service";
+import { createScheduleExposureTrustedWriter } from "@/lib/critical-path/schedule-exposure-trusted-writer";
 
 const ROUTE_ID = "/api/critical-path/schedule-exposure";
 const WRITE_ROLES = new Set(["owner", "admin", "pm"]);
-const TRIGGER_KINDS = new Set(["dependency_change", "milestone_date_change"]);
+const TRIGGER_KINDS = new Set(["dependency_change", "milestone_state_evaluation"]);
 
 export type ScheduleExposureAuthorization =
   | { ok: true; userId: string; role: string; client: SupabaseClient }
@@ -20,7 +22,9 @@ export type ScheduleExposureAuthorization =
 
 export type ScheduleExposureRouteDeps = {
   authorize: (projectId: string, workspaceId: string, permission: "read" | "write") => Promise<ScheduleExposureAuthorization>;
+  createTrustedWriter: typeof createScheduleExposureTrustedWriter;
   evaluateAndRecord: typeof evaluateAndRecordScheduleExposure;
+  resumeMaterialization: typeof resumeScheduleExposureMaterialization;
   listExposures: typeof listScheduleExposures;
   listCandidates: typeof listScheduleTriggerCandidates;
 };
@@ -29,8 +33,9 @@ export type ScheduleExposureRouteDeps = {
  * Server-side scope resolution. Identity comes from the session; project access from the
  * canonical capability check; the workspace↔project relationship and the caller's role are
  * read back from the database. A caller-supplied workspaceId is only ever CHECKED against
- * that relationship, never trusted, and every subsequent query runs on the request-scoped
- * (RLS) client — the service role is not used anywhere on this route.
+ * that relationship, never trusted. Every read runs on the request-scoped (RLS) client; the
+ * trusted writer is created only after this succeeds, only for writes, and carries the
+ * authenticated user — never an actor named in the request.
  */
 async function authorizeScheduleExposure(projectId: string, workspaceId: string, permission: "read" | "write"): Promise<ScheduleExposureAuthorization> {
   let userId: string;
@@ -58,7 +63,9 @@ async function authorizeScheduleExposure(projectId: string, workspaceId: string,
 
 const defaultDeps: ScheduleExposureRouteDeps = {
   authorize: authorizeScheduleExposure,
+  createTrustedWriter: createScheduleExposureTrustedWriter,
   evaluateAndRecord: evaluateAndRecordScheduleExposure,
+  resumeMaterialization: resumeScheduleExposureMaterialization,
   listExposures: listScheduleExposures,
   listCandidates: listScheduleTriggerCandidates,
 };
@@ -75,6 +82,7 @@ function errorResponse(error: unknown) {
   if (/unauthenticated/.test(message)) return denied(401);
   if (/role_denied|access_denied|write_denied/.test(message)) return denied(403);
   if (/trigger_not_found/.test(message)) return NextResponse.json({ ok: false, error: "The schedule change was not found in this project." }, { status: 404 });
+  if (/evidence_not_found/.test(message)) return NextResponse.json({ ok: false, error: "That schedule evaluation was not found in this project." }, { status: 404 });
   if (/trigger_invalid|trigger_scope_mismatch|payload_invalid/.test(message)) return NextResponse.json({ ok: false, error: "The schedule change is not valid for this project." }, { status: 400 });
   if (/idempotency_conflict/.test(message)) return NextResponse.json({ ok: false, error: "This schedule change was already recorded with different content." }, { status: 409 });
   if (/source_(degraded|stale|unavailable|revoked)|source_kind_mismatch/.test(message)) {
@@ -112,8 +120,25 @@ export async function handlePostScheduleExposure(request: NextRequest, depsOverr
   }
   const projectId = typeof body.projectId === "string" ? body.projectId.trim() : "";
   const workspaceId = typeof body.workspaceId === "string" ? body.workspaceId.trim() : "";
-  const trigger = (body.trigger ?? null) as Record<string, unknown> | null;
   if (!projectId || !workspaceId) return NextResponse.json({ ok: false, error: "workspaceId and projectId are required." }, { status: 400 });
+
+  const action = body.action === undefined ? "evaluate" : body.action;
+  if (action === "resume_materialization") {
+    const evidenceId = typeof body.evidenceId === "string" ? body.evidenceId.trim() : "";
+    if (!evidenceId) return NextResponse.json({ ok: false, error: "evidenceId is required." }, { status: 400 });
+    const auth = await deps.authorize(projectId, workspaceId, "write");
+    if (!auth.ok) return denied(auth.status);
+    try {
+      const writer = deps.createTrustedWriter({ workspaceId, actorUserId: auth.userId, operation: "resume_schedule_exposure_materialization" });
+      const resumed = await deps.resumeMaterialization(auth.client, writer, { workspaceId, projectId, userId: auth.userId, role: auth.role }, evidenceId);
+      return NextResponse.json({ ok: true, disposition: resumed.disposition, resumed }, { status: resumed.disposition === "created" ? 201 : 200 });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  }
+  if (action !== "evaluate") return NextResponse.json({ ok: false, error: "Unknown action." }, { status: 400 });
+
+  const trigger = (body.trigger ?? null) as Record<string, unknown> | null;
   if (!trigger || !TRIGGER_KINDS.has(String(trigger.kind)) || typeof trigger.entityId !== "string" || !trigger.entityId.trim()) {
     return NextResponse.json({ ok: false, error: "trigger.kind and trigger.entityId are required." }, { status: 400 });
   }
@@ -123,7 +148,8 @@ export async function handlePostScheduleExposure(request: NextRequest, depsOverr
 
   const ref: ScheduleTriggerRef = { kind: trigger.kind as ScheduleTriggerRef["kind"], entityId: trigger.entityId.trim() };
   try {
-    const result = await deps.evaluateAndRecord(auth.client, { workspaceId, projectId, userId: auth.userId, role: auth.role }, ref);
+    const writer = deps.createTrustedWriter({ workspaceId, actorUserId: auth.userId, operation: "evaluate_schedule_exposure" });
+    const result = await deps.evaluateAndRecord(auth.client, writer, { workspaceId, projectId, userId: auth.userId, role: auth.role }, ref);
     const { evaluation, recorded } = result;
     if (evaluation.status === "invalid_topology") {
       // Refused, not degraded-and-recorded: no critical path is computed from invalid topology

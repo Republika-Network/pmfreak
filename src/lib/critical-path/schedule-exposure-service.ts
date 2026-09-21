@@ -1,12 +1,21 @@
 /**
  * P2-16 — Schedule Exposure service (server).
  *
- * Every read and write runs on the caller's request-scoped client, so RLS applies, and is
- * filtered by BOTH workspace and project. The three canonical transitions are separate
- * RPCs called in order — capture (Raw Input + Normalized Event), derive (Evidence),
- * materialize (Finding + governed Recommendation) — and each is idempotent, so a retry
- * after a partial failure resumes instead of duplicating. Nothing downstream of the
- * Recommendation is ever called from here.
+ * Two clients, deliberately split:
+ *   - `readClient` is the caller's request-scoped (RLS) client. Every read — schedule rows,
+ *     the H7 change event, the exposure projection, the Evidence a resume targets — runs on it
+ *     and is filtered by BOTH workspace and project, so the caller only ever sees and names
+ *     rows they may read.
+ *   - `writeClient` is the trusted server-only transport for the three canonical adapter RPCs,
+ *     which are executable by service_role only. It is used strictly AFTER this server has run
+ *     the H9 engine itself; it carries the verified human actor on every call, and the database
+ *     independently re-verifies that actor's current authority. It is never business authority.
+ *
+ * The three canonical transitions are separate RPCs called in order — capture (Raw Input +
+ * Normalized Event), derive (Evidence), materialize (Finding + governed Recommendation) — and
+ * each is idempotent. A chain that stops after derive is reported as `incomplete` and can be
+ * resumed for that exact persisted Evidence. Nothing downstream of the Recommendation is ever
+ * called from here.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { randomUUID } from "node:crypto";
@@ -31,13 +40,14 @@ import {
 } from "./schedule-exposure";
 
 type Client = SupabaseClient;
+/** `userId` is the authenticated human (from requireAuthenticatedUser), never request input. */
 export type ScheduleExposureScope = {
   workspaceId: string;
   projectId: string;
   userId: string;
   role: OperationalWorkspaceRole | null;
 };
-export type ScheduleTriggerRef = { kind: "dependency_change" | "milestone_date_change"; entityId: string };
+export type ScheduleTriggerRef = { kind: "dependency_change" | "milestone_state_evaluation"; entityId: string };
 
 export const SCHEDULE_EXPOSURE_SOURCE_KEY = "schedule-engine:h9-v1";
 const DEPENDENCY_EVENT_TYPES = ["dependency_created", "dependency_added", "dependency_activated", "dependency_resolved", "dependency_invalidated", "dependency_updated"];
@@ -91,6 +101,8 @@ export async function resolveScheduleTrigger(
     if (events.error) fail("schedule_exposure_load_change_event", events.error);
     const latest = (events.data ?? []).find((e) => (e.event_payload as Record<string, unknown> | null)?.dependencyId === dep.id) ?? null;
     const payload = (latest?.event_payload ?? {}) as Record<string, unknown>;
+    // The persisted H7 event is the change; the row's updated_at is only a fallback when no event exists.
+    const changedAt = latest?.created_at ? String(latest.created_at) : dep.updated_at;
     return {
       kind: "dependency_change",
       entityType: "execution_task_dependency",
@@ -102,20 +114,24 @@ export async function resolveScheduleTrigger(
       lagDays: dep.lag_days ?? 0,
       previousStatus: typeof payload.previousStatus === "string" ? payload.previousStatus : null,
       changeEventId: latest ? String(latest.id) : null,
-      changedAt: new Date(dep.updated_at).toISOString(),
+      changedAt: new Date(changedAt).toISOString(),
     };
   }
-  if (ref.kind === "milestone_date_change") {
+  if (ref.kind === "milestone_state_evaluation") {
+    // H8 keeps no milestone date-change history, so this is an explicit evaluation of the
+    // milestone's CURRENT state. updated_at is recorded as source-row provenance only.
     const milestone = inputs.milestones.find((m) => m.id === ref.entityId);
     if (!milestone) throw new Error("schedule_exposure_trigger_not_found");
     return {
-      kind: "milestone_date_change",
+      kind: "milestone_state_evaluation",
       entityType: "project_milestone",
       entityId: milestone.id,
+      title: milestone.title,
+      status: milestone.status,
       targetDate: milestone.target_date ? new Date(milestone.target_date).toISOString() : null,
       forecastDate: milestone.forecast_date ? new Date(milestone.forecast_date).toISOString() : null,
       baselineDate: milestone.baseline_date ? new Date(milestone.baseline_date).toISOString() : null,
-      changedAt: new Date(milestone.updated_at).toISOString(),
+      sourceUpdatedAt: new Date(milestone.updated_at).toISOString(),
     };
   }
   throw new Error("schedule_exposure_trigger_invalid");
@@ -140,24 +156,29 @@ export type ScheduleExposureEvaluationResult = {
 };
 
 export async function evaluateAndRecordScheduleExposure(
-  client: Client,
+  readClient: Client,
+  writeClient: Client,
   scope: ScheduleExposureScope,
   ref: ScheduleTriggerRef,
   options: { evaluatedAt?: string; correlationId?: string } = {},
 ): Promise<ScheduleExposureEvaluationResult> {
   if (!canCreateOperationalEvidence(scope.role)) throw new Error("schedule_exposure_role_denied");
-  const inputs = await loadScheduleInputs(client, scope);
-  const trigger = await resolveScheduleTrigger(client, scope, ref, inputs);
+  const inputs = await loadScheduleInputs(readClient, scope);
+  const trigger = await resolveScheduleTrigger(readClient, scope, ref, inputs);
   const evaluation = evaluateScheduleExposure({ ...inputs, trigger, evaluatedAt: options.evaluatedAt ?? new Date().toISOString() });
   if (evaluation.status !== "qualified") return { evaluation, recorded: null };
 
   const payload = buildScheduleExposurePayload(evaluation, inputs.tasks);
   const correlationId = options.correlationId ?? randomUUID();
-  const captured = await client.rpc("capture_schedule_exposure_evaluation", {
+  // A dependency change occurred when H7 recorded it. A milestone state evaluation observes the
+  // current state, so it "occurs" at evaluation time — no historical change time is invented.
+  const occurredAt = trigger.kind === "dependency_change" ? trigger.changedAt : evaluation.evaluatedAt;
+  const captured = await writeClient.rpc("capture_schedule_exposure_evaluation", {
     p_workspace_id: scope.workspaceId,
     p_project_id: scope.projectId,
+    p_actor_user_id: scope.userId,
     p_payload: payload,
-    p_occurred_at: trigger.changedAt,
+    p_occurred_at: occurredAt,
     p_evaluated_at: evaluation.evaluatedAt,
     p_correlation_id: correlationId,
     p_causation_id: trigger.kind === "dependency_change" ? trigger.changeEventId : null,
@@ -171,15 +192,16 @@ export async function evaluateAndRecordScheduleExposure(
     normalizedEvent: { id: string };
   };
 
-  const derived = await client.rpc("derive_schedule_exposure_evidence", {
+  const derived = await writeClient.rpc("derive_schedule_exposure_evidence", {
     p_workspace_id: scope.workspaceId,
     p_project_id: scope.projectId,
     p_normalized_event_id: capture.normalizedEvent.id,
+    p_actor_user_id: scope.userId,
   });
   if (derived.error || !derived.data) fail("derive_schedule_exposure_evidence", derived.error);
   const evidence = (derived.data as { evidence: { id: string } }).evidence;
 
-  const materialized = await client.rpc("materialize_schedule_exposure_finding", { p_evidence_item_id: evidence.id });
+  const materialized = await writeClient.rpc("materialize_schedule_exposure_finding", { p_evidence_item_id: evidence.id, p_actor_user_id: scope.userId });
   if (materialized.error || !materialized.data) fail("materialize_schedule_exposure_finding", materialized.error);
   const finding = materialized.data as { disposition: "created" | "duplicate"; signal: { id: string }; recommendation: { id: string } };
 
@@ -200,10 +222,37 @@ export async function evaluateAndRecordScheduleExposure(
   };
 }
 
+/**
+ * Resume a chain that stopped after Evidence (e.g. materialisation failed transiently). It
+ * resumes the EXACT persisted Evidence — the schedule is not re-read or recomputed — and only
+ * Evidence the caller can see in this workspace + project, of the schedule type, qualifies.
+ */
+export async function resumeScheduleExposureMaterialization(
+  readClient: Client,
+  writeClient: Client,
+  scope: ScheduleExposureScope,
+  evidenceId: string,
+): Promise<{ disposition: "created" | "duplicate"; evidenceId: string; findingId: string; recommendationId: string }> {
+  if (!canCreateOperationalEvidence(scope.role)) throw new Error("schedule_exposure_role_denied");
+  if (!UUID_PATTERN.test(evidenceId)) throw new Error("schedule_exposure_evidence_not_found");
+  const found = await readClient.from("evidence_items").select("id")
+    .eq("id", evidenceId).eq("workspace_id", scope.workspaceId).eq("project_id", scope.projectId)
+    .eq("source_type", "schedule_evaluation").not("normalized_event_id", "is", null)
+    .maybeSingle();
+  if (found.error) fail("schedule_exposure_resume_lookup", found.error);
+  if (!found.data) throw new Error("schedule_exposure_evidence_not_found");
+  const materialized = await writeClient.rpc("materialize_schedule_exposure_finding", { p_evidence_item_id: evidenceId, p_actor_user_id: scope.userId });
+  if (materialized.error || !materialized.data) fail("materialize_schedule_exposure_finding", materialized.error);
+  const result = materialized.data as { disposition: "created" | "duplicate"; signal: { id: string }; recommendation: { id: string } };
+  return { disposition: result.disposition, evidenceId, findingId: result.signal.id, recommendationId: result.recommendation.id };
+}
+
 // ── Read projection ────────────────────────────────────────────────────────────────────
 
 export type ScheduleExposureRecord = {
   evidenceId: string;
+  /** `complete` only when Evidence, Finding and Recommendation all exist. */
+  materializationState: "complete" | "incomplete";
   title: string;
   content: string;
   /** Evidence scale, 0–1. */
@@ -239,7 +288,7 @@ export type ScheduleExposureRecord = {
 
 export type ScheduleTriggerCandidate =
   | { kind: "dependency_change"; entityId: string; label: string; status: string; changedAt: string }
-  | { kind: "milestone_date_change"; entityId: string; label: string; status: string; changedAt: string };
+  | { kind: "milestone_state_evaluation"; entityId: string; label: string; status: string; changedAt: string };
 
 export async function listScheduleExposures(client: Client, scope: Pick<ScheduleExposureScope, "workspaceId" | "projectId">, limit = 20): Promise<ScheduleExposureRecord[]> {
   const evidenceResult = await client.from("evidence_items")
@@ -283,6 +332,7 @@ export async function listScheduleExposures(client: Client, scope: Pick<Schedule
     const recommendation = signal ? recommendationBySignal.get(String(signal.id)) ?? null : null;
     return {
       evidenceId: String(e.id),
+      materializationState: signal && recommendation ? "complete" : "incomplete",
       title: String(e.title),
       content: String(e.content),
       confidence: Number(e.confidence_score),
@@ -347,7 +397,7 @@ export async function listScheduleTriggerCandidates(client: Client, scope: Pick<
     .sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1))
     .slice(0, 10)
     .map((m) => ({
-      kind: "milestone_date_change" as const,
+      kind: "milestone_state_evaluation" as const,
       entityId: m.id,
       label: m.title,
       status: m.status,
