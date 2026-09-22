@@ -9,14 +9,14 @@
     "scripts/check-fresh-db-migrations.mjs"
   ],
   "totals": {
-    "security_definer_total": 33,
+    "security_definer_total": 34,
     "public_executable": 0,
     "anon_executable": 0,
-    "authenticated_executable": 23,
-    "service_role_executable": 33,
+    "authenticated_executable": 24,
+    "service_role_executable": 34,
     "by_intended_caller": {
       "authenticated_rls_helper": 7,
-      "authenticated_rpc": 16,
+      "authenticated_rpc": 17,
       "service_role": 6,
       "internal_security_definer_only": 3,
       "trigger_only": 1
@@ -419,6 +419,21 @@
       "search_path": "public",
       "latest_definition_migration": "20260611000000_operational_evidence_decision_loop.sql",
       "rationale": "TRIGGER-ONLY. RETURNS TRIGGER, bound to trg_prepare_decision_evidence_link (BEFORE INSERT on public.decision_evidence_links). PostgreSQL refuses direct invocation of a trigger function regardless of EXECUTE ('trigger functions can only be called as triggers'), and PostgREST excludes trigger-returning functions from the /rpc/ surface entirely, so the historical PUBLIC grant was never a callable privilege boundary. Revoked here as privilege hygiene, NOT as remediation of an exploitable RPC. Trigger execution is unaffected: triggers run as the table owner and do not consult the client role's EXECUTE privilege."
+    },
+    {
+      "schema": "public",
+      "name": "propose_canonical_learning_candidate",
+      "identity_arguments": "uuid,uuid,uuid,uuid",
+      "signature": "public.propose_canonical_learning_candidate(uuid,uuid,uuid,uuid)",
+      "public": false,
+      "anon": false,
+      "authenticated": true,
+      "service_role": true,
+      "intended_caller": "authenticated_rpc",
+      "trigger_only": false,
+      "search_path": "pg_catalog, public, extensions",
+      "latest_definition_migration": "20260914000000_p2_18_learning_candidate_lineage.sql",
+      "rationale": "P2-18 Learning Candidate RPC (learning-candidate-service.ts). Null-actor rejection then can_write_operational_project; evaluates at the database clock; derives eligibility, pattern, tier and confidence from canonical rows; writes source link, candidate version and platform event atomically. Never ratifies or elevates."
     },
     {
       "schema": "public",
