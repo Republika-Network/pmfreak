@@ -105,6 +105,45 @@ Expected areas: `src/lib/constitutional-learning/; src/lib/institutional-learnin
 
 Do not enable remote writeback; delete/fuse legacy models; bypass AOC or membership/RLS; use zero/placeholder hashes; insert Evidence directly where Raw/Event is required; auto-create downstream canonical states; treat Task completion as Outcome; show fixtures as live; hardcode success; weaken tenant isolation; run destructive migration; redesign unrelated UI; or modify unrelated CI/dependencies.
 
+## Verification Evidence — 2026-09-21
+
+The `NOT_STARTED` status in the metadata above is the planning-time value; it is superseded here, not rewritten.
+
+- **Baseline:** `build/p2-18-learning-candidate-lineage` from `main` at `b571433444b8534504b83bec15f33639b2d6c05e` (G4 VERIFIED record merged; P2-10 VERIFIED).
+- **Executable verification SHA:** `a32335ff` (`feat(learning): add candidate eligibility and lineage`).
+- **Product outcome:** a complete canonical outcome lineage (Source → … → LIVE Observation) can create a scoped, non-authoritative Learning Candidate with evidence and limitations, never organizational truth. `POST/GET /api/learning-candidates`; service `src/lib/learning-candidates/`.
+- **Model:** a candidate is a pattern hypothesis, identified per project by `pattern_key` = sha256 of the exact typed classifiers on the chain (Finding `signal_type`, Recommendation `recommended_action_type`, Action `action_class`). Evidence membership is relational in `canonical_learning_candidate_sources`, one row per qualifying Observation. The aggregate holds bounded summary fields only and carries no single correlation id; correlation/causation live on each source.
+- **Eligibility:** the P2-10 projection must be `complete` and not fixture, and the database independently re-derives every rule from canonical rows, never looser than that projection. The Observation must be the Outcome's latest, with a qualifying result (achieved/partial/failed); no Observation in the Outcome's history may be disputed, inconclusive, incomplete (PARTIAL/UNKNOWN) or fixture; the Observation must be unexpired and its Evidence still meeting P2-09's promotion rule; Task and execution completed; the governance evaluation the execution ran under authorized/not_required, with no denied/revoked evaluation; the Decision accepted/modified and not superseded; the Recommendation, Finding and canonical LIVE Finding Evidence present and not degraded. Every failure is a named reason, and nothing is written.
+- **Tiers (structural, not thresholds):** `single_lineage`, `multiple_consistent_lineages` (distinct Decisions, same result), `conflicting_lineages`. There is no review eligibility and no numeric corroboration threshold. Confidence is the weakest linked Observation's (`weakest_linked_observation:v1`), stated as not a probability that the pattern holds.
+- **Correlation vs causation:** the RPC writes `causality_claim = 'correlation_only'` itself; it is persisted, emitted and returned with its statement. There is no value constraint: the qualifier reflects current evidence capability.
+- **Dedupe / versioning:** a retry of the same Observation is a `duplicate` (no write, no event). A newer Observation supersedes the Outcome's previous source (kept, with `superseded_by`). A new Outcome of the same pattern adds a source. Every material change increments `version` and recomputes `evidence_digest`. Uniqueness is enforced by constraints, including one current source per Outcome, plus a per-pattern advisory lock.
+- **Retention:** no numeric TTL. A source's `valid_until` is its Observation's own `stale_at`. Currency is derived on read (superseded / no longer latest / past validity / Evidence not current); nothing is deleted, and a provenance guard trigger refuses deletes and rewrites for every role. Memory-tier and duration retention are left to the owner decision and P2-19.
+- **Event:** `CANONICAL_OUTCOME_LEARNING_CANDIDATE_V1` in `platform_events` (payload `eventType: canonical_outcome_learning_candidate.v1`, the name P2-09 reserved), written in the same transaction as the source link and candidate version, with before/after state, canonical references, `elevationInferred: false` and `candidateIsNotOrganizationalTruth: true`. `learning_eligible = false` per that column's documented meaning (the event is not re-fed to pattern extraction). Event correlation is the triggering Observation's real uuid correlation, otherwise null.
+- **Authorization:** an authenticated SECURITY DEFINER RPC, `auth.uid()` + `can_write_operational_project` — the same predicate as `record_canonical_outcome_observation`, which produces the reserved candidate payload. No service role. Reads are RLS `can_access_operational_project`. The route resolves identity and role server-side and uses the server clock.
+- **Migration:** `20260914000000_p2_18_learning_candidate_lineage.sql`, additive and forward-only. Grant matrix: 34 SECURITY DEFINER functions, 24 authenticated.
+- **Environment:** an isolated Supabase stack (`pmfreak-p2-18-verify`, loopback ports 553xx) with its own disposable Frontera store; the shared local stack stayed at `main`'s 167 migrations. No hosted project was touched.
+- **Results:**
+  - P2-18 behavioural/contract 23/23.
+  - Minimum acceptance (`constitutional-learning-engine`, `intervention-learning-engine`) 77/77.
+  - P2-09/P2-10/P2-20/decision-integrity contracts 122/122; P2-16/P2-17 81/81.
+  - `check:p2-18-db` PASS (146 assertions; LIVE lineages built through the product API; retries and 10 concurrent retries are duplicates; 8 concurrent first proposals give 1 link + 7 duplicates; supersession keeps history; tiers single → multiple_consistent → conflicting; events equal material changes; viewer/outsider/IDOR refused; the service role cannot delete or rewrite lineage). It passed on three runs, including one against the from-zero-applied database.
+  - `check:fresh-db-migrations` PASS (168 migrations applied from zero; 435 tables; the only table without RLS is the pre-existing `agent_attestation_nonces`; SECURITY DEFINER grants PASS).
+  - `check:operational-flow-db` ok (22/22); `check:p2-09-db` PASS (74, reserved payload intact); `check:p2-16-db` PASS (200).
+  - `check:security-definer-hardening` PASS (34); governance/AOC and `check:no-local-auth-bypass` PASS.
+  - typecheck 0; lint 0 errors / 642 warnings (= baseline); build exit 0 (417 pages); `git diff --check` clean.
+  - `npm test` 14,549 pass / 25 skipped; its 2 failures are the WSL worktree line-ending pair, which pass 7/7 under native Windows Git. Module mocks 19/19.
+- **Not run (not applicable):** no browser scenario, because P2-18 adds no UI; the route is exercised live by `check:p2-18-db`.
+- **Deviations:** `src/lib/institutional-learning/` does not exist (it is the documentation name of `constitutional-learning`). `constitutional-learning` (published digest patterns, workspace scope) and `operational-decision-outcome` (legacy `operational_decisions`) are not inputs to the canonical chain and were left unchanged; so were `organizational_patterns` (workspace scope, member-writable, governance-owned `validated` lifecycle) and the P2-09 payload. New code lives in `src/lib/learning-candidates/` and `src/app/api/learning-candidates/`.
+- **Fixtures:** none introduced. Fixture lineages are refused; `fixture_label` exists for convention and P2-18 never sets it.
+- **Known limitations:**
+  - An Outcome with any disputed or inconclusive Observation in its history can never be candidate evidence (P2-10's rule, applied conservatively).
+  - Independence is structural (distinct Decisions), not statistical.
+  - Cohorting is exact-classifier, per project; cross-project or generalised cohorts are future decisions.
+  - The stored tier is as of the last evaluation; currency is derived on read, and nothing re-evaluates automatically.
+  - P2-10's projection does not traverse risk/governance-event rows; the RPC's own checks cover the governance evaluation and Decision.
+- **Rollback:** stop calling the route. The migration is additive with no dependents, so a forward migration can drop the two tables, the guard function and the RPC.
+- **Gate:** P2-18 `VERIFIED`. P2-19 is unlocked and not started; nothing here reviews, validates, rejects, requests elevation for, ratifies or revokes a candidate.
+
 ## Required Delivery Report
 
 Report status (`VERIFIED` only with all evidence), summary, files changed, migrations, contracts added/changed, exact tests/results, acceptance evidence/screenshots where applicable, deviations, known limitations, unlocked prompt, rollback/recovery instructions, compatibility/fixture expiry, and confirmation of no unrelated changes. Include branch/commit, diff summary and `git diff --check`.
