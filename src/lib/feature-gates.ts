@@ -163,7 +163,8 @@ export async function canCreateMoreProjects(userId: string) {
   if (!companyId) return upgradeRequired("personal_projects", "pro");
 
   const supabase = createSupabaseServiceRoleClient({ routeId: "feature-gates.canCreateMoreProjects", operation: "count_projects", reason: "feature_limit_enforcement", actorUserId: userId });
-  const subscription = await getCompanySubscription(companyId, { useServiceRole: true });
+  // Reuse the contextualized privileged client above: billing.ts rejects useServiceRole without privilegedContext.
+  const subscription = await getCompanySubscription(companyId, { client: supabase });
   const { count, error } = await supabase.from("projects").select("id", { head: true, count: "exact" }).eq("user_id", userId);
   if (error) throw new Error(`Unable to verify project limit: ${error.message}`);
 
