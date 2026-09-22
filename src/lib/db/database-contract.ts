@@ -1031,6 +1031,137 @@ export const CANONICAL_OUTCOME_OBSERVATION_SELECTABLE_COLUMNS = [
   "idempotency_key",
   "fixture_label",
 ] as const satisfies ReadonlyArray<keyof CanonicalOutcomeObservationRow>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// canonical_learning_candidates
+// Source: 20260914000000_p2_18_learning_candidate_lineage.sql
+// Non-authoritative, project-local Learning Candidate (pattern hypothesis). Status is only
+// ever "proposed"; review/ratification is P2-19. Bounded summary fields only.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type CanonicalLearningCandidateEvidenceTier =
+  | "single_lineage"
+  | "multiple_consistent_lineages"
+  | "conflicting_lineages";
+
+export type CanonicalLearningCandidateObservedResult = "achieved" | "partial" | "failed";
+
+export type CanonicalLearningCandidateRow = {
+  id: string;
+  workspace_id: string;
+  project_id: string;
+  candidate_kind: "canonical_outcome_pattern";
+  pattern_key: string;
+  pattern_signature: { signalType: string; recommendedActionType: string; actionClass: string };
+  status: "proposed";
+  evidence_tier: CanonicalLearningCandidateEvidenceTier;
+  lineage_count: number;
+  independent_lineage_count: number;
+  result_counts: Partial<Record<CanonicalLearningCandidateObservedResult, number>>;
+  confidence_score: number | string;
+  confidence_method: "weakest_linked_observation:v1";
+  causality_claim: string;
+  limitations: string[];
+  version: number;
+  evidence_digest: string;
+  evaluator: string;
+  fixture_label: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  last_evaluated_at: string;
+  last_evaluated_by: string;
+};
+
+export const CANONICAL_LEARNING_CANDIDATE_SELECTABLE_COLUMNS = [
+  "id",
+  "workspace_id",
+  "project_id",
+  "candidate_kind",
+  "pattern_key",
+  "pattern_signature",
+  "status",
+  "evidence_tier",
+  "lineage_count",
+  "independent_lineage_count",
+  "result_counts",
+  "confidence_score",
+  "confidence_method",
+  "causality_claim",
+  "limitations",
+  "version",
+  "evidence_digest",
+  "evaluator",
+  "fixture_label",
+  "created_by",
+  "created_at",
+  "updated_at",
+  "last_evaluated_at",
+  "last_evaluated_by",
+] as const satisfies ReadonlyArray<keyof CanonicalLearningCandidateRow>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// canonical_learning_candidate_sources
+// Source: 20260914000000_p2_18_learning_candidate_lineage.sql
+// Evidence membership of a Learning Candidate: one row per qualifying canonical Observation,
+// with relational lineage references. Append-only except the one-time supersession mark.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type CanonicalLearningCandidateSourceRow = {
+  id: string;
+  candidate_id: string;
+  workspace_id: string;
+  project_id: string;
+  outcome_id: string;
+  observation_id: string;
+  task_id: string;
+  internal_execution_id: string;
+  action_id: string;
+  governance_evaluation_id: string;
+  decision_id: string;
+  recommendation_id: string;
+  finding_id: string;
+  finding_evidence_item_id: string;
+  observation_evidence_ids: string[];
+  observed_result: CanonicalLearningCandidateObservedResult;
+  observation_confidence: number | string;
+  valid_until: string | null;
+  correlation_id: string;
+  causation_id: string | null;
+  evaluated_at: string;
+  linked_by: string;
+  recorded_at: string;
+  superseded_at: string | null;
+  superseded_by_source_id: string | null;
+};
+
+export const CANONICAL_LEARNING_CANDIDATE_SOURCE_SELECTABLE_COLUMNS = [
+  "id",
+  "candidate_id",
+  "workspace_id",
+  "project_id",
+  "outcome_id",
+  "observation_id",
+  "task_id",
+  "internal_execution_id",
+  "action_id",
+  "governance_evaluation_id",
+  "decision_id",
+  "recommendation_id",
+  "finding_id",
+  "finding_evidence_item_id",
+  "observation_evidence_ids",
+  "observed_result",
+  "observation_confidence",
+  "valid_until",
+  "correlation_id",
+  "causation_id",
+  "evaluated_at",
+  "linked_by",
+  "recorded_at",
+  "superseded_at",
+  "superseded_by_source_id",
+] as const satisfies ReadonlyArray<keyof CanonicalLearningCandidateSourceRow>;
 // project_milestones
 // Source: 20260605090000_milestones_schedule_foundation.sql
 // Project milestones with planned, baseline, and forecast dates.

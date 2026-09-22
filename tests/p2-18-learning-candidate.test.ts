@@ -1,0 +1,444 @@
+/**
+ * P2-18 — Learning Candidate Eligibility and Lineage.
+ *
+ * Behavioural tests for the pure evaluator, the service (against a recording fake Supabase
+ * client), the route handlers (with injected authorization) and source-level invariants of
+ * the migration. Database-side behaviour — RLS, IDOR, idempotency, concurrency, supersession
+ * and the atomic candidate event — is proven against the disposable local stack by
+ * scripts/check-p2-18-db.mts.
+ */
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { NextRequest } from "next/server";
+import type { CompleteLineageProjection, LineageStepNode } from "@/lib/operational-flow/types";
+import {
+  deriveSourceValidity,
+  preflightLearningCandidateEligibility,
+  toLearningCandidateView,
+  type SourceValidityContext,
+} from "@/lib/learning-candidates/eligibility";
+import {
+  LOOKUP_ROW_LIMIT,
+  listLearningCandidates,
+  proposeLearningCandidate,
+} from "@/lib/learning-candidates/learning-candidate-service";
+import { CAUSALITY_NOTE, LIMITATION_STATEMENTS, type LearningCandidateRow, type LearningCandidateSourceRow } from "@/lib/learning-candidates/types";
+import { handleGetLearningCandidates, handlePostLearningCandidate } from "@/app/api/learning-candidates/route";
+
+const ROOT = process.cwd();
+const MIGRATION = readFileSync(path.join(ROOT, "supabase/migrations/20260914000000_p2_18_learning_candidate_lineage.sql"), "utf8");
+const u = (n: string) => `00000000-0000-4000-8000-${n.padStart(12, "0")}`;
+const WS = u("a1");
+const PROJECT = u("b1");
+const OUTCOME = u("c1");
+const OBS_NEW = u("d2");
+const OBS_OLD = u("d1");
+const EVAL = "2026-10-20T12:00:00.000Z";
+
+// ── Fixtures ──────────────────────────────────────────────────────────────────────────
+
+function step(kind: LineageStepNode["kind"], id: string | null, extra: Partial<LineageStepNode> = {}): LineageStepNode {
+  return {
+    kind, id, title: kind, status: "intact", summary: kind, entity: null, correlationId: null, causationId: null,
+    isFixture: false, fixtureLabel: null, gapReason: null, occurredAt: null, recordedAt: null, actorId: null, ...extra,
+  };
+}
+
+function projection(overrides: Partial<CompleteLineageProjection> = {}): CompleteLineageProjection {
+  return {
+    outcomeId: OUTCOME,
+    taskId: u("e1"),
+    expectedResult: "Expected result",
+    outcomeState: "achieved",
+    observationsCount: 2,
+    latestObservationState: "achieved",
+    lineageStatus: "complete",
+    hasCorrelationOnly: true,
+    // P2-10 emits observation steps newest recorded first.
+    steps: [step("source", u("f1")), step("outcome", OUTCOME), step("observation", OBS_NEW), step("observation", OBS_OLD)],
+    transitions: [],
+    auditEvents: [],
+    gaps: [],
+    disputes: [],
+    isFixture: false,
+    fixtureLabel: null,
+    ...overrides,
+  };
+}
+
+function candidateRow(overrides: Partial<LearningCandidateRow> = {}): LearningCandidateRow {
+  return {
+    id: u("aa1"), workspace_id: WS, project_id: PROJECT, candidate_kind: "canonical_outcome_pattern",
+    pattern_key: `canonical-outcome-pattern:v1:${"ab".repeat(32)}`,
+    pattern_signature: { signalType: "decision_needed", recommendedActionType: "request_decision", actionClass: "external_write" },
+    status: "proposed", evidence_tier: "single_lineage", lineage_count: 1, independent_lineage_count: 1,
+    result_counts: { achieved: 1 }, confidence_score: "0.9000", confidence_method: "weakest_linked_observation:v1",
+    causality_claim: "correlation_only",
+    limitations: ["correlation_only", "structural_independence_only", "confidence_is_weakest_observation", "not_ratified"],
+    version: 1, evidence_digest: "cd".repeat(32), evaluator: "pmfreak/learning-candidate-eligibility:v1", fixture_label: null,
+    created_by: u("ee1"), created_at: EVAL, updated_at: EVAL, last_evaluated_at: EVAL, last_evaluated_by: u("ee1"),
+    ...overrides,
+  };
+}
+
+function sourceRow(overrides: Partial<LearningCandidateSourceRow> = {}): LearningCandidateSourceRow {
+  return {
+    id: u("bb1"), candidate_id: u("aa1"), workspace_id: WS, project_id: PROJECT, outcome_id: OUTCOME, observation_id: OBS_NEW,
+    task_id: u("e1"), internal_execution_id: u("e2"), action_id: u("e3"), governance_evaluation_id: u("e4"), decision_id: u("e5"),
+    recommendation_id: u("e6"), finding_id: u("e7"), finding_evidence_item_id: u("e8"), observation_evidence_ids: [u("e9")],
+    observed_result: "achieved", observation_confidence: "0.9000", valid_until: "2026-11-01T00:00:00.000Z",
+    correlation_id: "corr-lineage-1", causation_id: OUTCOME, evaluated_at: EVAL, linked_by: u("ee1"), recorded_at: EVAL,
+    superseded_at: null, superseded_by_source_id: null, ...overrides,
+  };
+}
+
+const validityContext = (overrides: Partial<SourceValidityContext> = {}): SourceValidityContext => ({
+  evaluatedAtMs: new Date(EVAL).getTime(),
+  latestObservationIdByOutcome: new Map([[OUTCOME, OBS_NEW]]),
+  currentEvidenceIds: new Set([u("e9")]),
+  ...overrides,
+});
+
+// ── Eligibility (pure) ────────────────────────────────────────────────────────────────
+
+test("P2-18 eligibility: a complete, live lineage ending in a qualifying Observation is eligible", () => {
+  const result = preflightLearningCandidateEligibility(projection());
+  assert.deepEqual(result, { eligible: true, reasons: [], gaps: [], latestObservationId: OBS_NEW });
+});
+
+test("P2-18 eligibility: missing or degraded lineage never becomes a candidate, and every reason is named", () => {
+  const incomplete = preflightLearningCandidateEligibility(projection({ lineageStatus: "incomplete", gaps: ["Decision: missing decision."] }));
+  assert.equal(incomplete.eligible, false);
+  assert.deepEqual(incomplete.reasons, ["lineage_incomplete"]);
+  assert.deepEqual(incomplete.gaps, ["Decision: missing decision."]);
+
+  for (const [status, reason] of [["disputed", "lineage_disputed"], ["inconclusive", "lineage_inconclusive"], ["degraded", "lineage_degraded"]] as const) {
+    assert.deepEqual(preflightLearningCandidateEligibility(projection({ lineageStatus: status })).reasons, [reason]);
+  }
+  assert.deepEqual(preflightLearningCandidateEligibility(projection({ isFixture: true, fixtureLabel: "DEMO / FIXTURE" })).reasons, ["lineage_fixture"]);
+  assert.deepEqual(preflightLearningCandidateEligibility(projection({ outcomeState: "superseded" })).reasons, ["outcome_superseded"]);
+
+  // Unobserved: P2-10 reports it incomplete and there is no Observation to anchor.
+  const unobserved = preflightLearningCandidateEligibility(projection({
+    lineageStatus: "incomplete", observationsCount: 0, latestObservationState: null,
+    steps: [step("outcome", OUTCOME), step("observation", null, { status: "missing" })],
+    gaps: ["Observation: unobserved — achievement requires authorized observation."],
+  }));
+  assert.deepEqual(unobserved.reasons, ["lineage_incomplete", "observation_missing"]);
+  assert.equal(unobserved.latestObservationId, null);
+});
+
+test("P2-18 eligibility: a stale context (an Observation that is no longer the latest) is refused", () => {
+  const result = preflightLearningCandidateEligibility(projection(), { observationId: OBS_OLD });
+  assert.deepEqual(result.reasons, ["observation_not_latest"]);
+});
+
+test("P2-18 eligibility: identical authoritative inputs produce identical results", () => {
+  const input = projection({ lineageStatus: "degraded", isFixture: true, gaps: ["b", "a"] });
+  const first = preflightLearningCandidateEligibility(input, { observationId: OBS_OLD });
+  const second = preflightLearningCandidateEligibility(structuredClone(input), { observationId: OBS_OLD });
+  assert.deepEqual(first, second);
+  assert.deepEqual(first.reasons, [...first.reasons].sort(), "reasons are in a deterministic order");
+});
+
+// ── Retention: source validity is derived from authoritative state, never a TTL ─────────
+
+test("P2-18 retention: a source stops supporting its candidate only for an authoritative reason", () => {
+  assert.equal(deriveSourceValidity(sourceRow(), validityContext()), "current");
+  assert.equal(deriveSourceValidity(sourceRow({ superseded_at: EVAL, superseded_by_source_id: u("bb2") }), validityContext()), "superseded");
+  assert.equal(deriveSourceValidity(sourceRow(), validityContext({ latestObservationIdByOutcome: new Map([[OUTCOME, u("d9")]]) })), "observation_not_latest");
+  assert.equal(deriveSourceValidity(sourceRow({ valid_until: "2026-10-01T00:00:00.000Z" }), validityContext()), "past_valid_until");
+  assert.equal(deriveSourceValidity(sourceRow(), validityContext({ currentEvidenceIds: new Set() })), "evidence_not_current");
+  // No authoritative expiry → none is invented.
+  assert.equal(deriveSourceValidity(sourceRow({ valid_until: null }), validityContext({ evaluatedAtMs: new Date("2099-01-01").getTime() })), "current");
+});
+
+test("P2-18 retention: a candidate without a current source reads as unsupported, but its lineage stays visible", () => {
+  const view = toLearningCandidateView(candidateRow(), [sourceRow({ valid_until: "2026-10-01T00:00:00.000Z" })], validityContext());
+  assert.equal(view.operationallySupported, false);
+  assert.equal(view.currentSourceCount, 0);
+  assert.equal(view.sources.length, 1, "historical lineage is still returned");
+  assert.equal(view.status, "proposed", "stored status is untouched");
+});
+
+// ── Candidate ≠ organizational truth; correlation ≠ causation ──────────────────────────
+
+test("P2-18 read contract: the correlation-only qualifier and limitations survive to every reader", () => {
+  const view = toLearningCandidateView(candidateRow({ limitations: ["correlation_only", "future_unknown_code"] }), [sourceRow()], validityContext());
+  assert.equal(view.causalityClaim, "correlation_only");
+  assert.equal(view.causalityNote, CAUSALITY_NOTE);
+  assert.match(view.causalityNote, /not a universal rule/);
+  assert.deepEqual(view.limitations[0], { code: "correlation_only", statement: LIMITATION_STATEMENTS.correlation_only });
+  assert.match(view.limitations[0].statement, /does not establish that the intervention caused them/);
+  assert.equal(view.limitations[1].code, "future_unknown_code", "an unrecognised limitation is kept, never dropped");
+  assert.equal(view.elevationInferred, false);
+  assert.equal(view.candidateIsNotOrganizationalTruth, true);
+  assert.equal(view.status, "proposed");
+  assert.match(view.confidence.note, /not a probability that the pattern holds/);
+  // Lineage references survive the read.
+  assert.deepEqual(view.sources[0].references.observationEvidenceIds, [u("e9")]);
+  assert.equal(view.sources[0].correlationId, "corr-lineage-1");
+  assert.equal(view.sources[0].causationId, OUTCOME);
+  assert.equal(view.sources[0].references.decisionId, u("e5"));
+});
+
+// ── Fake Supabase client ──────────────────────────────────────────────────────────────
+
+type Row = Record<string, unknown>;
+type RpcCall = { name: string; args: Record<string, unknown> };
+
+function fakeClient(tables: Record<string, Row[]> = {}, rpcResult: { data: unknown; error: { message: string } | null } = { data: null, error: null }) {
+  const rpcs: RpcCall[] = [];
+  const reads: Array<{ table: string; filters: Array<[string, string, unknown]> }> = [];
+  const from = (table: string) => {
+    const filters: Array<[string, string, unknown]> = [];
+    reads.push({ table, filters });
+    let limit = Number.POSITIVE_INFINITY;
+    const run = () => {
+      let rows = (tables[table] ?? []).filter((r) => filters.every(([op, c, v]) => (op === "eq" ? r[c] === v : (v as unknown[]).includes(r[c]))));
+      rows = rows.slice(0, limit);
+      return { data: rows.map((r) => ({ ...r })), error: null };
+    };
+    const b: Record<string, unknown> = {
+      select: () => b,
+      eq: (c: string, v: unknown) => { filters.push(["eq", c, v]); return b; },
+      in: (c: string, v: unknown[]) => { filters.push(["in", c, v]); return b; },
+      order: () => b,
+      limit: (n: number) => { limit = n; return b; },
+      then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) => Promise.resolve(run()).then(resolve, reject),
+    };
+    return b;
+  };
+  const rpc = async (name: string, args: Record<string, unknown>) => { rpcs.push({ name, args }); return rpcResult; };
+  return { client: { from, rpc } as never, rpcs, reads };
+}
+
+const scope = { workspaceId: WS, projectId: PROJECT, userId: u("ee1"), role: "pm" };
+const lineageOf = (p: CompleteLineageProjection | null) => async () => (p ? [p] : []);
+
+const createdResult = {
+  disposition: "created",
+  candidate: candidateRow(),
+  source: sourceRow(),
+  supersededSourceId: null,
+  eventId: u("ev1"),
+  elevationInferred: false,
+};
+
+// ── Service ───────────────────────────────────────────────────────────────────────────
+
+test("P2-18 service: an eligible lineage calls the RPC with identifiers only — never a caller tier, pattern or lineage", async () => {
+  const fake = fakeClient({}, { data: createdResult, error: null });
+  const result = await proposeLearningCandidate(fake.client, scope, { outcomeId: OUTCOME, evaluatedAt: EVAL }, { getLineage: lineageOf(projection()) });
+  assert.equal(fake.rpcs.length, 1);
+  assert.equal(fake.rpcs[0].name, "propose_canonical_learning_candidate");
+  assert.deepEqual(fake.rpcs[0].args, { p_workspace_id: WS, p_project_id: PROJECT, p_outcome_id: OUTCOME, p_observation_id: OBS_NEW, p_evaluated_at: EVAL });
+  assert.deepEqual(result, {
+    disposition: "created", candidateId: u("aa1"), sourceId: u("bb1"), supersededSourceId: null, eventId: u("ev1"),
+    evidenceTier: "single_lineage", version: 1, causalityClaim: "correlation_only", elevationInferred: false,
+  });
+});
+
+test("P2-18 service: an ineligible lineage writes nothing — the RPC is never reached", async () => {
+  const fake = fakeClient();
+  const result = await proposeLearningCandidate(fake.client, scope, { outcomeId: OUTCOME, evaluatedAt: EVAL },
+    { getLineage: lineageOf(projection({ lineageStatus: "incomplete", gaps: ["Action: missing."] })) });
+  assert.deepEqual(result, { disposition: "ineligible", reasons: ["lineage_incomplete"], gaps: ["Action: missing."], elevationInferred: false });
+  assert.equal(fake.rpcs.length, 0);
+});
+
+test("P2-18 service: the database is the authority — its own refusal is returned, never overridden", async () => {
+  const fake = fakeClient({}, { data: { disposition: "ineligible", reasons: ["decision_superseded", "observation_evidence_not_current"], candidate: null }, error: null });
+  const result = await proposeLearningCandidate(fake.client, scope, { outcomeId: OUTCOME, evaluatedAt: EVAL }, { getLineage: lineageOf(projection()) });
+  assert.equal(result.disposition, "ineligible");
+  assert.deepEqual((result as { reasons: string[] }).reasons, ["decision_superseded", "observation_evidence_not_current"]);
+});
+
+test("P2-18 service: success is never reported when persistence or event emission failed", async () => {
+  const failed = fakeClient({}, { data: null, error: { message: "learning_candidate_write_denied" } });
+  await assert.rejects(proposeLearningCandidate(failed.client, scope, { outcomeId: OUTCOME, evaluatedAt: EVAL }, { getLineage: lineageOf(projection()) }), /write_denied/);
+  // A material change reported without the event the same transaction must have written.
+  const noEvent = fakeClient({}, { data: { ...createdResult, eventId: null }, error: null });
+  await assert.rejects(proposeLearningCandidate(noEvent.client, scope, { outcomeId: OUTCOME, evaluatedAt: EVAL }, { getLineage: lineageOf(projection()) }), /result_malformed/);
+  const noSource = fakeClient({}, { data: { ...createdResult, source: null }, error: null });
+  await assert.rejects(proposeLearningCandidate(noSource.client, scope, { outcomeId: OUTCOME, evaluatedAt: EVAL }, { getLineage: lineageOf(projection()) }), /result_malformed/);
+  const unknown = fakeClient({}, { data: { disposition: "ratified" }, error: null });
+  await assert.rejects(proposeLearningCandidate(unknown.client, scope, { outcomeId: OUTCOME, evaluatedAt: EVAL }, { getLineage: lineageOf(projection()) }), /result_malformed/);
+  // A retry is a duplicate: no new event, and that is not an error.
+  const duplicate = fakeClient({}, { data: { ...createdResult, disposition: "duplicate", eventId: null }, error: null });
+  const dup = await proposeLearningCandidate(duplicate.client, scope, { outcomeId: OUTCOME, evaluatedAt: EVAL }, { getLineage: lineageOf(projection()) });
+  assert.equal(dup.disposition, "duplicate");
+  assert.equal((dup as { eventId: string | null }).eventId, null);
+});
+
+test("P2-18 service: a viewer, a malformed id and an Outcome outside the caller's RLS scope are refused before any write", async () => {
+  const fake = fakeClient({}, { data: createdResult, error: null });
+  await assert.rejects(proposeLearningCandidate(fake.client, { ...scope, role: "viewer" }, { outcomeId: OUTCOME, evaluatedAt: EVAL }, { getLineage: lineageOf(projection()) }), /role_denied/);
+  await assert.rejects(proposeLearningCandidate(fake.client, scope, { outcomeId: "not-a-uuid", evaluatedAt: EVAL }, { getLineage: lineageOf(projection()) }), /payload_invalid/);
+  // IDOR: another tenant's Outcome is invisible to the caller's RLS-scoped lineage read.
+  await assert.rejects(proposeLearningCandidate(fake.client, scope, { outcomeId: OUTCOME, evaluatedAt: EVAL }, { getLineage: lineageOf(null) }), /outcome_not_found/);
+  assert.equal(fake.rpcs.length, 0);
+});
+
+test("P2-18 service: the list read is scoped, keeps lineage, and fails closed rather than truncating a lookup", async () => {
+  const tables = {
+    canonical_learning_candidates: [candidateRow(), candidateRow({ id: u("aa9"), project_id: u("b9"), workspace_id: u("a9") })],
+    canonical_learning_candidate_sources: [sourceRow()],
+    canonical_outcome_observations: [
+      { id: OBS_OLD, outcome_id: OUTCOME, recorded_at: "2026-10-19T00:00:00.000Z", workspace_id: WS, project_id: PROJECT },
+      { id: OBS_NEW, outcome_id: OUTCOME, recorded_at: "2026-10-20T00:00:00.000Z", workspace_id: WS, project_id: PROJECT },
+    ],
+    evidence_items: [{ id: u("e9"), workspace_id: WS, project_id: PROJECT, normalized_event_id: u("n1"), fixture_state: "LIVE", freshness_state: "CURRENT", lifecycle: "RECORDED", rejection_reason: null, degraded_reason: null, evaluated_at: EVAL, stale_at: null }],
+  };
+  const fake = fakeClient(tables);
+  const list = await listLearningCandidates(fake.client, { workspaceId: WS, projectId: PROJECT }, { evaluatedAt: EVAL });
+  assert.equal(list.candidates.length, 1, "another tenant's candidate is never returned");
+  assert.equal(list.truncated, false);
+  assert.equal(list.candidates[0].sources[0].validity, "current");
+  for (const read of fake.reads) {
+    assert.ok(read.filters.some(([op, c, v]) => op === "eq" && c === "workspace_id" && v === WS), `${read.table} is workspace-scoped`);
+    assert.ok(read.filters.some(([op, c, v]) => op === "eq" && c === "project_id" && v === PROJECT), `${read.table} is project-scoped`);
+  }
+
+  // A known, finite id set is resolved completely: 1000 Evidence ids are read in chunks, and
+  // every one of them is seen (a silently truncated lookup would mark the source not current).
+  const many = Array.from({ length: LOOKUP_ROW_LIMIT }, (_, i) => ({ ...tables.evidence_items[0], id: u(`f${i}`) }));
+  const complete = fakeClient({ ...tables, canonical_learning_candidate_sources: [sourceRow({ observation_evidence_ids: many.map((e) => e.id) })], evidence_items: many });
+  const resolved = await listLearningCandidates(complete.client, { workspaceId: WS, projectId: PROJECT }, { evaluatedAt: EVAL });
+  assert.equal(resolved.candidates[0].sources[0].validity, "current");
+  assert.ok(complete.reads.filter((r) => r.table === "evidence_items").length >= 5, "Evidence is read in several bounded chunks");
+
+  // A single lookup that reaches the server's row cap may be incomplete, so it fails closed.
+  const crowded = Array.from({ length: LOOKUP_ROW_LIMIT }, (_, i) => ({ id: u(`c${i}`), outcome_id: OUTCOME, recorded_at: EVAL, workspace_id: WS, project_id: PROJECT }));
+  const capped = fakeClient({ ...tables, canonical_outcome_observations: crowded });
+  await assert.rejects(listLearningCandidates(capped.client, { workspaceId: WS, projectId: PROJECT }, { evaluatedAt: EVAL }), /read_truncated/);
+});
+
+// ── Route ─────────────────────────────────────────────────────────────────────────────
+
+const post = (body: unknown) => new NextRequest("http://localhost/api/learning-candidates", { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" } });
+const allow = (role = "pm") => async () => ({ ok: true as const, userId: u("ee1"), role, client: {} as never });
+
+test("P2-18 route: authentication, role and malformed identifiers are refused before any evaluation", async () => {
+  let proposed = 0;
+  const propose = async () => { proposed += 1; return createdResult as never; };
+  assert.equal((await handlePostLearningCandidate(post({ workspaceId: WS, projectId: PROJECT, outcomeId: OUTCOME }), { authorize: async () => ({ ok: false, status: 401 }), propose })).status, 401);
+  assert.equal((await handlePostLearningCandidate(post({ workspaceId: WS, projectId: PROJECT, outcomeId: OUTCOME }), { authorize: async () => ({ ok: false, status: 403 }), propose })).status, 403);
+  assert.equal((await handlePostLearningCandidate(post({ workspaceId: WS, projectId: PROJECT, outcomeId: "x" }), { authorize: allow(), propose })).status, 400);
+  assert.equal((await handlePostLearningCandidate(post({ workspaceId: "forged", projectId: PROJECT, outcomeId: OUTCOME }), { authorize: allow(), propose })).status, 400);
+  assert.equal(proposed, 0);
+});
+
+test("P2-18 route: the server clock is the evaluation clock — a caller-supplied one is ignored", async () => {
+  let seen: { evaluatedAt?: string } = {};
+  const propose = (async (_c: unknown, _s: unknown, input: { evaluatedAt: string }) => { seen = input; return { disposition: "created", candidateId: u("aa1"), sourceId: u("bb1"), supersededSourceId: null, eventId: u("ev1"), evidenceTier: "single_lineage", version: 1, causalityClaim: "correlation_only", elevationInferred: false }; }) as never;
+  const response = await handlePostLearningCandidate(post({ workspaceId: WS, projectId: PROJECT, outcomeId: OUTCOME, evaluatedAt: "1999-01-01T00:00:00.000Z" }), { authorize: allow(), propose, now: () => new Date(EVAL) });
+  assert.equal(response.status, 201);
+  assert.equal(seen.evaluatedAt, EVAL);
+  const body = await response.json();
+  assert.equal(body.causalityClaim, "correlation_only");
+  assert.equal(body.elevationInferred, false);
+});
+
+test("P2-18 route: dispositions map to honest statuses", async () => {
+  const run = (result: unknown) => handlePostLearningCandidate(post({ workspaceId: WS, projectId: PROJECT, outcomeId: OUTCOME }), { authorize: allow(), propose: (async () => result) as never, now: () => new Date(EVAL) });
+  assert.equal((await run({ disposition: "duplicate", candidateId: u("aa1"), sourceId: u("bb1"), eventId: null })).status, 200);
+  assert.equal((await run({ disposition: "evidence_linked", candidateId: u("aa1"), sourceId: u("bb1"), eventId: u("e") })).status, 200);
+  const ineligible = await run({ disposition: "ineligible", reasons: ["lineage_incomplete"], gaps: [], elevationInferred: false });
+  assert.equal(ineligible.status, 422);
+  assert.equal((await ineligible.json()).ok, false);
+  const failing = (message: string) => handlePostLearningCandidate(post({ workspaceId: WS, projectId: PROJECT, outcomeId: OUTCOME }), { authorize: allow(), propose: (async () => { throw new Error(message); }) as never });
+  assert.equal((await failing("learning_candidate_outcome_not_found")).status, 404);
+  assert.equal((await failing("learning_candidate_observation_not_found")).status, 404);
+  assert.equal((await failing("learning_candidate_write_denied")).status, 403);
+  assert.equal((await failing("learning_candidate_evaluated_at_future")).status, 400);
+  const internal = await failing("some unexpected database detail");
+  assert.equal(internal.status, 500);
+  assert.doesNotMatch(JSON.stringify(await internal.json()), /database detail/, "raw provider errors are not leaked");
+});
+
+test("P2-18 route: reads require project access and return the scoped list", async () => {
+  const get = new NextRequest(`http://localhost/api/learning-candidates?workspaceId=${WS}&projectId=${PROJECT}`);
+  assert.equal((await handleGetLearningCandidates(get, { authorize: async () => ({ ok: false, status: 403 }) })).status, 403);
+  let listed: unknown = null;
+  const response = await handleGetLearningCandidates(get, { authorize: allow("viewer"), list: (async (_c: unknown, s: unknown) => { listed = s; return { evaluatedAt: EVAL, candidates: [], truncated: false }; }) as never, now: () => new Date(EVAL) });
+  assert.equal(response.status, 200);
+  assert.deepEqual(listed, { workspaceId: WS, projectId: PROJECT });
+  assert.equal((await response.json()).canPropose, false, "a viewer can read but not propose");
+});
+
+// ── Migration invariants (source-level; runtime proof is scripts/check-p2-18-db.mts) ─────
+
+const sqlBody = MIGRATION.replace(/--.*$/gm, "");
+
+test("P2-18 migration: additive only — it creates new objects and alters or drops nothing existing", () => {
+  assert.doesNotMatch(sqlBody, /\balter\s+table\s+(?!public\.canonical_learning_candidate)/i);
+  assert.doesNotMatch(sqlBody, /\bdrop\s+(table|column|function|index|type|schema)\b/i);
+  assert.doesNotMatch(sqlBody, /\bdelete\s+from\b/i);
+  assert.doesNotMatch(sqlBody, /\btruncate\s+(table\s+)?public\./i, "no TRUNCATE statement (the grant revocation naming the privilege is fine)");
+  for (const m of sqlBody.matchAll(/drop\s+(policy|trigger)\s+if\s+exists\s+\w+\s+on\s+public\.(\w+)/gi)) {
+    assert.match(m[2], /^canonical_learning_candidate/, `only P2-18's own ${m[1]}s are replaced`);
+  }
+  assert.doesNotMatch(sqlBody, /\bupdate\s+public\.(?!canonical_learning_candidate)/i, "no existing table is updated");
+});
+
+test("P2-18 migration: RLS is read-only for project members; every write goes through the RPC", () => {
+  for (const table of ["canonical_learning_candidates", "canonical_learning_candidate_sources"]) {
+    assert.match(sqlBody, new RegExp(`alter table public\\.${table} enable row level security`));
+    assert.match(sqlBody, new RegExp(`on public\\.${table}\\s+for select to authenticated\\s+using \\(public\\.can_access_operational_project\\(workspace_id, project_id\\)\\)`));
+    assert.match(sqlBody, new RegExp(`revoke insert, update, delete, truncate on public\\.${table} from anon, authenticated`));
+    assert.doesNotMatch(sqlBody, new RegExp(`for (insert|update|delete|all)[^;]*on public\\.${table}|on public\\.${table}\\s+for (insert|update|delete|all)`));
+  }
+  assert.match(sqlBody, /before update or delete on public\.canonical_learning_candidate_sources/);
+  assert.match(sqlBody, /raise exception 'learning_candidate_provenance_immutable'/);
+});
+
+test("P2-18 migration: the RPC authenticates, authorises, pins search_path, serialises and trusts no caller tier or lineage", () => {
+  const fn = sqlBody.slice(sqlBody.indexOf("create or replace function public.propose_canonical_learning_candidate("));
+  const signature = fn.slice(0, fn.indexOf(")"));
+  assert.deepEqual([...signature.matchAll(/\bp_\w+/g)].map((m) => m[0]), ["p_workspace_id", "p_project_id", "p_outcome_id", "p_observation_id", "p_evaluated_at"]);
+  assert.match(fn, /security definer\s+set search_path = pg_catalog, public, extensions/);
+  assert.match(fn, /v_actor := auth\.uid\(\);\s+if v_actor is null then\s+raise exception 'unauthenticated'/);
+  assert.match(fn, /can_write_operational_project\(p_workspace_id, p_project_id\)/);
+  assert.match(fn, /pg_advisory_xact_lock\(hashtextextended\(\s*'learning-candidate:'/);
+  assert.match(fn, /'weakest_linked_observation:v1', 'correlation_only'/, "the function writes the causality qualifier itself");
+  assert.match(sqlBody, /revoke all on function public\.propose_canonical_learning_candidate\([^)]*\) from public/);
+  assert.match(sqlBody, /revoke execute on function public\.propose_canonical_learning_candidate\([^)]*\) from anon/);
+  assert.doesNotMatch(sqlBody, /repeat\('0'/, "no placeholder hash");
+  // text[] || 'literal' parses the literal as an ARRAY ("malformed array literal"): found by the
+  // live verifier on the first ineligible path. Every append is explicit.
+  assert.doesNotMatch(fn, /v_(reasons|limitations)\s*:=\s*v_\w+\s*\|\|\s*'/, "array appends use array_append");
+  assert.doesNotMatch(sqlBody, /service_role/i, "no service-role transport");
+});
+
+test("P2-18 migration: the candidate event is written in the same transaction and never implies elevation", () => {
+  const fn = sqlBody.slice(sqlBody.indexOf("create or replace function public.propose_canonical_learning_candidate("));
+  const insertAt = fn.indexOf("insert into public.platform_events");
+  assert.ok(insertAt > fn.indexOf("insert into public.canonical_learning_candidate_sources"), "the event follows the source write in one function body");
+  assert.match(fn, /'CANONICAL_OUTCOME_LEARNING_CANDIDATE_V1'/);
+  assert.match(fn, /'eventType', 'canonical_outcome_learning_candidate\.v1'/);
+  assert.match(fn, /'elevationInferred', false/);
+  assert.match(fn, /'candidateIsNotOrganizationalTruth', true/);
+  // The duplicate branch returns before any write or event.
+  const duplicateAt = fn.indexOf("'disposition', 'duplicate'");
+  assert.ok(duplicateAt > 0 && duplicateAt < fn.indexOf("insert into public.canonical_learning_candidate_sources"));
+});
+
+test("P2-18 boundary: no review, validation, rejection, elevation, ratification or revocation is implemented", () => {
+  assert.match(sqlBody, /check \(status = 'proposed'\)/);
+  for (const state of ["reviewing", "validated", "rejected", "elevation_requested", "elevation-requested", "ratified", "revoked_candidate"]) {
+    assert.doesNotMatch(sqlBody, new RegExp(`'${state}'`), `no '${state}' state is written or allowed`);
+  }
+  assert.doesNotMatch(sqlBody, /organizational_patterns|constitutional_learning|constitutional_signatures|ratification/i, "no existing learning or ratification model is touched");
+  // Code only: comments are allowed to say what the route does NOT do.
+  const route = readFileSync(path.join(ROOT, "src/app/api/learning-candidates/route.ts"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  assert.deepEqual([...route.matchAll(/^export async function (\w+)/gm)].map((m) => m[1]).filter((n) => /^[A-Z]+$/.test(n)), ["GET", "POST"]);
+  assert.doesNotMatch(route, /ratif|elevat(e|ion)Request|validateCandidate|rejectCandidate|revokeCandidate/i);
+});
+
+test("P2-18 compatibility: the reserved P2-09 candidate payload is preserved unchanged", () => {
+  const p209 = readFileSync(path.join(ROOT, "supabase/migrations/20260906000000_p2_09_outcome_observation_contract.sql"), "utf8");
+  assert.match(p209, /'learningCandidate', jsonb_build_object\(\s*'eventType', 'canonical_outcome_learning_candidate\.v1'/);
+});

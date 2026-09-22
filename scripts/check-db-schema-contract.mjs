@@ -65,6 +65,8 @@ const CONTRACT = {
   internal_task_executions: extractDeclaredColumns("INTERNAL_TASK_EXECUTION_SELECTABLE_COLUMNS"),
   canonical_task_outcomes: extractDeclaredColumns("CANONICAL_TASK_OUTCOME_SELECTABLE_COLUMNS"),
   canonical_outcome_observations: extractDeclaredColumns("CANONICAL_OUTCOME_OBSERVATION_SELECTABLE_COLUMNS"),
+  canonical_learning_candidates: extractDeclaredColumns("CANONICAL_LEARNING_CANDIDATE_SELECTABLE_COLUMNS"),
+  canonical_learning_candidate_sources: extractDeclaredColumns("CANONICAL_LEARNING_CANDIDATE_SOURCE_SELECTABLE_COLUMNS"),
   project_milestones: extractDeclaredColumns("PROJECT_MILESTONE_SELECTABLE_COLUMNS"),
   pmo_executive_reports: extractDeclaredColumns("PMO_EXECUTIVE_REPORT_SELECTABLE_COLUMNS"),
   pmo_alert_payloads: extractDeclaredColumns("PMO_ALERT_PAYLOAD_SELECTABLE_COLUMNS"),
