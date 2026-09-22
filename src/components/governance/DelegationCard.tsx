@@ -13,6 +13,9 @@ const ACTION_LABELS: Record<string, string> = {
   "memory.write": "Write memory",
   "executive.view": "View executive dashboard",
   "privileged.use": "Privileged system access",
+  "knowledge.ratify": "Ratify project knowledge",
+  "knowledge.reject": "Reject learning candidate",
+  "knowledge.revoke": "Revoke project knowledge",
 };
 
 function formatRelative(iso: string): string {

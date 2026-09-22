@@ -7,7 +7,8 @@ import type { GovernanceActorContext } from "@/lib/governance/authority/actor-mo
 import type { RuntimeContext } from "./context";
 import type { DelegationConstraints, DelegationDecision, DelegationInput } from "./runtime-input-contracts";
 export type { DelegationConstraints, DelegationDecision, DelegationInput } from "./runtime-input-contracts";
-const FORBIDDEN = new Set(["billing.manage", "members.manage", "workspace.manage", "privileged.use"]);
+// Knowledge ratification/rejection/revocation is never delegable (P2-19: the attributable human decides).
+const FORBIDDEN = new Set(["billing.manage", "members.manage", "workspace.manage", "privileged.use", "knowledge.ratify", "knowledge.reject", "knowledge.revoke"]);
 const OWNER_ADMIN_ALLOWED = new Set(["project.read", "memory.read", "memory.write", "document.upload", "ai.execute"]);
 const PM_ALLOWED = new Set(["project.read", "memory.read", "memory.write", "document.upload"]);
 const DEFAULT_MAX_DELEGATION_DEPTH = 3;

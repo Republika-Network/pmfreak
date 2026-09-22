@@ -67,6 +67,8 @@ const CONTRACT = {
   canonical_outcome_observations: extractDeclaredColumns("CANONICAL_OUTCOME_OBSERVATION_SELECTABLE_COLUMNS"),
   canonical_learning_candidates: extractDeclaredColumns("CANONICAL_LEARNING_CANDIDATE_SELECTABLE_COLUMNS"),
   canonical_learning_candidate_sources: extractDeclaredColumns("CANONICAL_LEARNING_CANDIDATE_SOURCE_SELECTABLE_COLUMNS"),
+  canonical_learning_candidate_reviews: extractDeclaredColumns("CANONICAL_LEARNING_CANDIDATE_REVIEW_SELECTABLE_COLUMNS"),
+  canonical_project_knowledge_records: extractDeclaredColumns("CANONICAL_PROJECT_KNOWLEDGE_RECORD_SELECTABLE_COLUMNS"),
   project_milestones: extractDeclaredColumns("PROJECT_MILESTONE_SELECTABLE_COLUMNS"),
   pmo_executive_reports: extractDeclaredColumns("PMO_EXECUTIVE_REPORT_SELECTABLE_COLUMNS"),
   pmo_alert_payloads: extractDeclaredColumns("PMO_ALERT_PAYLOAD_SELECTABLE_COLUMNS"),

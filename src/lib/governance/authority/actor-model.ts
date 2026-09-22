@@ -48,7 +48,11 @@ export type GovernanceAction =
   | "ai.manage"
   | "workspace.manage"
   | "executive.view"
-  | "privileged.use";
+  | "privileged.use"
+  // P2-19 governed Project-knowledge transitions (owner/admin via manage_workspace; users only).
+  | "knowledge.ratify"
+  | "knowledge.reject"
+  | "knowledge.revoke";
 
 // PMFreak governance decision outcomes. "require_*_approval" values route into
 // governance_approval_requests; these strings are persisted.

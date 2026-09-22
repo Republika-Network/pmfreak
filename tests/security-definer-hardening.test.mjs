@@ -46,8 +46,8 @@ const REMEDIATION = "supabase/migrations/20260910000000_security_definer_effecti
 // server-side adapter boundary), so the authenticated count is unchanged. P2-18 adds one
 // authenticated RPC, propose_canonical_learning_candidate (null-actor rejection, then
 // can_write_operational_project), so both counts rise by one.
-const EXPECTED_TOTAL = 34;
-const EXPECTED_AUTHENTICATED = 24;
+const EXPECTED_TOTAL = 37;
+const EXPECTED_AUTHENTICATED = 27;
 
 // The four functions whose only legitimate invocation path is another
 // SECURITY DEFINER function or a privileged/scheduled context. No client role

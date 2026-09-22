@@ -57,7 +57,7 @@ test("governance-actions: SDK_GOVERNANCE_ACTIONS covers all required SDK operati
 });
 
 test("governance-actions: all actions map to valid GovernanceAction literals from GOVERNANCE_POLICY_REGISTRY", () => {
-  const validActions = ["project.read", "project.write", "memory.read", "memory.write", "document.upload", "billing.manage", "members.manage", "ai.execute", "ai.manage", "workspace.manage", "executive.view", "privileged.use"];
+  const validActions = ["project.read", "project.write", "memory.read", "memory.write", "document.upload", "billing.manage", "members.manage", "ai.execute", "ai.manage", "workspace.manage", "executive.view", "privileged.use", "knowledge.ratify", "knowledge.reject", "knowledge.revoke"];
   for (const action of validActions) {
     // At least some of these must appear in the mappings
     if (governanceActions.includes(action)) assert.ok(true, `${action} referenced`);

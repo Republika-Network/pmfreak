@@ -114,15 +114,19 @@ export type LearningCandidateList = { evaluatedAt: string; candidates: LearningC
 export async function listLearningCandidates(
   client: Client,
   scope: Pick<LearningCandidateScope, "workspaceId" | "projectId">,
-  options: { evaluatedAt: string },
+  options: { evaluatedAt: string; candidateId?: string },
 ): Promise<LearningCandidateList> {
   const evaluatedAt = new Date(options.evaluatedAt);
   if (Number.isNaN(evaluatedAt.valueOf())) throw new Error("learning_candidate_payload_invalid");
   const evaluatedAtMs = evaluatedAt.getTime();
 
-  const page = await client.from("canonical_learning_candidates")
+  if (options.candidateId !== undefined && !UUID_PATTERN.test(options.candidateId)) throw new Error("learning_candidate_payload_invalid");
+  let query = client.from("canonical_learning_candidates")
     .select("id,workspace_id,project_id,candidate_kind,pattern_key,pattern_signature,status,evidence_tier,lineage_count,independent_lineage_count,result_counts,confidence_score,confidence_method,causality_claim,limitations,version,evidence_digest,evaluator,fixture_label,created_by,created_at,updated_at,last_evaluated_at,last_evaluated_by")
-    .eq("workspace_id", scope.workspaceId).eq("project_id", scope.projectId)
+    .eq("workspace_id", scope.workspaceId).eq("project_id", scope.projectId);
+  // P2-19 resolves one Candidate canonically (same derivation, one row).
+  if (options.candidateId !== undefined) query = query.eq("id", options.candidateId);
+  const page = await query
     .order("updated_at", { ascending: false }).order("id", { ascending: true })
     .limit(LEARNING_CANDIDATE_PAGE_SIZE + 1);
   if (page.error) fail("learning_candidate_read_failed", page.error);

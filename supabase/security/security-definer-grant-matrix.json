@@ -9,14 +9,14 @@
     "scripts/check-fresh-db-migrations.mjs"
   ],
   "totals": {
-    "security_definer_total": 34,
+    "security_definer_total": 37,
     "public_executable": 0,
     "anon_executable": 0,
-    "authenticated_executable": 24,
-    "service_role_executable": 34,
+    "authenticated_executable": 27,
+    "service_role_executable": 37,
     "by_intended_caller": {
       "authenticated_rls_helper": 7,
-      "authenticated_rpc": 17,
+      "authenticated_rpc": 20,
       "service_role": 6,
       "internal_security_definer_only": 3,
       "trigger_only": 1
@@ -452,6 +452,21 @@
     },
     {
       "schema": "public",
+      "name": "ratify_canonical_learning_candidate",
+      "identity_arguments": "uuid,uuid,uuid,integer,text,text,text,timestamptz,jsonb",
+      "signature": "public.ratify_canonical_learning_candidate(uuid,uuid,uuid,integer,text,text,text,timestamptz,jsonb)",
+      "public": false,
+      "anon": false,
+      "authenticated": true,
+      "service_role": true,
+      "intended_caller": "authenticated_rpc",
+      "trigger_only": false,
+      "search_path": "pg_catalog, public, extensions",
+      "latest_definition_migration": "20260915000000_p2_19_governed_project_knowledge.sql",
+      "rationale": "P2-19 ratification RPC (project-knowledge-service.ts). Null-actor rejection; owner/admin re-derivation of manage_workspace plus an ALLOW knowledge.ratify decision reference; exact version/digest (stale_review) and current-support checks under the Candidate row lock; explicit validity; writes the terminal review, Project knowledge and platform event atomically. Never elevates beyond the source Project."
+    },
+    {
+      "schema": "public",
       "name": "record_canonical_outcome_observation",
       "identity_arguments": "uuid,uuid,uuid,text,text,uuid[],numeric,text,timestamptz,timestamptz,timestamptz,text,text,text",
       "signature": "public.record_canonical_outcome_observation(uuid,uuid,uuid,text,text,uuid[],numeric,text,timestamptz,timestamptz,timestamptz,text,text,text)",
@@ -497,6 +512,21 @@
     },
     {
       "schema": "public",
+      "name": "reject_canonical_learning_candidate",
+      "identity_arguments": "uuid,uuid,uuid,integer,text,text,jsonb",
+      "signature": "public.reject_canonical_learning_candidate(uuid,uuid,uuid,integer,text,text,jsonb)",
+      "public": false,
+      "anon": false,
+      "authenticated": true,
+      "service_role": true,
+      "intended_caller": "authenticated_rpc",
+      "trigger_only": false,
+      "search_path": "pg_catalog, public, extensions",
+      "latest_definition_migration": "20260915000000_p2_19_governed_project_knowledge.sql",
+      "rationale": "P2-19 rejection RPC (project-knowledge-service.ts). Null-actor rejection; owner/admin re-derivation of manage_workspace plus an ALLOW knowledge.reject decision reference; exact version/digest check under the Candidate row lock; writes the terminal rejected review and platform event atomically; creates no knowledge."
+    },
+    {
+      "schema": "public",
       "name": "reserve_upload_quota",
       "identity_arguments": "text,integer,integer,text,text",
       "signature": "public.reserve_upload_quota(text,integer,integer,text,text)",
@@ -509,6 +539,21 @@
       "search_path": "public",
       "latest_definition_migration": "20260518000000_quota_atomicity.sql",
       "rationale": "Authenticated upload-quota RPC (upload-quota.ts:90)."
+    },
+    {
+      "schema": "public",
+      "name": "revoke_canonical_project_knowledge",
+      "identity_arguments": "uuid,uuid,uuid,text,jsonb",
+      "signature": "public.revoke_canonical_project_knowledge(uuid,uuid,uuid,text,jsonb)",
+      "public": false,
+      "anon": false,
+      "authenticated": true,
+      "service_role": true,
+      "intended_caller": "authenticated_rpc",
+      "trigger_only": false,
+      "search_path": "pg_catalog, public, extensions",
+      "latest_definition_migration": "20260915000000_p2_19_governed_project_knowledge.sql",
+      "rationale": "P2-19 revocation RPC (project-knowledge-service.ts). Null-actor rejection; owner/admin re-derivation of manage_workspace plus an ALLOW knowledge.revoke decision reference; terminal and idempotent under the Knowledge row lock; writes the revocation and platform event atomically."
     },
     {
       "schema": "public",

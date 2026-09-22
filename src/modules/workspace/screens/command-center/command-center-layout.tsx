@@ -41,6 +41,7 @@ import { VaultIntakePanel } from "../../presentation/command-center/vault-intake
 import { CloseIcon } from "../../presentation/command-center/icons";
 import { WorkspaceOnboardingPanel } from "@/components/pmfreak/onboarding/workspace-onboarding-panel";
 import { ScheduleExposurePanel } from "@/components/pmfreak/schedule-exposure/schedule-exposure-panel";
+import { LearningReviewPanel } from "@/components/pmfreak/learning-review/learning-review-panel";
 
 function nextId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -696,6 +697,9 @@ export function CommandCenterLayout({
                   projectId={selectedProject.id}
                   onRecorded={() => void mutateFlow()}
                 />
+                {/* P2-19: governed review of this project's Learning Candidates and its
+                    ratified, project-scoped knowledge. */}
+                <LearningReviewPanel key={`learning-${selectedProject.id}`} workspaceId={workspaceId} projectId={selectedProject.id} />
                 <WorkspaceOnboardingPanel surface="dashboard" />
               </div>
             }
