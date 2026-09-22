@@ -51,7 +51,7 @@ test('billing routes use the dedicated workspace-membership billing gate instead
 });
 
 test('governance core owns governed action policy surface', () => {
-  for (const action of ['project.read', 'project.write', 'memory.read', 'memory.write', 'document.upload', 'billing.manage', 'members.manage', 'ai.execute', 'ai.manage', 'workspace.manage', 'executive.view', 'privileged.use']) {
+  for (const action of ['project.read', 'project.write', 'memory.read', 'memory.write', 'document.upload', 'billing.manage', 'members.manage', 'ai.execute', 'ai.manage', 'workspace.manage', 'executive.view', 'privileged.use', 'knowledge.ratify', 'knowledge.reject', 'knowledge.revoke']) {
     assert.match(legacyRuntime, new RegExp(`"${action}"`));
   }
 });

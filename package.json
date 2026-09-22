@@ -82,6 +82,7 @@
     "check:p2-09-db": "node scripts/check-p2-09-db.mjs",
     "check:p2-16-db": "tsx scripts/check-p2-16-db.mts",
     "check:p2-18-db": "tsx scripts/check-p2-18-db.mts",
+    "check:p2-19-db": "tsx scripts/check-p2-19-db.mts",
     "check:p2-decision-integrity-db": "node scripts/check-p2-decision-integrity-db.mjs",
     "seed:p2-13-founder": "node scripts/p2-13-founder-scenario.mjs",
     "check:p2-13-db": "node scripts/check-p2-13-db.mjs",

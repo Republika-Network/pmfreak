@@ -37,6 +37,13 @@ export const GOVERNANCE_POLICY_REGISTRY: Record<GovernanceAction, GovernancePoli
   "workspace.manage": { requiredPermission: "manage_workspace", allowedActorTypes: ["user"], agentCompatible: false, denyEventType: "workspace_scope_violation", riskLevel: "critical", workspaceScoped: true },
   "executive.view": { requiredPermission: "view_executive", allowedActorTypes: ["user", "ai_agent"], agentCompatible: true, denyEventType: "denied_permission", riskLevel: "medium", workspaceScoped: true },
   "privileged.use": { requiredPermission: "manage_workspace", allowedActorTypes: ["system"], agentCompatible: false, denyEventType: "suspicious_permission_escalation", riskLevel: "critical", workspaceScoped: true, requiresSystemContext: true },
+  // P2-19: the only governed path from a Learning Candidate to Project knowledge (the generic
+  // Material Action knowledge_elevation class stays hard-denied). Workspace authority; the
+  // command layer separately proves the Candidate/Knowledge record belongs to that Workspace
+  // and Project. Never agents, never system actors.
+  "knowledge.ratify": { requiredPermission: "manage_workspace", allowedActorTypes: ["user"], agentCompatible: false, denyEventType: "governance_violation", riskLevel: "critical", workspaceScoped: true },
+  "knowledge.reject": { requiredPermission: "manage_workspace", allowedActorTypes: ["user"], agentCompatible: false, denyEventType: "governance_violation", riskLevel: "high", workspaceScoped: true },
+  "knowledge.revoke": { requiredPermission: "manage_workspace", allowedActorTypes: ["user"], agentCompatible: false, denyEventType: "governance_violation", riskLevel: "critical", workspaceScoped: true },
 };
 
 const decisionNeedsApproval = (input: GovernanceEvaluationInput, riskLevel: string): { decision: GovernanceDecisionState; approvalType: ApprovalType; reviewerRoleRequired: GovernanceActorRole } | null => {

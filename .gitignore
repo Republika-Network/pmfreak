@@ -63,6 +63,8 @@ uploads/
 /artifacts/p2-16/
 # P2-17 PMO attention browser screenshots (tests/e2e/p2-17-pmo-attention.spec.ts).
 /artifacts/p2-17/
+# P2-19 learning review browser screenshots (tests/e2e/p2-19-learning-review.spec.ts).
+/artifacts/p2-19/
 /test-results/
 /playwright-report/
 /.playwright/

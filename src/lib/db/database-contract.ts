@@ -1162,6 +1162,156 @@ export const CANONICAL_LEARNING_CANDIDATE_SOURCE_SELECTABLE_COLUMNS = [
   "superseded_at",
   "superseded_by_source_id",
 ] as const satisfies ReadonlyArray<keyof CanonicalLearningCandidateSourceRow>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// canonical_learning_candidate_reviews
+// Source: 20260915000000_p2_19_governed_project_knowledge.sql
+// One TERMINAL review (ratified | rejected) per exact Learning Candidate state
+// (candidate_id, candidate_version, candidate_evidence_digest). Never updated or deleted.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type CanonicalLearningCandidateReviewRow = {
+  id: string;
+  workspace_id: string;
+  project_id: string;
+  candidate_id: string;
+  candidate_version: number;
+  candidate_evidence_digest: string;
+  review_outcome: "ratified" | "rejected";
+  reviewed_by: string;
+  reviewer_role: "owner" | "admin";
+  reviewed_at: string;
+  candidate_created_by: string;
+  candidate_last_evaluated_by: string;
+  reviewer_is_candidate_creator: boolean;
+  reviewed_summary: Record<string, unknown>;
+  causality_claim: string;
+  limitations: string[];
+  rationale: string;
+  governance_action: "knowledge.ratify" | "knowledge.reject";
+  governance_decision_id: string;
+  governance_decision_state: "allow";
+  governance_contract: string;
+  governance_evaluated_at: string;
+  fixture_label: string | null;
+  recorded_at: string;
+};
+
+export const CANONICAL_LEARNING_CANDIDATE_REVIEW_SELECTABLE_COLUMNS = [
+  "id",
+  "workspace_id",
+  "project_id",
+  "candidate_id",
+  "candidate_version",
+  "candidate_evidence_digest",
+  "review_outcome",
+  "reviewed_by",
+  "reviewer_role",
+  "reviewed_at",
+  "candidate_created_by",
+  "candidate_last_evaluated_by",
+  "reviewer_is_candidate_creator",
+  "reviewed_summary",
+  "causality_claim",
+  "limitations",
+  "rationale",
+  "governance_action",
+  "governance_decision_id",
+  "governance_decision_state",
+  "governance_contract",
+  "governance_evaluated_at",
+  "fixture_label",
+  "recorded_at",
+] as const satisfies ReadonlyArray<keyof CanonicalLearningCandidateReviewRow>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// canonical_project_knowledge_records
+// Source: 20260915000000_p2_19_governed_project_knowledge.sql
+// Ratified, Project-scoped knowledge (applicability source_project). Content/provenance are
+// immutable; the only change is a one-way revocation. Expiry is derived at read time.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type CanonicalProjectKnowledgeRecordRow = {
+  id: string;
+  workspace_id: string;
+  project_id: string;
+  candidate_id: string;
+  candidate_version: number;
+  candidate_evidence_digest: string;
+  review_id: string;
+  review_outcome: "ratified";
+  knowledge_kind: "canonical_outcome_pattern";
+  pattern_key: string;
+  pattern_signature: { signalType: string; recommendedActionType: string; actionClass: string };
+  statement: string;
+  evidence_tier: CanonicalLearningCandidateEvidenceTier;
+  lineage_count: number;
+  independent_lineage_count: number;
+  result_counts: Partial<Record<CanonicalLearningCandidateObservedResult, number>>;
+  confidence_score: number | string;
+  confidence_method: "weakest_linked_observation:v1";
+  causality_claim: string;
+  limitations: string[];
+  source_ids: string[];
+  applicability_scope: "source_project";
+  status: "active" | "revoked";
+  validity_mode: "until_revoked" | "until_date";
+  effective_from: string;
+  effective_until: string | null;
+  ratified_at: string;
+  ratified_by: string;
+  ratification_governance_decision_id: string;
+  version: number;
+  revoked_at: string | null;
+  revoked_by: string | null;
+  revocation_reason: string | null;
+  revocation_governance_decision_id: string | null;
+  revocation_governance_evaluated_at: string | null;
+  fixture_label: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export const CANONICAL_PROJECT_KNOWLEDGE_RECORD_SELECTABLE_COLUMNS = [
+  "id",
+  "workspace_id",
+  "project_id",
+  "candidate_id",
+  "candidate_version",
+  "candidate_evidence_digest",
+  "review_id",
+  "review_outcome",
+  "knowledge_kind",
+  "pattern_key",
+  "pattern_signature",
+  "statement",
+  "evidence_tier",
+  "lineage_count",
+  "independent_lineage_count",
+  "result_counts",
+  "confidence_score",
+  "confidence_method",
+  "causality_claim",
+  "limitations",
+  "source_ids",
+  "applicability_scope",
+  "status",
+  "validity_mode",
+  "effective_from",
+  "effective_until",
+  "ratified_at",
+  "ratified_by",
+  "ratification_governance_decision_id",
+  "version",
+  "revoked_at",
+  "revoked_by",
+  "revocation_reason",
+  "revocation_governance_decision_id",
+  "revocation_governance_evaluated_at",
+  "fixture_label",
+  "created_at",
+  "updated_at",
+] as const satisfies ReadonlyArray<keyof CanonicalProjectKnowledgeRecordRow>;
 // project_milestones
 // Source: 20260605090000_milestones_schedule_foundation.sql
 // Project milestones with planned, baseline, and forecast dates.
