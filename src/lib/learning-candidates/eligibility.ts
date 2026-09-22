@@ -1,10 +1,9 @@
 /**
- * P2-18 — deterministic, pure Learning Candidate evaluation.
+ * P2-18 — deterministic, pure Learning Candidate read evaluation.
  *
- *   preflightLearningCandidateEligibility  judges one outcome lineage from the P2-10
- *       CompleteLineageProjection (the canonical, gap-aware, never-invent-links projection).
- *       It is an early, explainable refusal; the propose_canonical_learning_candidate RPC
- *       re-derives every rule from canonical rows and is the authority.
+ * Eligibility itself is decided in one place only: the propose_canonical_learning_candidate
+ * RPC, which derives every rule from canonical rows at the database clock.
+ *
  *   deriveSourceValidity                  whether a stored source still supports its
  *       candidate at a given clock. Retention is derived from authoritative source validity
  *       only; no duration is ever synthesised.
@@ -13,13 +12,11 @@
  *
  * Same inputs → same output: no wall clock, no randomness, no I/O.
  */
-import type { CompleteLineageProjection } from "@/lib/operational-flow/types";
 import {
   CAUSALITY_NOTE,
   SUMMARY_BASIS_NOTE,
   LEARNING_CANDIDATE_CONTRACT,
   LIMITATION_STATEMENTS,
-  type LearningCandidateIneligibilityReason,
   type LearningCandidateLimitationCode,
   type LearningCandidateRow,
   type LearningCandidateSourceRow,
@@ -27,48 +24,6 @@ import {
   type LearningCandidateSourceView,
   type LearningCandidateView,
 } from "./types";
-
-const QUALIFYING_RESULTS = new Set(["achieved", "partial", "failed"]);
-
-const LINEAGE_STATUS_REASON: Record<CompleteLineageProjection["lineageStatus"], LearningCandidateIneligibilityReason | null> = {
-  complete: null,
-  incomplete: "lineage_incomplete",
-  disputed: "lineage_disputed",
-  inconclusive: "lineage_inconclusive",
-  degraded: "lineage_degraded",
-};
-
-export type LearningCandidatePreflight = {
-  eligible: boolean;
-  reasons: LearningCandidateIneligibilityReason[];
-  gaps: string[];
-  /** The Observation the lineage currently ends at (P2-10: newest recorded first). */
-  latestObservationId: string | null;
-};
-
-export function preflightLearningCandidateEligibility(
-  projection: CompleteLineageProjection,
-  request: { observationId?: string | null } = {},
-): LearningCandidatePreflight {
-  const reasons = new Set<LearningCandidateIneligibilityReason>();
-  if (projection.isFixture) reasons.add("lineage_fixture");
-  const statusReason = LINEAGE_STATUS_REASON[projection.lineageStatus];
-  if (statusReason) reasons.add(statusReason);
-
-  const latest = projection.steps.find((s) => s.kind === "observation" && s.id !== null) ?? null;
-  const latestObservationId = latest?.id ?? null;
-  if (!latestObservationId) reasons.add("observation_missing");
-  if (request.observationId && latestObservationId && request.observationId !== latestObservationId) {
-    reasons.add("observation_not_latest");
-  }
-  if (latestObservationId && !QUALIFYING_RESULTS.has(String(projection.latestObservationState))) {
-    reasons.add("observation_result_not_qualifying");
-  }
-  if (projection.outcomeState === "superseded") reasons.add("outcome_superseded");
-
-  const sorted = [...reasons].sort();
-  return { eligible: sorted.length === 0, reasons: sorted, gaps: [...projection.gaps], latestObservationId };
-}
 
 export type SourceValidityContext = {
   /** Read clock (explicit; never Date.now() inside this module). */
@@ -130,8 +85,6 @@ export function toLearningCandidateView(
     .map((s) => toSourceView(s, deriveSourceValidity(s, ctx)))
     .sort((a, b) => (a.recordedAt < b.recordedAt ? -1 : a.recordedAt > b.recordedAt ? 1 : a.id < b.id ? -1 : 1));
   const currentSourceCount = views.filter((s) => s.validity === "current").length;
-  // Sources the stored snapshot counted: those not superseded when it was taken.
-  const snapshotSources = views.filter((s) => s.supersededAt === null);
   return {
     contract: LEARNING_CANDIDATE_CONTRACT,
     id: candidate.id,
@@ -161,7 +114,9 @@ export function toLearningCandidateView(
     summaryBasis: "as_of_last_evaluation",
     summaryAsOf: candidate.last_evaluated_at,
     summaryNote: SUMMARY_BASIS_NOTE,
-    summaryReflectsCurrentSources: snapshotSources.length === candidate.lineage_count && snapshotSources.every((s) => s.validity === "current"),
+    // The snapshot counted the sources valid at the last evaluation; if the sources valid now
+    // differ in number, it no longer describes the current evidence.
+    summaryReflectsCurrentSources: currentSourceCount === candidate.lineage_count,
     operationallySupported: currentSourceCount > 0,
     currentSourceCount,
     sources: views,

@@ -56,7 +56,7 @@ export type LearningCandidateCausalityClaim = "correlation_only" | (string & {})
  * tier as the current state of the evidence.
  */
 export const SUMMARY_BASIS_NOTE =
-  "evidenceTier, lineageCount, independentLineageCount, resultCounts and confidence are a snapshot as of the last material evaluation (summaryAsOf), not recomputed on read. currentSourceCount and operationallySupported are derived now; summaryReflectsCurrentSources is false when a source counted in the snapshot is no longer current.";
+  "evidenceTier, lineageCount, independentLineageCount, resultCounts and confidence are a snapshot, computed from the sources valid at the last material evaluation (summaryAsOf) and not recomputed on read. currentSourceCount and operationallySupported are derived now; summaryReflectsCurrentSources is false when the sources valid now no longer match the snapshot.";
 
 export const CAUSALITY_NOTE =
   "correlation_only reflects current evidence capability: every lineage P2-18 can build is observational. It is not a universal rule for future candidates, and timing is never treated as causation.";
@@ -116,7 +116,8 @@ export type LearningCandidateIneligibilityReason =
   | "finding_missing"
   | "finding_evidence_missing"
   | "finding_evidence_not_canonical"
-  | "finding_evidence_degraded";
+  | "finding_evidence_degraded"
+  | "finding_evidence_not_current";
 
 /** Table shapes live in the database contract; these are the same types. */
 export type LearningCandidateRow = CanonicalLearningCandidateRow;
@@ -209,4 +210,4 @@ export type ProposeLearningCandidateResult =
       causalityClaim: LearningCandidateCausalityClaim;
       elevationInferred: false;
     }
-  | { disposition: "ineligible"; reasons: string[]; gaps: string[]; elevationInferred: false };
+  | { disposition: "ineligible"; reasons: string[]; elevationInferred: false };

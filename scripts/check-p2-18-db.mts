@@ -129,21 +129,44 @@ async function seedTenant(owner: User, label: string) {
 let fronteraProvisioned = false;
 
 /** One REAL, LIVE canonical lineage ending in an Observation of `observationState`. */
-async function buildLiveLineage(owner: User, t: { workspaceId: string; projectId: string }, key: string, observationState: "achieved" | "partial" | "failed" | "disputed") {
+async function buildLiveLineage(
+  owner: User, t: { workspaceId: string; projectId: string }, key: string,
+  observationState: "achieved" | "partial" | "failed" | "disputed",
+  options: { findingValiditySeconds?: number; observationValiditySeconds?: number } = {},
+) {
   const now = new Date().toISOString();
   const correlationId = randomUUID();
-  const captured = await flow(owner, t.workspaceId, t.projectId, {
-    operation: "capture_live_input", idempotencyKey: `p2-18-capture:${key}`, title: `P2-18 live decision context ${key}`,
-    content: "A decision is needed before proceeding with this governed project change.", occurredAt: now, correlationId,
-  });
-  equal(captured.status, 201, `${key}: LIVE input captured`);
-  const derived = await flow(owner, t.workspaceId, t.projectId, {
-    operation: "derive_evidence", normalizedEventId: captured.body.normalizedEvent!.id, idempotencyKey: `p2-18-evidence:${key}`,
-    assertionType: "FACT", classification: "DECISION_CONTEXT", confidenceScore: 0.95, missingDataState: "COMPLETE", evaluatedAt: now,
-  });
-  equal(derived.status, 201, `${key}: LIVE Evidence derived`);
-  equal(derived.body.evidence!.fixture_state, "LIVE", `${key}: Finding Evidence is LIVE`);
-  const chain = await flow(owner, t.workspaceId, t.projectId, { operation: "run_chain", evidenceItemId: derived.body.evidence!.id });
+  let findingEvidence: { id: string; fixture_state: string };
+  if (options.findingValiditySeconds) {
+    // A Finding whose Evidence carries a short, authoritative validity window.
+    const captured = must(await owner.client.rpc("capture_live_operational_input", {
+      p_workspace_id: t.workspaceId, p_project_id: t.projectId, p_source_key: "p2-18-live-decision:v1",
+      p_idempotency_key: `p2-18-capture:${key}`, p_title: `P2-18 live decision context ${key}`,
+      p_content: "A decision is needed before proceeding with this governed project change.", p_occurred_at: now,
+      p_correlation_id: correlationId, p_causation_id: null, p_external_id: null,
+    }), `${key}: short-lived intake`) as { normalizedEvent: { id: string } };
+    const derived = must(await owner.client.rpc("derive_operational_evidence", {
+      p_workspace_id: t.workspaceId, p_project_id: t.projectId, p_normalized_event_id: captured.normalizedEvent.id,
+      p_idempotency_key: `p2-18-evidence:${key}`, p_assertion_type: "FACT", p_classification: "DECISION_CONTEXT",
+      p_confidence_score: 0.95, p_missing_data_state: "COMPLETE", p_evaluated_at: now,
+      p_stale_at: new Date(Date.now() + options.findingValiditySeconds * 1000).toISOString(),
+    }), `${key}: short-lived evidence`) as { evidence: { id: string; fixture_state: string } };
+    findingEvidence = derived.evidence;
+  } else {
+    const captured = await flow(owner, t.workspaceId, t.projectId, {
+      operation: "capture_live_input", idempotencyKey: `p2-18-capture:${key}`, title: `P2-18 live decision context ${key}`,
+      content: "A decision is needed before proceeding with this governed project change.", occurredAt: now, correlationId,
+    });
+    equal(captured.status, 201, `${key}: LIVE input captured`);
+    const derived = await flow(owner, t.workspaceId, t.projectId, {
+      operation: "derive_evidence", normalizedEventId: captured.body.normalizedEvent!.id, idempotencyKey: `p2-18-evidence:${key}`,
+      assertionType: "FACT", classification: "DECISION_CONTEXT", confidenceScore: 0.95, missingDataState: "COMPLETE", evaluatedAt: now,
+    });
+    equal(derived.status, 201, `${key}: LIVE Evidence derived`);
+    findingEvidence = derived.body.evidence!;
+  }
+  equal(findingEvidence.fixture_state, "LIVE", `${key}: Finding Evidence is LIVE`);
+  const chain = await flow(owner, t.workspaceId, t.projectId, { operation: "run_chain", evidenceItemId: findingEvidence.id });
   equal(chain.status, 200, `${key}: governed chain materialised`);
   const signalId = chain.body.chain?.[0]?.signal?.id ?? "";
   check(Boolean(signalId), `${key}: Finding exists`);
@@ -180,13 +203,14 @@ async function buildLiveLineage(owner: User, t: { workspaceId: string; projectId
     p_success_criteria: [{ criterion: "Evidence shows the expected result occurred." }],
     p_correlation_id: `p2-18-outcome-${key}`, p_causation_id: task.id,
   }), `${key}: outcome`) as { outcome: { id: string } };
-  const observationId = await observe(owner, t, outcome.outcome.id, `${key}-1`, observationState);
-  return { outcomeId: outcome.outcome.id, observationId, decisionId: decision.body.decision!.id, taskId: task.id, actionId: proposed.body.proposal!.id, signalId, recommendationId: recommendation.id, findingEvidenceId: derived.body.evidence!.id };
+  const observationId = await observe(owner, t, outcome.outcome.id, `${key}-1`, observationState, options.observationValiditySeconds);
+  return { outcomeId: outcome.outcome.id, observationId, decisionId: decision.body.decision!.id, taskId: task.id, actionId: proposed.body.proposal!.id, signalId, recommendationId: recommendation.id, findingEvidenceId: findingEvidence.id };
 }
 
 /** A LIVE Observation backed by freshly captured LIVE Evidence. */
-async function observe(owner: User, t: { workspaceId: string; projectId: string }, outcomeId: string, key: string, state: string) {
+async function observe(owner: User, t: { workspaceId: string; projectId: string }, outcomeId: string, key: string, state: string, validitySeconds?: number) {
   const now = new Date().toISOString();
+  const staleAt = new Date(Date.now() + (validitySeconds ?? 7 * 86_400) * 1000).toISOString();
   const captured = must(await owner.client.rpc("capture_live_operational_input", {
     p_workspace_id: t.workspaceId, p_project_id: t.projectId, p_source_key: "p2-18-live-observation:v1",
     p_idempotency_key: `p2-18-obs-intake:${key}`, p_title: `P2-18 observation telemetry ${key}`,
@@ -196,13 +220,13 @@ async function observe(owner: User, t: { workspaceId: string; projectId: string 
   const evidence = must(await owner.client.rpc("derive_operational_evidence", {
     p_workspace_id: t.workspaceId, p_project_id: t.projectId, p_normalized_event_id: captured.normalizedEvent.id,
     p_idempotency_key: `p2-18-obs-evidence:${key}`, p_assertion_type: "FACT", p_classification: "DELIVERY",
-    p_confidence_score: 0.97, p_missing_data_state: "COMPLETE", p_evaluated_at: now, p_stale_at: null,
+    p_confidence_score: 0.97, p_missing_data_state: "COMPLETE", p_evaluated_at: now, p_stale_at: validitySeconds ? staleAt : null,
   }), `${key}: observation evidence`) as { evidence: { id: string } };
   const observed = must(await owner.client.rpc("record_canonical_outcome_observation", {
     p_workspace_id: t.workspaceId, p_project_id: t.projectId, p_outcome_id: outcomeId, p_observation_state: state,
     p_summary: `P2-18 ${state} observation ${key}`, p_evidence_reference_ids: [evidence.evidence.id], p_confidence_score: 0.9,
     p_missing_data_state: "COMPLETE", p_observed_at: now, p_evaluated_at: now,
-    p_stale_at: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+    p_stale_at: staleAt,
     p_correlation_id: randomUUID(), p_causation_id: outcomeId, p_idempotency_key: `p2-18-observation:${key}`,
   }), `${key}: observation`) as { observation: { id: string } };
   return observed.observation.id;
@@ -211,8 +235,8 @@ async function observe(owner: User, t: { workspaceId: string; projectId: string 
 const propose = (user: User, t: { workspaceId: string; projectId: string }, outcomeId: string, observationId: string) =>
   user.client.rpc("propose_canonical_learning_candidate", {
     p_workspace_id: t.workspaceId, p_project_id: t.projectId, p_outcome_id: outcomeId, p_observation_id: observationId,
-    p_evaluated_at: new Date().toISOString(),
   });
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const count = async (table: string, filter: Record<string, unknown>) => {
   let q = admin.from(table).select("id", { count: "exact", head: true });
@@ -313,10 +337,14 @@ equal((must(await admin.from("canonical_learning_candidates").select("version").
 
 // ── 3. A newer Observation supersedes the old source; history is kept ──────────────────
 const observationA2 = await observe(owner, a, lineageA.outcomeId, `a-${suffix}-2`, "achieved");
-const staleContext = must(await propose(owner, a, lineageA.outcomeId, lineageA.observationId), "stale") as RpcResult;
-equal(staleContext.disposition, "ineligible", "the old Observation is now a stale context");
+const observationA3 = await observe(owner, a, lineageA.outcomeId, `a-${suffix}-3`, "achieved");
+// A2 was never linked and is no longer the latest: a stale context.
+const staleContext = must(await propose(owner, a, lineageA.outcomeId, observationA2), "stale") as RpcResult;
+equal(staleContext.disposition, "ineligible", "an unlinked Observation that is no longer the latest is a stale context");
 check(staleContext.reasons.includes("observation_not_latest"), "stale context is named");
-const superseded = must(await propose(owner, a, lineageA.outcomeId, observationA2), "supersede") as RpcResult;
+// A1 IS linked: retrying it is a duplicate, even though it is no longer the latest.
+equal((must(await propose(owner, a, lineageA.outcomeId, lineageA.observationId), "history retry") as RpcResult).disposition, "duplicate", "retrying an already-linked Observation is a duplicate");
+const superseded = must(await propose(owner, a, lineageA.outcomeId, observationA3), "supersede") as RpcResult;
 equal(superseded.disposition, "evidence_superseded", "a newer Observation supersedes the previous source");
 const oldSource = must(await admin.from("canonical_learning_candidate_sources").select("*").eq("id", sourceA1.id).single(), "old") as CanonicalLearningCandidateSourceRow;
 check(oldSource.superseded_at !== null && oldSource.superseded_by_source_id === superseded.source.id, "the previous source is marked superseded, not deleted");
@@ -362,6 +390,40 @@ const unknownObservation = await propose(owner, a, lineageA.outcomeId, randomUUI
 check(/learning_candidate_observation_not_found/.test(unknownObservation.error?.message ?? ""), "a forged Observation id is not found");
 equal(await candidateEvents(candidateId), 4, "ineligible attempts emitted nothing");
 
+// The caller cannot supply (or backdate) the evaluation clock: the RPC has no such parameter.
+const backdated = await owner.client.rpc("propose_canonical_learning_candidate", {
+  p_workspace_id: a.workspaceId, p_project_id: a.projectId, p_outcome_id: lineageA.outcomeId, p_observation_id: null,
+  p_evaluated_at: "2000-01-01T00:00:00.000Z",
+});
+check(Boolean(backdated.error), "a caller-supplied evaluation clock is rejected (no such parameter)");
+
+// ── 5b. Validity at the evaluation clock: retries, recomputation and the Finding's Evidence ──
+const lineageE = await buildLiveLineage(owner, a, `e-${suffix}`, "achieved", { observationValiditySeconds: 25 });
+const linkedE = must(await propose(owner, a, lineageE.outcomeId, lineageE.observationId), "E") as RpcResult;
+equal([linkedE.disposition, linkedE.candidate.lineage_count], ["evidence_linked", 4], "a short-lived lineage is linked while valid");
+const expiresAt = new Date((must(await admin.from("canonical_outcome_observations").select("stale_at").eq("id", lineageE.observationId).single(), "E stale") as { stale_at: string }).stale_at).getTime();
+await sleep(Math.max(0, expiresAt - Date.now()) + 2_000);
+const retryAfterExpiry = must(await propose(owner, a, lineageE.outcomeId, lineageE.observationId), "E retry") as RpcResult;
+equal(retryAfterExpiry.disposition, "duplicate", "a retry after the Observation lapsed is still a duplicate, not a failure of a committed write");
+const eventsBeforeF = await candidateEvents(candidateId);
+const lineageF = await buildLiveLineage(owner, a, `f-${suffix}`, "achieved");
+const linkedF = must(await propose(owner, a, lineageF.outcomeId, lineageF.observationId), "F") as RpcResult;
+equal(linkedF.disposition, "evidence_linked", "a later lineage links");
+equal(linkedF.candidate.lineage_count, 4, "the lapsed source is not counted in the recomputed snapshot (A3, B, C, F)");
+equal(linkedF.candidate.result_counts, { achieved: 3, failed: 1 }, "result counts come from sources valid at the clock only");
+equal(await candidateEvents(candidateId), eventsBeforeF + 1, "one event for the one material change");
+equal(await count("canonical_learning_candidate_sources", { outcome_id: lineageE.outcomeId }), 1, "the lapsed source is kept as history");
+
+const lineageG = await buildLiveLineage(owner, a, `g-${suffix}`, "achieved", { findingValiditySeconds: 45 });
+const findingStale = new Date((must(await admin.from("evidence_items").select("stale_at").eq("id", lineageG.findingEvidenceId).single(), "G stale") as { stale_at: string }).stale_at).getTime();
+await sleep(Math.max(0, findingStale - Date.now()) + 2_000);
+const expiredFinding = must(await propose(owner, a, lineageG.outcomeId, lineageG.observationId), "G") as RpcResult;
+equal(expiredFinding.disposition, "ineligible", "a lineage whose Finding Evidence has lapsed is refused");
+check(expiredFinding.reasons.includes("finding_evidence_not_current"), `the lapsed Finding Evidence is named — ${JSON.stringify(expiredFinding.reasons)}`);
+const expiredFindingAgain = must(await propose(owner, a, lineageG.outcomeId, lineageG.observationId), "G again") as RpcResult;
+equal(expiredFindingAgain.reasons, expiredFinding.reasons, "identical authoritative inputs give identical reasons");
+equal(await count("canonical_learning_candidate_sources", { outcome_id: lineageG.outcomeId }), 0, "nothing is written for it");
+
 // ── 6. RLS, direct writes and provenance immutability ──────────────────────────────────
 equal(((must(await viewer.client.from("canonical_learning_candidates").select("id").eq("id", candidateId), "viewer read")) as unknown[]).length, 1, "a same-tenant viewer can read");
 equal(((must(await outsider.client.from("canonical_learning_candidates").select("id").eq("id", candidateId), "outsider read")) as unknown[]).length, 0, "another tenant reads no candidate");
@@ -378,7 +440,7 @@ const privilegedRewrite = await admin.from("canonical_learning_candidate_sources
 check(DENIED.test(privilegedRewrite.error?.message ?? ""), "lineage cannot be rewritten");
 const privilegedRekey = await admin.from("canonical_learning_candidates").update({ pattern_key: `canonical-outcome-pattern:v1:${"f".repeat(64)}`, version: afterC.version + 1 }).eq("id", candidateId);
 check(DENIED.test(privilegedRekey.error?.message ?? ""), "the hypothesis identity cannot be rewritten");
-equal(await count("canonical_learning_candidate_sources", { candidate_id: candidateId }), 4, "all four sources remain");
+equal(await count("canonical_learning_candidate_sources", { candidate_id: candidateId }), 6, "all six sources remain (A1, A3, B, C, E, F)");
 
 // ── 6b. No direct privileged write can bypass the RPC's atomic material change ─────────
 // Each attempt is shaped to PASS the provenance trigger (identity untouched, version + 1,
@@ -430,9 +492,10 @@ check(/not a universal rule/.test(view.causalityNote), "read explains the qualif
 check(view.limitations.some((l) => l.code === "correlation_only" && /does not establish/.test(l.statement)), "read keeps the limitation statement");
 equal(view.status, "proposed", "read status proposed");
 equal(view.elevationInferred, false, "read infers no elevation");
-equal(view.sources.length, 4, "read returns the full lineage history");
+equal(view.sources.length, 6, "read returns the full lineage history");
 equal(view.sources.filter((s) => s.validity === "superseded").length, 1, "the superseded source is labelled");
-equal(view.currentSourceCount, 3, "three current sources");
+equal(view.currentSourceCount, 4, "four current sources (E has lapsed)");
+equal(view.sources.find((src) => src.outcomeId === lineageE.outcomeId)?.validity, "past_valid_until", "the lapsed source is labelled on read");
 equal([view.summaryBasis, view.summaryReflectsCurrentSources], ["as_of_last_evaluation", true], "the stored tier is labelled a snapshot, and here it still reflects current sources");
 equal(read.body.canPropose, false, "a viewer cannot propose");
 equal((await http(outsider, "GET", `/api/learning-candidates?workspaceId=${a.workspaceId}&projectId=${a.projectId}`)).status, 403, "another tenant cannot read tenant A's candidates");
@@ -441,4 +504,5 @@ check(statuses.every((s) => s.status === "proposed"), "no candidate is anything 
 equal(await count("organizational_patterns", { workspace_id: a.workspaceId }), 0, "no organizational pattern (knowledge) was created");
 
 console.log(`P2-18 DB verification PASS (${assertions} assertions).`);
-console.log(`CANDIDATE ${candidateId} tier=${afterC.evidence_tier} version=${afterC.version} lineages=${afterC.lineage_count} independent=${afterC.independent_lineage_count} results=${JSON.stringify(afterC.result_counts)}`);
+const finalCandidate = must(await admin.from("canonical_learning_candidates").select("*").eq("id", candidateId).single(), "final") as CanonicalLearningCandidateRow;
+console.log(`CANDIDATE ${candidateId} tier=${finalCandidate.evidence_tier} version=${finalCandidate.version} lineages=${finalCandidate.lineage_count} independent=${finalCandidate.independent_lineage_count} results=${JSON.stringify(finalCandidate.result_counts)}`);

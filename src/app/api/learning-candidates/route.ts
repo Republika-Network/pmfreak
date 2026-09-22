@@ -84,7 +84,7 @@ function errorResponse(error: unknown) {
   if (/outcome_not_found|observation_not_found/.test(message)) {
     return NextResponse.json({ ok: false, error: "That outcome lineage was not found in this project.", failureClass }, { status: 404 });
   }
-  if (/payload_invalid|evaluated_at_future|evaluated_at_before_observation/.test(message)) {
+  if (/payload_invalid/.test(message)) {
     return NextResponse.json({ ok: false, error: "The learning candidate request is not valid for this project.", failureClass }, { status: 400 });
   }
   if (/read_truncated/.test(message)) {
@@ -114,12 +114,17 @@ export async function handleGetLearningCandidates(request: NextRequest, depsOver
 
 export async function handlePostLearningCandidate(request: NextRequest, depsOverride: Partial<LearningCandidateRouteDeps> = {}): Promise<NextResponse> {
   const deps: LearningCandidateRouteDeps = { ...defaultDeps, ...depsOverride };
-  let body: Record<string, unknown>;
+  let parsed: unknown;
   try {
-    body = (await request.json()) as Record<string, unknown>;
+    parsed = await request.json();
   } catch {
     return NextResponse.json({ ok: false, error: "Invalid JSON." }, { status: 400 });
   }
+  // Valid JSON is not necessarily an object (null, arrays, scalars): refuse before reading fields.
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return NextResponse.json({ ok: false, error: "Invalid JSON." }, { status: 400 });
+  }
+  const body = parsed as Record<string, unknown>;
   const projectId = typeof body.projectId === "string" ? body.projectId.trim() : "";
   const workspaceId = typeof body.workspaceId === "string" ? body.workspaceId.trim() : "";
   const outcomeId = typeof body.outcomeId === "string" ? body.outcomeId.trim() : "";
@@ -130,14 +135,10 @@ export async function handlePostLearningCandidate(request: NextRequest, depsOver
   const auth = await deps.authorize(projectId, workspaceId, "write");
   if (!auth.ok) return denied(auth.status);
   try {
-    const result = await deps.propose(
-      auth.client,
-      { workspaceId, projectId, userId: auth.userId, role: auth.role },
-      // The evaluation clock is the server's, never the caller's.
-      { outcomeId, observationId, evaluatedAt: deps.now().toISOString() },
-    );
+    // The evaluation clock is the database's (inside the RPC), never the caller's.
+    const result = await deps.propose(auth.client, { workspaceId, projectId, userId: auth.userId, role: auth.role }, { outcomeId, observationId });
     if (result.disposition === "ineligible") {
-      return NextResponse.json({ ok: false, disposition: "ineligible", reasons: result.reasons, gaps: result.gaps, elevationInferred: false }, { status: 422 });
+      return NextResponse.json({ ok: false, disposition: "ineligible", reasons: result.reasons, elevationInferred: false }, { status: 422 });
     }
     return NextResponse.json({ ok: true, ...result }, { status: result.disposition === "created" ? 201 : 200 });
   } catch (error) {

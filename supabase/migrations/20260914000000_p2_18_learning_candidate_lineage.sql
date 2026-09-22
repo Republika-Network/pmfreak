@@ -34,9 +34,11 @@
 --                        source per Outcome. A newer Observation supersedes the previous
 --                        source row; the old row is kept, never deleted.
 --   version / digest     every material change (created, evidence linked, evidence
---                        superseded) increments `version` and recomputes `evidence_digest`
---                        over the current sources. A retry of the same Observation is a
---                        `duplicate`: no write, no event.
+--                        superseded) increments `version` and recomputes the summary and
+--                        `evidence_digest` over the sources VALID at the evaluation clock
+--                        (a lapsed source is kept but not counted). A retry of an already
+--                        linked Observation is a `duplicate` — no write, no event — even if
+--                        it would no longer be eligible today.
 --
 -- TIERS (structural descriptions of the evidence, never calibrated thresholds)
 --   single_lineage                the current evidence traces to one Decision.
@@ -70,7 +72,8 @@
 --   gates record_canonical_outcome_observation, the operation that produces the reserved
 --   candidate payload. It trusts no caller-supplied tier, pattern, confidence or lineage:
 --   the caller names an Outcome and the Observation it evaluated, and everything else is
---   read from canonical rows. No service role is involved: no role, service_role included,
+--   read from canonical rows. The evaluation clock is the database's now(); a caller cannot
+--   backdate eligibility or the event. No service role is involved: no role, service_role included,
 --   holds any DML on the two tables, so the RPC is the only writer (the guard trigger below
 --   is defence in depth for owner-level paths).
 --
@@ -293,16 +296,18 @@ grant select on public.canonical_learning_candidate_sources to authenticated, se
 -- -----------------------------------------------------------------------------
 -- propose_canonical_learning_candidate
 --
--- The caller names the Outcome and the Observation it evaluated (stale-context guard) and
--- the explicit evaluation clock. Eligibility failures return disposition 'ineligible' with
--- every reason and write nothing. Authorization, scope and validation failures raise.
+-- The caller names the Outcome and, optionally, the Observation it evaluated (a stale-context
+-- guard; null means the Outcome's latest). The evaluation clock is the DATABASE's (now()):
+-- a caller cannot backdate eligibility or the emitted event. A retry of an already-linked
+-- Observation is a 'duplicate' before any current-eligibility check. Eligibility failures
+-- return disposition 'ineligible' with every reason and write nothing. Authorization, scope
+-- and validation failures raise.
 -- -----------------------------------------------------------------------------
 create or replace function public.propose_canonical_learning_candidate(
     p_workspace_id uuid,
     p_project_id uuid,
     p_outcome_id uuid,
-    p_observation_id uuid,
-    p_evaluated_at timestamptz
+    p_observation_id uuid
 )
 returns jsonb
 language plpgsql
@@ -345,20 +350,19 @@ declare
     v_limitations text[];
     v_transition text;
     v_event_id uuid;
+    v_valid_source_ids uuid[];
+    -- One clock for the whole evaluation: the database's, never the caller's.
+    v_evaluated_at timestamptz := now();
 begin
     v_actor := auth.uid();
     if v_actor is null then
         raise exception 'unauthenticated';
     end if;
-    if p_workspace_id is null or p_project_id is null or p_outcome_id is null
-       or p_observation_id is null or p_evaluated_at is null then
+    if p_workspace_id is null or p_project_id is null or p_outcome_id is null then
         raise exception 'learning_candidate_payload_invalid';
     end if;
     if not public.can_write_operational_project(p_workspace_id, p_project_id) then
         raise exception 'learning_candidate_write_denied';
-    end if;
-    if p_evaluated_at > now() + interval '5 minutes' then
-        raise exception 'learning_candidate_evaluated_at_future';
     end if;
 
     select * into v_outcome
@@ -368,15 +372,44 @@ begin
         raise exception 'learning_candidate_outcome_not_found';
     end if;
 
+    -- Latest Observation, the same rule P2-10 applies (recorded_at desc), id as tiebreak.
+    select o.id into v_latest_observation_id
+    from public.canonical_outcome_observations o
+    where o.outcome_id = v_outcome.id and o.workspace_id = p_workspace_id and o.project_id = p_project_id
+    order by o.recorded_at desc, o.id desc
+    limit 1;
+
+    if p_observation_id is null and v_latest_observation_id is null then
+        return jsonb_build_object(
+            'disposition', 'ineligible',
+            'reasons', jsonb_build_array('observation_missing'),
+            'candidate', null,
+            'elevationInferred', false
+        );
+    end if;
+
     select * into v_observation
     from public.canonical_outcome_observations
-    where id = p_observation_id and outcome_id = v_outcome.id
+    where id = coalesce(p_observation_id, v_latest_observation_id) and outcome_id = v_outcome.id
       and workspace_id = p_workspace_id and project_id = p_project_id;
     if not found then
         raise exception 'learning_candidate_observation_not_found';
     end if;
-    if p_evaluated_at < v_observation.recorded_at then
-        raise exception 'learning_candidate_evaluated_at_before_observation';
+
+    -- A retry of an Observation that is already linked is a duplicate, whatever its current
+    -- eligibility: a caller that lost the original response must not be told the committed
+    -- write failed. (Re-checked under the pattern lock below for concurrent first calls.)
+    select * into v_existing_source
+    from public.canonical_learning_candidate_sources
+    where workspace_id = p_workspace_id and project_id = p_project_id and observation_id = v_observation.id;
+    if found then
+        select * into v_candidate from public.canonical_learning_candidates where id = v_existing_source.candidate_id;
+        return jsonb_build_object(
+            'disposition', 'duplicate',
+            'candidate', to_jsonb(v_candidate),
+            'source', to_jsonb(v_existing_source),
+            'elevationInferred', false
+        );
     end if;
 
     -- ── Eligibility: every reason is collected; nothing is written if any applies ──
@@ -387,12 +420,6 @@ begin
         v_reasons := array_append(v_reasons, 'outcome_superseded'::text);
     end if;
 
-    -- Latest Observation, the same rule P2-10 applies (recorded_at desc), id as tiebreak.
-    select o.id into v_latest_observation_id
-    from public.canonical_outcome_observations o
-    where o.outcome_id = v_outcome.id and o.workspace_id = p_workspace_id and o.project_id = p_project_id
-    order by o.recorded_at desc, o.id desc
-    limit 1;
     if v_latest_observation_id is distinct from v_observation.id then
         v_reasons := array_append(v_reasons, 'observation_not_latest'::text);
     end if;
@@ -441,7 +468,7 @@ begin
     ) then
         v_reasons := array_append(v_reasons, 'lineage_fixture'::text);
     end if;
-    if v_observation.stale_at is not null and v_observation.stale_at <= p_evaluated_at then
+    if v_observation.stale_at is not null and v_observation.stale_at <= v_evaluated_at then
         v_reasons := array_append(v_reasons, 'observation_stale'::text);
     end if;
 
@@ -458,7 +485,7 @@ begin
       and e.rejection_reason is null
       and e.degraded_reason is null
       and e.evaluated_at is not null
-      and (e.stale_at is null or e.stale_at > p_evaluated_at);
+      and (e.stale_at is null or e.stale_at > v_evaluated_at);
     if v_current_evidence <> (select count(distinct x) from unnest(v_observation.evidence_reference_ids) x) then
         v_reasons := array_append(v_reasons, 'observation_evidence_not_current'::text);
     end if;
@@ -575,6 +602,14 @@ begin
             if v_finding_evidence.freshness_state = 'STALE' or v_finding_evidence.degraded_reason is not null then
                 v_reasons := array_append(v_reasons, 'finding_evidence_degraded'::text);
             end if;
+            -- The rest of P2-09's canonical-live predicate, at this evaluation clock — the same
+            -- rule the Observation's Evidence meets above.
+            if v_finding_evidence.lifecycle <> 'RECORDED'
+               or v_finding_evidence.rejection_reason is not null
+               or v_finding_evidence.evaluated_at is null
+               or (v_finding_evidence.stale_at is not null and v_finding_evidence.stale_at <= v_evaluated_at) then
+                v_reasons := array_append(v_reasons, 'finding_evidence_not_current'::text);
+            end if;
         end if;
     end if;
 
@@ -655,7 +690,7 @@ begin
             encode(extensions.digest(
                 v_outcome.id::text || ':' || v_observation.id::text || ':' || v_observation.observation_state,
                 'sha256'), 'hex'),
-            'pmfreak/learning-candidate-eligibility:v1', null, v_actor, p_evaluated_at, v_actor
+            'pmfreak/learning-candidate-eligibility:v1', null, v_actor, v_evaluated_at, v_actor
         )
         returning * into v_candidate;
     end if;
@@ -679,7 +714,7 @@ begin
         v_recommendation.id, v_signal.id, v_finding_evidence.id, v_observation.evidence_reference_ids,
         v_observation.observation_state, v_observation.confidence_score, v_observation.stale_at,
         v_observation.correlation_id, v_observation.causation_id,
-        p_evaluated_at, v_actor
+        v_evaluated_at, v_actor
     )
     returning * into v_source;
 
@@ -689,7 +724,36 @@ begin
         else 'evidence_linked' end;
 
     if not v_candidate_created then
-    -- ── Recompute the bounded summary from the CURRENT sources only ──
+    -- ── Recompute the bounded summary from the sources VALID at this evaluation clock ──
+    -- Not superseded, still its Outcome's latest Observation, within the Observation's own
+    -- validity window, and every Evidence item still meeting P2-09's canonical-live rule. A
+    -- source that has since lapsed is kept (history) but is not counted in the snapshot.
+    select coalesce(array_agg(s.id), array[]::uuid[]) into v_valid_source_ids
+    from public.canonical_learning_candidate_sources s
+    where s.candidate_id = v_candidate.id
+      and s.superseded_at is null
+      and (s.valid_until is null or s.valid_until > v_evaluated_at)
+      and s.observation_id = (
+          select o.id from public.canonical_outcome_observations o
+          where o.outcome_id = s.outcome_id and o.workspace_id = s.workspace_id and o.project_id = s.project_id
+          order by o.recorded_at desc, o.id desc
+          limit 1)
+      and not exists (
+          select 1 from unnest(s.observation_evidence_ids) as ref(evidence_id)
+          where not exists (
+              select 1 from public.evidence_items e
+              where e.id = ref.evidence_id
+                and e.workspace_id = s.workspace_id
+                and e.project_id = s.project_id
+                and e.normalized_event_id is not null
+                and e.fixture_state = 'LIVE'
+                and e.freshness_state = 'CURRENT'
+                and e.lifecycle = 'RECORDED'
+                and e.rejection_reason is null
+                and e.degraded_reason is null
+                and e.evaluated_at is not null
+                and (e.stale_at is null or e.stale_at > v_evaluated_at)));
+
     select count(*), count(distinct s.decision_id), count(distinct s.observed_result),
            min(s.observation_confidence),
            encode(extensions.digest(
@@ -698,13 +762,13 @@ begin
                'sha256'), 'hex')
       into v_lineage_count, v_independent_count, v_distinct_results, v_confidence, v_digest
     from public.canonical_learning_candidate_sources s
-    where s.candidate_id = v_candidate.id and s.superseded_at is null;
+    where s.id = any(v_valid_source_ids);
 
     select coalesce(jsonb_object_agg(r.observed_result, r.n), '{}'::jsonb) into v_result_counts
     from (
         select s.observed_result, count(*) as n
         from public.canonical_learning_candidate_sources s
-        where s.candidate_id = v_candidate.id and s.superseded_at is null
+        where s.id = any(v_valid_source_ids)
         group by s.observed_result
     ) r;
 
@@ -732,7 +796,7 @@ begin
         version = v_candidate.version + 1,
         evidence_digest = v_digest,
         updated_at = now(),
-        last_evaluated_at = p_evaluated_at,
+        last_evaluated_at = v_evaluated_at,
         last_evaluated_by = v_actor
     where id = v_candidate.id
     returning * into v_candidate;
@@ -785,7 +849,7 @@ begin
             'lineageCorrelationId', v_observation.correlation_id,
             'lineageCausationId', v_observation.causation_id,
             'observedAt', v_observation.observed_at,
-            'evaluatedAt', p_evaluated_at,
+            'evaluatedAt', v_evaluated_at,
             'evaluator', v_candidate.evaluator,
             'elevationInferred', false,
             'candidateIsNotOrganizationalTruth', true
@@ -800,7 +864,7 @@ begin
         false,
         'canonical_learning_candidates', v_candidate.id,
         jsonb_build_object('correlationKind', 'correlation_not_causation', 'triggeringObservationId', v_observation.id),
-        p_evaluated_at
+        v_evaluated_at
     )
     returning id into v_event_id;
 
@@ -815,9 +879,9 @@ begin
 end;
 $$;
 
-revoke all on function public.propose_canonical_learning_candidate(uuid, uuid, uuid, uuid, timestamptz) from public;
-revoke execute on function public.propose_canonical_learning_candidate(uuid, uuid, uuid, uuid, timestamptz) from anon;
-grant execute on function public.propose_canonical_learning_candidate(uuid, uuid, uuid, uuid, timestamptz) to authenticated;
+revoke all on function public.propose_canonical_learning_candidate(uuid, uuid, uuid, uuid) from public;
+revoke execute on function public.propose_canonical_learning_candidate(uuid, uuid, uuid, uuid) from anon;
+grant execute on function public.propose_canonical_learning_candidate(uuid, uuid, uuid, uuid) to authenticated;
 
-comment on function public.propose_canonical_learning_candidate(uuid, uuid, uuid, uuid, timestamptz) is
+comment on function public.propose_canonical_learning_candidate(uuid, uuid, uuid, uuid) is
 'P2-18: evaluate one canonical outcome lineage and, if eligible, link it as evidence of a project-local Learning Candidate (status proposed). Authenticated; can_write_operational_project. Derives pattern, tier and confidence from canonical rows; writes the source link, candidate version and platform event atomically. Never ratifies, elevates or creates organizational knowledge.';

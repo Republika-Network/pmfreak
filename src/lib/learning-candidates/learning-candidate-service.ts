@@ -2,10 +2,12 @@
  * P2-18 — Learning Candidate service.
  *
  * Every read and write runs on the CALLER'S request-scoped (RLS) client. Proposing a
- * candidate is one authenticated RPC (propose_canonical_learning_candidate) that re-derives
- * eligibility, pattern identity, tier and confidence from canonical rows and writes the
- * source link, the candidate version and the platform event in one transaction. No service
- * role is used: nothing here needs to be trusted beyond the caller's own authority.
+ * candidate is one authenticated RPC (propose_canonical_learning_candidate) that is the sole
+ * eligibility authority: it derives eligibility, pattern identity, tier and confidence from
+ * canonical rows at the database clock and writes the source link, the candidate version and
+ * the platform event in one transaction. There is deliberately no client-side preflight over
+ * the project-wide lineage projection, which a row cap could truncate. No service role is
+ * used: nothing here needs to be trusted beyond the caller's own authority.
  *
  * Authority: the same predicate as the operation that produces the reserved candidate
  * payload, record_canonical_outcome_observation — can_write_operational_project in the
@@ -13,8 +15,7 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { canCreateOperationalEvidence } from "@/lib/operational-flow/authority";
-import { getCompleteLineageProjection } from "@/lib/operational-flow/operational-flow-service";
-import { preflightLearningCandidateEligibility, toLearningCandidateView } from "./eligibility";
+import { toLearningCandidateView } from "./eligibility";
 import {
   LEARNING_CANDIDATE_RPC,
   type LearningCandidateEvidenceTier,
@@ -48,32 +49,20 @@ function fail(code: string, error?: { message?: string } | null): never {
 export async function proposeLearningCandidate(
   client: Client,
   scope: LearningCandidateScope,
-  input: { outcomeId: string; observationId?: string | null; evaluatedAt: string },
-  deps: { getLineage?: typeof getCompleteLineageProjection } = {},
+  input: { outcomeId: string; observationId?: string | null },
 ): Promise<ProposeLearningCandidateResult> {
   if (!canCreateOperationalEvidence(scope.role)) throw new Error("learning_candidate_role_denied");
   if (!UUID_PATTERN.test(input.outcomeId) || (input.observationId && !UUID_PATTERN.test(input.observationId))) {
     throw new Error("learning_candidate_payload_invalid");
-  }
-  const evaluatedAt = new Date(input.evaluatedAt);
-  if (Number.isNaN(evaluatedAt.valueOf())) throw new Error("learning_candidate_payload_invalid");
-
-  const getLineage = deps.getLineage ?? getCompleteLineageProjection;
-  const projections = await getLineage(client, scope.workspaceId, scope.projectId, { outcomeId: input.outcomeId });
-  const projection = projections.find((p) => p.outcomeId === input.outcomeId);
-  if (!projection) throw new Error("learning_candidate_outcome_not_found");
-
-  const preflight = preflightLearningCandidateEligibility(projection, { observationId: input.observationId ?? null });
-  if (!preflight.eligible) {
-    return { disposition: "ineligible", reasons: preflight.reasons, gaps: preflight.gaps, elevationInferred: false };
   }
 
   const { data, error } = await client.rpc(LEARNING_CANDIDATE_RPC, {
     p_workspace_id: scope.workspaceId,
     p_project_id: scope.projectId,
     p_outcome_id: input.outcomeId,
-    p_observation_id: input.observationId ?? preflight.latestObservationId,
-    p_evaluated_at: evaluatedAt.toISOString(),
+    // Null means the Outcome's latest Observation; the RPC resolves it and evaluates at the
+    // database clock, so the caller supplies no time.
+    p_observation_id: input.observationId ?? null,
   });
   if (error) fail("learning_candidate_rpc_failed", error);
   const result = (data ?? null) as Record<string, unknown> | null;
@@ -81,7 +70,7 @@ export async function proposeLearningCandidate(
 
   if (disposition === "ineligible") {
     const reasons = Array.isArray(result?.reasons) ? (result.reasons as unknown[]).map(String) : [];
-    return { disposition: "ineligible", reasons, gaps: preflight.gaps, elevationInferred: false };
+    return { disposition: "ineligible", reasons, elevationInferred: false };
   }
   if (disposition !== "created" && disposition !== "evidence_linked" && disposition !== "evidence_superseded" && disposition !== "duplicate") {
     fail("learning_candidate_result_malformed");

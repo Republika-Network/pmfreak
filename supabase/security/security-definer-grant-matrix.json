@@ -423,8 +423,8 @@
     {
       "schema": "public",
       "name": "propose_canonical_learning_candidate",
-      "identity_arguments": "uuid,uuid,uuid,uuid,timestamptz",
-      "signature": "public.propose_canonical_learning_candidate(uuid,uuid,uuid,uuid,timestamptz)",
+      "identity_arguments": "uuid,uuid,uuid,uuid",
+      "signature": "public.propose_canonical_learning_candidate(uuid,uuid,uuid,uuid)",
       "public": false,
       "anon": false,
       "authenticated": true,
@@ -433,7 +433,7 @@
       "trigger_only": false,
       "search_path": "pg_catalog, public, extensions",
       "latest_definition_migration": "20260914000000_p2_18_learning_candidate_lineage.sql",
-      "rationale": "P2-18 Learning Candidate RPC (learning-candidate-service.ts). Null-actor rejection then can_write_operational_project; derives eligibility, pattern, tier and confidence from canonical rows; writes source link, candidate version and platform event atomically. Never ratifies or elevates."
+      "rationale": "P2-18 Learning Candidate RPC (learning-candidate-service.ts). Null-actor rejection then can_write_operational_project; evaluates at the database clock; derives eligibility, pattern, tier and confidence from canonical rows; writes source link, candidate version and platform event atomically. Never ratifies or elevates."
     },
     {
       "schema": "public",
