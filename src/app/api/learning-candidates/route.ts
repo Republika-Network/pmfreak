@@ -75,16 +75,20 @@ function denied(status: 401 | 403) {
 
 function errorResponse(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
+  // Handled refusals name their stable snake_case code (never a raw provider message). The
+  // service wraps database errors as "learning_candidate_rpc_failed: <code>", so the most
+  // specific code is the last one.
+  const failureClass = message.match(/\blearning_candidate_[a-z_]+/g)?.at(-1) ?? null;
   if (/unauthenticated/.test(message)) return denied(401);
   if (/role_denied|write_denied/.test(message)) return denied(403);
   if (/outcome_not_found|observation_not_found/.test(message)) {
-    return NextResponse.json({ ok: false, error: "That outcome lineage was not found in this project." }, { status: 404 });
+    return NextResponse.json({ ok: false, error: "That outcome lineage was not found in this project.", failureClass }, { status: 404 });
   }
   if (/payload_invalid|evaluated_at_future|evaluated_at_before_observation/.test(message)) {
-    return NextResponse.json({ ok: false, error: "The learning candidate request is not valid for this project." }, { status: 400 });
+    return NextResponse.json({ ok: false, error: "The learning candidate request is not valid for this project.", failureClass }, { status: 400 });
   }
   if (/read_truncated/.test(message)) {
-    return NextResponse.json({ ok: false, error: "Too many records to read completely; nothing partial is returned." }, { status: 503 });
+    return NextResponse.json({ ok: false, error: "Too many records to read completely; nothing partial is returned.", failureClass }, { status: 503 });
   }
   logger.error("route_internal_error", { route: ROUTE_ID, error_detail: safeErrorMessage(error) });
   return NextResponse.json({ ok: false, error: "The learning candidate could not be evaluated. Please retry." }, { status: 500 });

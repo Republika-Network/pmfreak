@@ -49,6 +49,15 @@ export const LEARNING_CANDIDATE_TIERS: Record<LearningCandidateEvidenceTier, { e
 
 /** Every lineage P2-18 can build is observational; see CAUSALITY_NOTE. */
 export type LearningCandidateCausalityClaim = "correlation_only" | (string & {});
+/**
+ * evidenceTier, lineageCount, independentLineageCount, resultCounts and confidence are the
+ * summary STORED at the last material evaluation. They are not recomputed on read; source
+ * currency (currentSourceCount, operationallySupported) is. Readers must not treat the stored
+ * tier as the current state of the evidence.
+ */
+export const SUMMARY_BASIS_NOTE =
+  "evidenceTier, lineageCount, independentLineageCount, resultCounts and confidence are a snapshot as of the last material evaluation (summaryAsOf), not recomputed on read. currentSourceCount and operationallySupported are derived now; summaryReflectsCurrentSources is false when a source counted in the snapshot is no longer current.";
+
 export const CAUSALITY_NOTE =
   "correlation_only reflects current evidence capability: every lineage P2-18 can build is observational. It is not a universal rule for future candidates, and timing is never treated as causation.";
 
@@ -169,6 +178,12 @@ export type LearningCandidateView = {
   evaluator: string;
   fixture: boolean;
   fixtureLabel: string | null;
+  /** The tier/counts/confidence above are a snapshot as of this time, not recomputed on read. */
+  summaryBasis: "as_of_last_evaluation";
+  summaryAsOf: string;
+  summaryNote: string;
+  /** False when a source counted in the stored snapshot is no longer current at the read clock. */
+  summaryReflectsCurrentSources: boolean;
   /** Derived at the read clock from source validity. The stored status stays "proposed". */
   operationallySupported: boolean;
   currentSourceCount: number;

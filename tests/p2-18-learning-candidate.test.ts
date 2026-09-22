@@ -159,6 +159,12 @@ test("P2-18 retention: a candidate without a current source reads as unsupported
   const view = toLearningCandidateView(candidateRow(), [sourceRow({ valid_until: "2026-10-01T00:00:00.000Z" })], validityContext());
   assert.equal(view.operationallySupported, false);
   assert.equal(view.currentSourceCount, 0);
+  // The stored tier is explicitly a snapshot, and the read says it no longer reflects current sources.
+  assert.equal(view.summaryBasis, "as_of_last_evaluation");
+  assert.equal(view.summaryAsOf, EVAL);
+  assert.equal(view.evidenceTier, "single_lineage", "the stored tier is returned as stored, never silently recomputed");
+  assert.equal(view.summaryReflectsCurrentSources, false);
+  assert.equal(toLearningCandidateView(candidateRow(), [sourceRow()], validityContext()).summaryReflectsCurrentSources, true);
   assert.equal(view.sources.length, 1, "historical lineage is still returned");
   assert.equal(view.status, "proposed", "stored status is untouched");
 });
@@ -353,7 +359,9 @@ test("P2-18 route: dispositions map to honest statuses", async () => {
   assert.equal((await failing("learning_candidate_outcome_not_found")).status, 404);
   assert.equal((await failing("learning_candidate_observation_not_found")).status, 404);
   assert.equal((await failing("learning_candidate_write_denied")).status, 403);
-  assert.equal((await failing("learning_candidate_evaluated_at_future")).status, 400);
+  const invalid = await failing("learning_candidate_rpc_failed: learning_candidate_evaluated_at_before_observation");
+  assert.equal(invalid.status, 400);
+  assert.equal((await invalid.json()).failureClass, "learning_candidate_evaluated_at_before_observation", "a handled refusal names its stable code");
   const internal = await failing("some unexpected database detail");
   assert.equal(internal.status, 500);
   assert.doesNotMatch(JSON.stringify(await internal.json()), /database detail/, "raw provider errors are not leaked");
@@ -388,7 +396,10 @@ test("P2-18 migration: RLS is read-only for project members; every write goes th
   for (const table of ["canonical_learning_candidates", "canonical_learning_candidate_sources"]) {
     assert.match(sqlBody, new RegExp(`alter table public\\.${table} enable row level security`));
     assert.match(sqlBody, new RegExp(`on public\\.${table}\\s+for select to authenticated\\s+using \\(public\\.can_access_operational_project\\(workspace_id, project_id\\)\\)`));
-    assert.match(sqlBody, new RegExp(`revoke insert, update, delete, truncate on public\\.${table} from anon, authenticated`));
+    // service_role bypasses RLS and gets full DML by default, so it is revoked too.
+    assert.match(sqlBody, new RegExp(`revoke all on public\\.${table} from anon, authenticated, service_role`));
+    assert.match(sqlBody, new RegExp(`grant select on public\\.${table} to authenticated, service_role;`));
+    assert.doesNotMatch(sqlBody, new RegExp(`grant (all|insert|update|delete|truncate)[^;]* on public\\.${table}`, "i"));
     assert.doesNotMatch(sqlBody, new RegExp(`for (insert|update|delete|all)[^;]*on public\\.${table}|on public\\.${table}\\s+for (insert|update|delete|all)`));
   }
   assert.match(sqlBody, /before update or delete on public\.canonical_learning_candidate_sources/);
@@ -410,7 +421,11 @@ test("P2-18 migration: the RPC authenticates, authorises, pins search_path, seri
   // text[] || 'literal' parses the literal as an ARRAY ("malformed array literal"): found by the
   // live verifier on the first ineligible path. Every append is explicit.
   assert.doesNotMatch(fn, /v_(reasons|limitations)\s*:=\s*v_\w+\s*\|\|\s*'/, "array appends use array_append");
-  assert.doesNotMatch(sqlBody, /service_role/i, "no service-role transport");
+  assert.doesNotMatch(sqlBody, /operational_is_service_role|to service_role\s*;\s*$/im, "no service-role transport");
+  assert.doesNotMatch(sqlBody, /grant execute[^;]*to[^;]*service_role/i, "the RPC is not granted to service_role explicitly");
+  for (const m of sqlBody.matchAll(/^.*service_role.*$/gim)) {
+    assert.match(m[0], /^(revoke all on public\.canonical_learning_candidate(s|_sources) from anon, authenticated, service_role;|grant select on public\.canonical_learning_candidate(s|_sources) to authenticated, service_role;)$/, `only the revoke and the SELECT grant name service_role: ${m[0]}`);
+  }
 });
 
 test("P2-18 migration: the candidate event is written in the same transaction and never implies elevation", () => {

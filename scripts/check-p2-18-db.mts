@@ -222,6 +222,11 @@ const count = async (table: string, filter: Record<string, unknown>) => {
   return n ?? 0;
 };
 
+/** Either the grant (first line of defence) or the provenance trigger (defence in depth). */
+const DENIED = /permission denied|learning_candidate_provenance_immutable/;
+/** Table grants: the service role holds no DML on P2-18 tables. */
+const PRIVILEGE_DENIED = /permission denied for table canonical_learning_candidate/;
+
 const candidateEvents = (candidateId: string) => count("platform_events", { raw_reference_table: "canonical_learning_candidates", raw_reference_id: candidateId });
 
 // ── Tenants ────────────────────────────────────────────────────────────────────────────
@@ -251,7 +256,7 @@ equal((await http(outsider, "POST", "/api/learning-candidates", { workspaceId: a
 equal(await count("canonical_learning_candidates", { project_id: a.projectId }), 0, "refusals wrote nothing");
 
 const created = await http(owner, "POST", "/api/learning-candidates", { workspaceId: a.workspaceId, projectId: a.projectId, outcomeId: lineageA.outcomeId });
-equal(created.status, 201, "an eligible LIVE lineage creates a candidate");
+equal(created.status, 201, `an eligible LIVE lineage creates a candidate — response ${JSON.stringify(created.body)}`);
 equal(created.body.disposition, "created", "disposition created");
 equal(created.body.evidenceTier, "single_lineage", "one lineage is single_lineage");
 equal(created.body.causalityClaim, "correlation_only", "the route returns the correlation-only qualifier");
@@ -368,12 +373,53 @@ check(Boolean(directUpdate.error) || (directUpdate.data ?? []).length === 0, "an
 const directDelete = await owner.client.from("canonical_learning_candidate_sources").delete().eq("candidate_id", candidateId).select("id");
 check(Boolean(directDelete.error) || (directDelete.data ?? []).length === 0, "an owner cannot delete lineage directly");
 const privilegedDelete = await admin.from("canonical_learning_candidate_sources").delete().eq("id", sourceA1.id);
-check(/learning_candidate_provenance_immutable/.test(privilegedDelete.error?.message ?? ""), "not even the service role can delete lineage");
+check(DENIED.test(privilegedDelete.error?.message ?? ""), "not even the service role can delete lineage");
 const privilegedRewrite = await admin.from("canonical_learning_candidate_sources").update({ observed_result: "failed" }).eq("id", superseded.source.id);
-check(/learning_candidate_provenance_immutable/.test(privilegedRewrite.error?.message ?? ""), "lineage cannot be rewritten");
+check(DENIED.test(privilegedRewrite.error?.message ?? ""), "lineage cannot be rewritten");
 const privilegedRekey = await admin.from("canonical_learning_candidates").update({ pattern_key: `canonical-outcome-pattern:v1:${"f".repeat(64)}`, version: afterC.version + 1 }).eq("id", candidateId);
-check(/learning_candidate_provenance_immutable/.test(privilegedRekey.error?.message ?? ""), "the hypothesis identity cannot be rewritten");
+check(DENIED.test(privilegedRekey.error?.message ?? ""), "the hypothesis identity cannot be rewritten");
 equal(await count("canonical_learning_candidate_sources", { candidate_id: candidateId }), 4, "all four sources remain");
+
+// ── 6b. No direct privileged write can bypass the RPC's atomic material change ─────────
+// Each attempt is shaped to PASS the provenance trigger (identity untouched, version + 1,
+// one-time supersession), so only the table grants stand between it and the aggregate.
+const snapshot = async () => ({
+  candidate: must(await admin.from("canonical_learning_candidates").select("*").eq("id", candidateId).single(), "snapshot") as CanonicalLearningCandidateRow,
+  sources: must(await admin.from("canonical_learning_candidate_sources").select("*").eq("candidate_id", candidateId).order("id"), "snapshot sources") as CanonicalLearningCandidateSourceRow[],
+  events: await candidateEvents(candidateId),
+});
+const beforeForgery = await snapshot();
+const forgedSummary = await admin.from("canonical_learning_candidates").update({
+  evidence_tier: "single_lineage", limitations: ["correlation_only"], confidence_score: 0.01,
+  evidence_digest: "a".repeat(64), version: beforeForgery.candidate.version + 1,
+}).eq("id", candidateId).select("id,version");
+const currentC = beforeForgery.sources.find((src) => src.outcome_id === lineageC.outcomeId && src.superseded_at === null)!;
+const forgedRetirement = await admin.from("canonical_learning_candidate_sources")
+  .update({ superseded_at: new Date().toISOString(), superseded_by_source_id: sourceA1.id }).eq("id", currentC.id).select("id");
+const forgedCandidate = await admin.from("canonical_learning_candidates").insert({
+  ...beforeForgery.candidate, id: randomUUID(), pattern_key: `canonical-outcome-pattern:v1:${"d".repeat(64)}`, version: 1,
+}).select("id");
+const forgedSource = await admin.from("canonical_learning_candidate_sources").insert({
+  ...currentC, id: randomUUID(), observation_id: lineageD.observationId, outcome_id: lineageD.outcomeId, observed_result: "achieved",
+}).select("id");
+const afterForgery = await snapshot();
+const forgeryFacts = JSON.stringify({
+  summaryUpdate: forgedSummary.error?.message ?? `succeeded (${(forgedSummary.data ?? []).length} row)`,
+  sourceRetirement: forgedRetirement.error?.message ?? `succeeded (${(forgedRetirement.data ?? []).length} row)`,
+  candidateInsert: forgedCandidate.error?.message ?? "succeeded",
+  sourceInsert: forgedSource.error?.message ?? "succeeded",
+  version: [beforeForgery.candidate.version, afterForgery.candidate.version],
+  tier: [beforeForgery.candidate.evidence_tier, afterForgery.candidate.evidence_tier],
+  events: [beforeForgery.events, afterForgery.events],
+});
+check(PRIVILEGE_DENIED.test(forgedSummary.error?.message ?? ""), `direct service-role candidate mutation is denied — observed ${forgeryFacts}`);
+check(PRIVILEGE_DENIED.test(forgedRetirement.error?.message ?? ""), `direct service-role source mutation is denied — observed ${forgeryFacts}`);
+check(PRIVILEGE_DENIED.test(forgedCandidate.error?.message ?? ""), `direct service-role candidate insert is denied — observed ${forgeryFacts}`);
+check(PRIVILEGE_DENIED.test(forgedSource.error?.message ?? ""), `direct service-role source insert is denied — observed ${forgeryFacts}`);
+equal(afterForgery.candidate, beforeForgery.candidate, "the candidate aggregate is byte-for-byte unchanged");
+equal(afterForgery.sources, beforeForgery.sources, "every source row is unchanged");
+equal(afterForgery.events, beforeForgery.events, "no event without a material RPC change");
+equal(await count("canonical_learning_candidates", { project_id: a.projectId }), 1, "no forged candidate exists");
 
 // ── 7. Read contract and the P2-19 boundary ────────────────────────────────────────────
 const read = await http(viewer, "GET", `/api/learning-candidates?workspaceId=${a.workspaceId}&projectId=${a.projectId}`);
@@ -387,6 +433,7 @@ equal(view.elevationInferred, false, "read infers no elevation");
 equal(view.sources.length, 4, "read returns the full lineage history");
 equal(view.sources.filter((s) => s.validity === "superseded").length, 1, "the superseded source is labelled");
 equal(view.currentSourceCount, 3, "three current sources");
+equal([view.summaryBasis, view.summaryReflectsCurrentSources], ["as_of_last_evaluation", true], "the stored tier is labelled a snapshot, and here it still reflects current sources");
 equal(read.body.canPropose, false, "a viewer cannot propose");
 equal((await http(outsider, "GET", `/api/learning-candidates?workspaceId=${a.workspaceId}&projectId=${a.projectId}`)).status, 403, "another tenant cannot read tenant A's candidates");
 const statuses = must(await admin.from("canonical_learning_candidates").select("status").eq("workspace_id", a.workspaceId), "statuses") as Array<{ status: string }>;

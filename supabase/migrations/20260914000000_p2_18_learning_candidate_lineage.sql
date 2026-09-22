@@ -70,7 +70,9 @@
 --   gates record_canonical_outcome_observation, the operation that produces the reserved
 --   candidate payload. It trusts no caller-supplied tier, pattern, confidence or lineage:
 --   the caller names an Outcome and the Observation it evaluated, and everything else is
---   read from canonical rows. No service role is involved.
+--   read from canonical rows. No service role is involved: no role, service_role included,
+--   holds any DML on the two tables, so the RPC is the only writer (the guard trigger below
+--   is defence in depth for owner-level paths).
 --
 -- WHAT IT DOES NOT DO
 --   No review, validation, rejection, elevation request, ratification, revocation,
@@ -275,10 +277,18 @@ create policy canonical_learning_candidate_sources_select
     for select to authenticated
     using (public.can_access_operational_project(workspace_id, project_id));
 
-revoke insert, update, delete, truncate on public.canonical_learning_candidates from anon, authenticated;
-revoke insert, update, delete, truncate on public.canonical_learning_candidate_sources from anon, authenticated;
-grant select on public.canonical_learning_candidates to authenticated;
-grant select on public.canonical_learning_candidate_sources to authenticated;
+-- Table grants are the first line of defence. No role — not even service_role, which
+-- bypasses RLS and receives full DML through Supabase's default privileges — may write these
+-- tables directly: a direct UPDATE could otherwise change the tier/limitations/confidence/
+-- digest with version + 1 (a shape the provenance guard permits for the RPC) without a source
+-- change, a recomputation or the platform event. The only writer is
+-- propose_canonical_learning_candidate, which runs with its owner's privileges. The guard
+-- trigger stays as defence in depth for owner-level paths.
+-- Read access: project members (under RLS) and service_role for operational verification.
+revoke all on public.canonical_learning_candidates from anon, authenticated, service_role;
+revoke all on public.canonical_learning_candidate_sources from anon, authenticated, service_role;
+grant select on public.canonical_learning_candidates to authenticated, service_role;
+grant select on public.canonical_learning_candidate_sources to authenticated, service_role;
 
 -- -----------------------------------------------------------------------------
 -- propose_canonical_learning_candidate

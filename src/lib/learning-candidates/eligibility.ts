@@ -16,6 +16,7 @@
 import type { CompleteLineageProjection } from "@/lib/operational-flow/types";
 import {
   CAUSALITY_NOTE,
+  SUMMARY_BASIS_NOTE,
   LEARNING_CANDIDATE_CONTRACT,
   LIMITATION_STATEMENTS,
   type LearningCandidateIneligibilityReason,
@@ -129,6 +130,8 @@ export function toLearningCandidateView(
     .map((s) => toSourceView(s, deriveSourceValidity(s, ctx)))
     .sort((a, b) => (a.recordedAt < b.recordedAt ? -1 : a.recordedAt > b.recordedAt ? 1 : a.id < b.id ? -1 : 1));
   const currentSourceCount = views.filter((s) => s.validity === "current").length;
+  // Sources the stored snapshot counted: those not superseded when it was taken.
+  const snapshotSources = views.filter((s) => s.supersededAt === null);
   return {
     contract: LEARNING_CANDIDATE_CONTRACT,
     id: candidate.id,
@@ -155,6 +158,10 @@ export function toLearningCandidateView(
     evaluator: candidate.evaluator,
     fixture: candidate.fixture_label !== null,
     fixtureLabel: candidate.fixture_label,
+    summaryBasis: "as_of_last_evaluation",
+    summaryAsOf: candidate.last_evaluated_at,
+    summaryNote: SUMMARY_BASIS_NOTE,
+    summaryReflectsCurrentSources: snapshotSources.length === candidate.lineage_count && snapshotSources.every((s) => s.validity === "current"),
     operationallySupported: currentSourceCount > 0,
     currentSourceCount,
     sources: views,
