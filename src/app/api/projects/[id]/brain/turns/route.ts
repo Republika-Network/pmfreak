@@ -20,6 +20,7 @@ import {
   MAX_USER_MESSAGE_CHARS,
   ProjectBrainTurnConflictError,
   readProjectBrainTranscript,
+  resolveProjectBrainGenerativeAccess,
   runProjectBrainTurn,
   toProjectBrainMessageView,
   toProjectBrainTranscript,
@@ -42,6 +43,12 @@ import {
  *
  * Read-only with respect to project state: the only writes behind POST are the
  * user turn, the Project Brain reply and the AI usage row `runInference` records.
+ *
+ * Generative entitlement is decided HERE, on the server, per request
+ * (`resolveProjectBrainGenerativeAccess`): the closed-free-beta profile includes
+ * generative Project Brain; any other profile requires the commercial Advanced AI
+ * entitlement. An un-entitled turn is still persisted and answered in limited
+ * mode, and never reaches the provider. Nothing in the request body can change it.
  */
 
 const ROUTE_ID = "/api/projects/[id]/brain/turns";
@@ -97,11 +104,16 @@ export async function GET(_request: Request, context: RouteContext) {
     if ("denied" in resolved) return resolved.denied;
     const scope = { type: "project" as const, workspaceId: resolved.workspaceId, projectId };
     const { conversation, messages } = await readProjectBrainTranscript(buildStore(scope, resolved.userId));
+    const access = await resolveProjectBrainGenerativeAccess({ userId: resolved.userId });
+    const providerConfigured = isProviderConfigured("openai");
     return NextResponse.json({
       conversationId: conversation?.id ?? null,
       messages: toProjectBrainTranscript(messages),
-      // Configuration only (is a provider key present?) — no value is exposed.
-      generativeAvailable: isProviderConfigured("openai"),
+      // True only when a POST would actually be allowed to call the provider: a
+      // provider key is configured AND this user is entitled in this operating
+      // profile. Neither the key nor plan internals are exposed.
+      generativeAvailable: providerConfigured && access.entitled,
+      limitedModeReason: !access.entitled ? "not_included" : !providerConfigured ? "unavailable" : null,
     });
   } catch (error) {
     return safeLegacyErrorResponse(ROUTE_ID, error, "Unable to load the Project Brain conversation.");
@@ -145,12 +157,15 @@ export async function POST(request: Request, context: RouteContext) {
     const abuse = await enforceAbuseLimit({ scope: "ai.module_output", action: "project_brain_turn", identifier: userId, limit: 120, windowSeconds: 3600 });
     if (!abuse.allowed) return abuseDenyResponse(abuse);
 
+    const access = await resolveProjectBrainGenerativeAccess({ userId });
+
     const scope = { type: "project" as const, workspaceId, projectId };
     const supabase = await createSupabaseServerClient();
     const result = await runProjectBrainTurn(
       {
         scope: { workspaceId, projectId },
         userId,
+        generativeEntitled: access.entitled,
         store: buildStore(scope, userId),
         loadContext: (history) => loadProjectBrainContext({ client: supabase, scope: { workspaceId, projectId }, userId, history }),
         infer: runInference,

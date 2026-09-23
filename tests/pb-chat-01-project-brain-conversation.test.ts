@@ -15,6 +15,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import type { ContextConversationRow, ContextMessageRow } from "../src/lib/db/database-contract";
 import type { InferenceRequest, InferenceResponse } from "../src/lib/ai/inference/types";
 import { InferenceError } from "../src/lib/ai/inference/types";
@@ -31,14 +32,25 @@ import {
   MAX_HISTORY_MESSAGES,
   MAX_SOURCE_CONTENT_CHARS,
   MAX_USER_MESSAGE_CHARS,
+  OUTPUT_CHARS_PER_TOKEN_FLOOR,
+  OUTPUT_TOKEN_SAFETY_MARGIN,
   PROJECT_BRAIN_INFERENCE,
+  PROJECT_BRAIN_OUTPUT_LIMITS,
   SOURCE_FAMILY_BUDGET,
   TURN_PENDING_WINDOW_MS,
 } from "../src/lib/project-brain/conversation/context-budget";
 import type { ProjectBrainContext } from "../src/lib/project-brain/conversation/context-types";
-import { groundProjectBrainOutput, parseProjectBrainModelOutput, type RawModelOutput } from "../src/lib/project-brain/conversation/output";
+import {
+  groundProjectBrainOutput,
+  MAX_REPLY_CHARS,
+  MAX_STATEMENTS,
+  parseProjectBrainModelOutput,
+  worstCaseProjectBrainOutput,
+  type RawModelOutput,
+} from "../src/lib/project-brain/conversation/output";
 import { buildProjectBrainMessages, escapeForPrompt, PROJECT_BRAIN_OUTPUT_SCHEMA, PROJECT_BRAIN_SYSTEM_PROMPT } from "../src/lib/project-brain/conversation/prompt";
-import { buildDegradedReply, DEGRADED_NOTICE } from "../src/lib/project-brain/conversation/degraded";
+import { buildDegradedReply, DEGRADED_NOTICE, NOT_ENTITLED_NOTICE } from "../src/lib/project-brain/conversation/degraded";
+import { resolveProjectBrainGenerativeAccess } from "../src/lib/project-brain/conversation/generative-access";
 import {
   classifyInferenceFailure,
   readProjectBrainTranscript,
@@ -226,12 +238,18 @@ function modelReply(context: ProjectBrainContext, overrides: Partial<RawModelOut
   return { provider: "openai", model: "gpt-4.1-mini", content: JSON.stringify(output), parsedJson: output };
 }
 
-function deps(store: Store, infer: (r: InferenceRequest) => Promise<InferenceResponse>, now: () => Date = () => new Date()): ProjectBrainTurnDeps & { calls: InferenceRequest[] } {
+function deps(
+  store: Store,
+  infer: (r: InferenceRequest) => Promise<InferenceResponse>,
+  now: () => Date = () => new Date(),
+  generativeEntitled = true,
+): ProjectBrainTurnDeps & { calls: InferenceRequest[] } {
   const calls: InferenceRequest[] = [];
   return {
     calls,
     scope: scopeA,
     userId: USER,
+    generativeEntitled,
     store,
     now,
     loadContext: async (history) => assembleProjectBrainContext(rawContext({ history })),
@@ -577,7 +595,7 @@ test("D4: budget constants are pinned", () => {
   assert.equal(MAX_HISTORY_MESSAGES, 24, "~12 turns");
   assert.equal(MAX_USER_MESSAGE_CHARS, 4000);
   assert.ok(PROJECT_BRAIN_INFERENCE.temperature <= 0.2);
-  assert.ok(PROJECT_BRAIN_INFERENCE.maxTokens > 0 && PROJECT_BRAIN_INFERENCE.maxTokens <= 1200);
+  assert.ok(PROJECT_BRAIN_INFERENCE.maxTokens > 0, "the output ceiling is derived from the output contract — see F7 tests");
   assert.ok(PROJECT_BRAIN_INFERENCE.timeoutMs > 0);
   assert.ok(TURN_PENDING_WINDOW_MS > PROJECT_BRAIN_INFERENCE.timeoutMs * PROJECT_BRAIN_INFERENCE.maxAttempts);
 });
@@ -922,4 +940,205 @@ test("K2: PB-CHAT-02/03 scope was not pulled in", () => {
     assert.doesNotMatch(source, /conversation_only|project_context_candidate|project_material|Add to project|Don't use as project context/);
     assert.doesNotMatch(source, /runEvidenceDecisionChain|captureOperationalInput|recordHumanDecision|deriveEvidence/);
   }
+});
+
+// ═══ PB-CHAT-01R — remediation of the independent pre-merge review ══════════
+
+// ─── F2: generative entitlement (closed-free-beta exception, commercial otherwise) ───
+
+const BETA_ENV = { PMFREAK_OPERATING_PROFILE: "closed-free-beta" };
+const NON_BETA_ENV = { PMFREAK_OPERATING_PROFILE: undefined };
+const planCheck = (ok: boolean) => {
+  const seen: string[] = [];
+  return { seen, check: async (userId: string) => (seen.push(userId), { ok }) };
+};
+
+test("R-F2a: closed-free-beta includes generative Project Brain for a free-plan user, without consulting the plan", async () => {
+  const plan = planCheck(false);
+  const access = await resolveProjectBrainGenerativeAccess({ userId: USER }, { env: BETA_ENV, checkCommercialEntitlement: plan.check });
+  assert.deepEqual(access, { entitled: true, basis: "closed_free_beta" });
+  assert.deepEqual(plan.seen, [], "the beta entitlement does not depend on the commercial plan");
+});
+
+test("R-F2b: outside closed-free-beta a free plan is NOT entitled, and the turn never reaches the provider", async () => {
+  const plan = planCheck(false);
+  const access = await resolveProjectBrainGenerativeAccess({ userId: USER }, { env: NON_BETA_ENV, checkCommercialEntitlement: plan.check });
+  assert.deepEqual(access, { entitled: false, reason: "plan_not_entitled" });
+  assert.deepEqual(plan.seen, [USER], "the canonical commercial entitlement decided");
+
+  const store = memoryStore();
+  const d = deps(store, healthy, undefined, access.entitled);
+  const result = await runProjectBrainTurn(d, { clientMessageId: CLIENT_ID, text: "What is the status?" });
+  assert.equal(d.calls.length, 0, "no inference, no billing");
+  const reply = result.status === "completed" ? result.reply : null;
+  assert.equal(reply?.brain_mode, "degraded");
+  assert.equal((reply?.metadata as { projectBrain: { reason: string } }).projectBrain.reason, "not_entitled");
+  assert.ok(reply?.content.startsWith(NOT_ENTITLED_NOTICE));
+  assert.doesNotMatch(reply?.content ?? "", /temporarily|try your question again/i, "a plan limit is not described as temporary");
+  assert.equal(store.rows.filter((r) => r.role === "user").length, 1, "the question is still persisted");
+
+  // An explicit retry cannot buy inference either.
+  const retried = await runProjectBrainTurn(d, { clientMessageId: CLIENT_ID, text: "What is the status?", retry: true });
+  assert.equal(d.calls.length, 0);
+  assert.equal(retried.status === "completed" && retried.retryFailed, true);
+});
+
+test("R-F2c: outside closed-free-beta a paid (Advanced AI) entitlement may call the provider", async () => {
+  const access = await resolveProjectBrainGenerativeAccess({ userId: USER }, { env: { PMFREAK_OPERATING_PROFILE: "some-other-profile" }, checkCommercialEntitlement: planCheck(true).check });
+  assert.deepEqual(access, { entitled: true, basis: "commercial_plan" });
+  const d = deps(memoryStore(), healthy, undefined, access.entitled);
+  await runProjectBrainTurn(d, { clientMessageId: CLIENT_ID, text: "Status?" });
+  assert.equal(d.calls.length, 1);
+  // Entitled turns still go through the provider router with workspace scope, where the
+  // daily request / cost ceilings and the concurrency bound apply.
+  assert.equal(d.calls[0].workspaceId, WS);
+});
+
+test("R-F2d: a viewer with project read access may converse in closed-free-beta", async () => {
+  const runtime = governanceRuntime().runtime as unknown as { accessVerification: { requireProjectPermission: unknown } };
+  runtime.accessVerification.requireProjectPermission = async (_projectId: string, permission: string) => {
+    assert.equal(permission, "read", "conversation needs read, never a write-level role");
+    return { role: "viewer" };
+  };
+  const decision = await evaluateGovernanceAction(runtime as never, converse(PROJECT_A));
+  assert.equal(decision.allowed, true);
+  const access = await resolveProjectBrainGenerativeAccess({ userId: USER }, { env: BETA_ENV, checkCommercialEntitlement: planCheck(false).check });
+  assert.equal(access.entitled, true);
+});
+
+test("R-F2e: entitlement never widens access — project read and project_brain.converse are decided first, on the server", () => {
+  const route = code("src/app/api/projects/[id]/brain/turns/route.ts");
+  const post = route.slice(route.indexOf("export async function POST"));
+  const order = ["resolveProject(projectId)", 'action: "project_brain.converse"', "enforceAbuseLimit(", "resolveProjectBrainGenerativeAccess(", "generativeEntitled: access.entitled", "infer: runInference"];
+  const at = order.map((needle) => post.indexOf(needle));
+  assert.ok(at.every((i) => i >= 0), `every step is present: ${JSON.stringify(at)}`);
+  assert.deepEqual([...at].sort((a, b) => a - b), at, "auth → governance → rate limit → entitlement → turn");
+  // The body can carry nothing that affects entitlement: only these fields are read.
+  const bodyReads = [...post.matchAll(/body\.([a-zA-Z]+)/g)].map((m) => m[1]);
+  assert.deepEqual([...new Set(bodyReads)].sort(), ["clientMessageId", "retry", "text"]);
+  // GET reports availability as provider configured AND entitled — never the key alone.
+  assert.match(route, /generativeAvailable: providerConfigured && access\.entitled/);
+});
+
+test("R-F2f: the exception is scoped to Project Brain — plan capabilities and other AI gates are unchanged", () => {
+  const gates = read("src/lib/feature-gates.ts");
+  assert.match(gates, /const FREE_CAPABILITIES: PlanCapabilities = \{\s*ai_analysis: false,\s*advanced_ai_actions: false,/);
+  assert.doesNotMatch(gates, /closed-free-beta|PMFREAK_OPERATING_PROFILE/, "no global plan change for the beta");
+  for (const file of ["src/app/api/copilot/route.ts", "src/app/api/ai/meta-intelligence/route.ts", "src/app/api/analyze-ai/route.ts"]) {
+    assert.match(read(file), /canUseAdvancedAi\(/, `${file} keeps its gate`);
+  }
+  const users = execFileSync("git", ["grep", "-l", "--untracked", "resolveProjectBrainGenerativeAccess(", "--", "src"], { encoding: "utf8" }).split("\n").filter(Boolean);
+  assert.deepEqual(users.sort(), ["src/app/api/projects/[id]/brain/turns/route.ts", "src/lib/project-brain/conversation/generative-access.ts"].sort());
+  assert.deepEqual(GOVERNANCE_POLICY_REGISTRY["project_brain.converse"].requiredPermission, "read");
+});
+
+// ─── F1 / F4: transcript order is database-assigned (live proof: scripts/check-pb-chat-01-db.mjs) ───
+
+test("R-F1: the historical backfill ranks by (created_at, id) with a window function, never nextval() in an UPDATE", () => {
+  assert.match(sqlCode, /row_number\(\) over \(order by created_at asc, id asc\)/);
+  const backfill = sqlCode.slice(sqlCode.indexOf("with ranked as"), sqlCode.indexOf("select setval("));
+  assert.doesNotMatch(backfill, /nextval\(/, "no side-effectful nextval() whose call order would depend on the UPDATE plan");
+  assert.match(sqlCode, /select setval\(\s*'public\.context_messages_message_seq_seq'/, "the sequence is positioned above the historical maximum");
+  assert.match(sqlCode, /create unique index if not exists context_messages_message_seq_uidx\s+on public\.context_messages \(message_seq\)/);
+});
+
+test("R-F4: every insert takes message_seq from the sequence; customer roles cannot choose created_at", () => {
+  assert.match(sqlCode, /new\.message_seq := nextval\('public\.context_messages_message_seq_seq'\);/);
+  assert.match(sqlCode, /if current_user in \('anon', 'authenticated'\) then\s+new\.created_at := now\(\);/);
+  assert.match(sqlCode, /create trigger context_messages_assign_order\s+before insert on public\.context_messages/);
+  assert.doesNotMatch(sqlCode, /assign_context_message_order\(\)[^;]*security definer/i, "invoker rights: no privilege escalation");
+});
+
+// ─── F5: honest synthesis vs. source-backed claims ───
+
+function generativeRow(metadata: Record<string, unknown>): ContextMessageRow {
+  return {
+    id: "a1", conversation_id: "c", workspace_id: WS, role: "assistant", content: "answer", metadata,
+    created_by_user_id: null, created_at: "2026-09-22T00:00:00.000Z", message_seq: 2, client_message_id: null, reply_to_message_id: "u1", brain_mode: "generative",
+  };
+}
+
+test("R-F5a: rejected citations, downgraded OR dropped statements all raise the grounding notice", () => {
+  const statement = { id: "s", epistemicType: "INFERENCE", text: "x", confidence: { level: "medium" }, sources: [] };
+  for (const citations of [{ rejectedCitations: 1 }, { downgradedStatements: 1 }, { droppedStatements: 1 }]) {
+    const view = toProjectBrainMessageView(generativeRow({ projectBrain: { statements: [statement], sources: [], citations: { rejectedCitations: 0, downgradedStatements: 0, droppedStatements: 0, ...citations } } }))!;
+    assert.equal(view.brain?.groundingAdjusted, true, JSON.stringify(citations));
+  }
+  const clean = toProjectBrainMessageView(generativeRow({ projectBrain: { statements: [statement], sources: [], citations: { rejectedCitations: 0, downgradedStatements: 0, droppedStatements: 0 } } }))!;
+  assert.equal(clean.brain?.groundingAdjusted, false);
+});
+
+test("R-F5b: an answer with no structured statements is conversational synthesis, not project claims", async () => {
+  const offTopic: RawModelOutput = { reply: "In general, mucus colour reflects immune activity.", statements: [] };
+  const store = memoryStore();
+  const result = await runProjectBrainTurn(deps(store, async () => ({ provider: "openai", model: "m", content: JSON.stringify(offTopic), parsedJson: offTopic })), { clientMessageId: CLIENT_ID, text: "Why are my boogers green?" });
+  const view = toProjectBrainMessageView(result.status === "completed" ? result.reply : (null as never))!;
+  assert.equal(view.brain?.mode, "generative");
+  assert.equal(view.brain?.conversationalOnly, true);
+  assert.deepEqual(view.brain?.sources, []);
+  const withClaims = toProjectBrainMessageView(generativeRow({ projectBrain: { statements: [{ id: "s", epistemicType: "FACT", text: "x", confidence: { level: "high" }, sources: [] }], sources: [] } }))!;
+  assert.equal(withClaims.brain?.conversationalOnly, false);
+});
+
+test("R-F5c: customer copy separates AI synthesis from cited claims and never claims semantic grounding", () => {
+  const component = code("src/components/pmfreak/project-brain/project-brain-conversation.tsx");
+  const canonical = code("src/app/(protected)/workspaces/[workspaceId]/projects/[projectId]/command-center/page.tsx");
+  for (const source of [component, canonical]) {
+    assert.doesNotMatch(source, /grounded in this project(&apos;|')s records only|claims show the records they rely on|verified by|fully grounded/i);
+  }
+  assert.match(component, /data-testid="project-brain-synthesis-label"/);
+  assert.match(component, /data-testid="project-brain-conversational-note"/);
+  assert.match(component, /data-testid="project-brain-grounding-notice"/);
+  assert.match(component, /Some generated claims could not be fully linked to project records\./);
+  assert.match(component, /a citation is not proof of every sentence/);
+  assert.match(component, /Records cited/);
+  // A plan limit offers no pointless "try again".
+  assert.match(component, /message\.brain\.reason !== "not_entitled"/);
+});
+
+// ─── F7: the output token ceiling fits the bounded output contract ───
+
+test("R-F7a: maxTokens fits the worst-case legal output with margin, and is not an arbitrary huge allowance", () => {
+  const worstChars = JSON.stringify(worstCaseProjectBrainOutput()).length;
+  const needed = Math.ceil((worstChars / OUTPUT_CHARS_PER_TOKEN_FLOOR) * OUTPUT_TOKEN_SAFETY_MARGIN);
+  assert.ok(PROJECT_BRAIN_INFERENCE.maxTokens >= needed, `maxTokens ${PROJECT_BRAIN_INFERENCE.maxTokens} must fit ${worstChars} chars (≥ ${needed})`);
+  assert.ok(PROJECT_BRAIN_INFERENCE.maxTokens <= needed * 1.25, `maxTokens ${PROJECT_BRAIN_INFERENCE.maxTokens} must stay close to the contract (≤ ${needed * 1.25})`);
+  assert.ok(OUTPUT_CHARS_PER_TOKEN_FLOOR <= 3, "the chars-per-token floor stays conservative");
+  assert.ok(OUTPUT_TOKEN_SAFETY_MARGIN >= 1.2);
+  assert.equal(MAX_REPLY_CHARS, PROJECT_BRAIN_OUTPUT_LIMITS.replyChars);
+  assert.equal(MAX_STATEMENTS, PROJECT_BRAIN_OUTPUT_LIMITS.statements);
+});
+
+test("R-F7b: the model is told the limits, and output beyond them is clipped and counted", () => {
+  for (const value of Object.values(PROJECT_BRAIN_OUTPUT_LIMITS)) assert.match(PROJECT_BRAIN_SYSTEM_PROMPT, new RegExp(`\\b${value}\\b`));
+  const context = assembleProjectBrainContext(rawContext());
+  const riskAlias = aliasFor(context, "RISK");
+  const oversized: RawModelOutput = {
+    reply: "r".repeat(PROJECT_BRAIN_OUTPUT_LIMITS.replyChars * 2),
+    statements: Array.from({ length: PROJECT_BRAIN_OUTPUT_LIMITS.statements + 3 }, () => ({
+      text: "t".repeat(2000), epistemicType: "INFERENCE" as const, sourceIds: Array.from({ length: 10 }, () => riskAlias),
+      confidence: "medium" as const, inferenceBasis: "b".repeat(2000), reportedBy: null, contradictingClaims: [],
+    })),
+  };
+  const grounded = groundProjectBrainOutput({ output: oversized, context, statementIdPrefix: "t", generatedAt: "2026-09-22T00:00:00.000Z" });
+  assert.ok(grounded.ok);
+  assert.ok(grounded.value.reply.length <= PROJECT_BRAIN_OUTPUT_LIMITS.replyChars);
+  assert.equal(grounded.value.statements.length, PROJECT_BRAIN_OUTPUT_LIMITS.statements);
+  assert.equal(grounded.value.citations.droppedStatements, 3);
+  assert.ok(grounded.value.statements.every((s) => s.text.length <= PROJECT_BRAIN_OUTPUT_LIMITS.statementChars && (s.inferenceBasis?.length ?? 0) <= PROJECT_BRAIN_OUTPUT_LIMITS.inferenceBasisChars));
+});
+
+test("R-F7c: a length-truncated provider answer is logged (identifiers only) and degrades honestly", async (t) => {
+  const warn = t.mock.method(console, "warn", () => {});
+  const store = memoryStore();
+  const result = await runProjectBrainTurn(
+    deps(store, async () => ({ provider: "openai", model: "m", content: '{"reply":"cut off mid-str', finishReason: "length" })),
+    { clientMessageId: CLIENT_ID, text: "Status?" },
+  );
+  assert.equal(result.status === "completed" && result.reply.brain_mode, "degraded");
+  const events = warn.mock.calls.map((c) => JSON.parse(String(c.arguments[0])) as Record<string, unknown>);
+  const truncated = events.find((e) => e.event === "project_brain.output_truncated");
+  assert.ok(truncated, "truncation is observable");
+  assert.equal(truncated.finishReason, "length");
+  assert.ok(!JSON.stringify(events).includes("cut off"), "no provider content is logged");
 });

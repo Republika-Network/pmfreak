@@ -48,8 +48,16 @@ export type ProjectBrainMessageView = {
     statements: ProjectBrainStatementView[];
     sources: ProjectBrainSourceChip[];
     reason: string | null;
-    /** Some model claims were downgraded or had invalid citations removed. */
+    /**
+     * Some generated claims could not be fully linked to project records: a citation
+     * was rejected, a statement was downgraded, or a statement was dropped.
+     */
     groundingAdjusted: boolean;
+    /**
+     * A generative answer with NO structured statements: conversational synthesis
+     * (general or off-topic), never a set of source-backed project claims.
+     */
+    conversationalOnly: boolean;
   } | null;
 };
 
@@ -106,7 +114,10 @@ export function toProjectBrainMessageView(row: ContextMessageRow): ProjectBrainM
   const sources = Array.isArray(meta?.sources) ? meta.sources.map(chip).filter((c): c is ProjectBrainSourceChip => c !== null) : [];
   const citations = record(meta?.citations);
   const groundingAdjusted =
-    Number(citations?.rejectedCitations ?? 0) > 0 || Number(citations?.downgradedStatements ?? 0) > 0 || statements.some((s) => s.downgradedFrom);
+    Number(citations?.rejectedCitations ?? 0) > 0 ||
+    Number(citations?.downgradedStatements ?? 0) > 0 ||
+    Number(citations?.droppedStatements ?? 0) > 0 ||
+    statements.some((s) => s.downgradedFrom);
   return {
     ...base,
     origin: "project_brain",
@@ -116,6 +127,7 @@ export function toProjectBrainMessageView(row: ContextMessageRow): ProjectBrainM
       sources,
       reason: row.brain_mode === "degraded" ? text(meta?.reason) : null,
       groundingAdjusted,
+      conversationalOnly: row.brain_mode === "generative" && statements.length === 0,
     },
   };
 }

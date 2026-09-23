@@ -18,6 +18,8 @@
 //   * at most one reply per (turn, mode)     (partial unique index)
 //   * a replay of a completed turn returns it — no inference, no billing
 //   * concurrent duplicates on one instance share one in-flight generation
+//   * a turn that is not generatively entitled never calls the provider; it is
+//     answered in limited mode (see generative-access.ts)
 //
 // Everything I/O is injected, so the idempotency semantics are testable without
 // a database or a provider. This module performs NO project-state write and
@@ -56,6 +58,12 @@ export type ProjectBrainTurnStore = {
 export type ProjectBrainTurnDeps = {
   scope: ProjectContextScope;
   userId: string;
+  /**
+   * Server-resolved (resolveProjectBrainGenerativeAccess): may this turn call the
+   * provider at all? Required — there is deliberately no default, so no caller can
+   * reach inference without having decided entitlement.
+   */
+  generativeEntitled: boolean;
   store: ProjectBrainTurnStore;
   loadContext(history: ProjectBrainHistoryMessage[]): Promise<ProjectBrainContext>;
   infer(request: InferenceRequest): Promise<InferenceResponse>;
@@ -144,59 +152,72 @@ async function generate(
 
   let generative: { content: string; metadata: ProjectBrainReplyMetadata } | null = null;
   let reason: DegradedReason = "invalid_output";
-  try {
-    const response = await deps.infer({
-      moduleId: PROJECT_BRAIN_MODULE_ID,
-      workspaceId: scope.workspaceId,
-      projectId: scope.projectId,
-      actorId: deps.userId,
-      actorType: "user",
-      dataSensitivity: "confidential",
-      chainDepth: 0,
-      messages: buildProjectBrainMessages(context, userMessage.content),
-      responseFormat: { type: "json_schema", jsonSchema: PROJECT_BRAIN_OUTPUT_SCHEMA },
-      temperature: PROJECT_BRAIN_INFERENCE.temperature,
-      maxTokens: PROJECT_BRAIN_INFERENCE.maxTokens,
-      timeoutMs: PROJECT_BRAIN_INFERENCE.timeoutMs,
-      maxAttempts: PROJECT_BRAIN_INFERENCE.maxAttempts,
-      retryDelayMs: PROJECT_BRAIN_INFERENCE.retryDelayMs,
-      operationName: "project_brain.turn",
-      idempotencyKey: `project-brain:${userMessage.id}:${existingDegraded ? "retry" : "first"}`,
-    });
-    const parsed = parseProjectBrainModelOutput({ parsedJson: response.parsedJson, content: response.content });
-    const grounded = parsed
-      ? groundProjectBrainOutput({ output: parsed, context, statementIdPrefix: userMessage.id, generatedAt })
-      : null;
-    if (grounded?.ok) {
-      generative = {
-        content: grounded.value.reply,
-        metadata: {
-          projectBrain: {
-            version: PROJECT_BRAIN_METADATA_VERSION,
-            mode: "generative",
-            statements: grounded.value.statements,
-            sources: grounded.value.sources,
-            constitutionVersion: PROJECT_BRAIN_CONSTITUTION_VERSION,
-            provider: response.provider,
-            model: response.model,
-            citations: grounded.value.citations,
-            context: contextSummary(context),
+  if (!deps.generativeEntitled) {
+    // Not entitled to generative Project Brain: answer in limited mode WITHOUT any
+    // provider call (no inference, no billing, no usage row).
+    reason = "not_entitled";
+  } else {
+    try {
+      const response = await deps.infer({
+        moduleId: PROJECT_BRAIN_MODULE_ID,
+        workspaceId: scope.workspaceId,
+        projectId: scope.projectId,
+        actorId: deps.userId,
+        actorType: "user",
+        dataSensitivity: "confidential",
+        chainDepth: 0,
+        messages: buildProjectBrainMessages(context, userMessage.content),
+        responseFormat: { type: "json_schema", jsonSchema: PROJECT_BRAIN_OUTPUT_SCHEMA },
+        temperature: PROJECT_BRAIN_INFERENCE.temperature,
+        maxTokens: PROJECT_BRAIN_INFERENCE.maxTokens,
+        timeoutMs: PROJECT_BRAIN_INFERENCE.timeoutMs,
+        maxAttempts: PROJECT_BRAIN_INFERENCE.maxAttempts,
+        retryDelayMs: PROJECT_BRAIN_INFERENCE.retryDelayMs,
+        operationName: "project_brain.turn",
+        idempotencyKey: `project-brain:${userMessage.id}:${existingDegraded ? "retry" : "first"}`,
+      });
+      if (response.finishReason === "length") {
+        // The provider stopped at the output-token ceiling. Identifiers and the
+        // finish reason only — never content. The truncated JSON fails parsing below
+        // and the turn degrades honestly.
+        console.warn(JSON.stringify({ event: "project_brain.output_truncated", projectId: scope.projectId, finishReason: response.finishReason, maxTokens: PROJECT_BRAIN_INFERENCE.maxTokens }));
+      }
+      const parsed = parseProjectBrainModelOutput({ parsedJson: response.parsedJson, content: response.content });
+      const grounded = parsed
+        ? groundProjectBrainOutput({ output: parsed, context, statementIdPrefix: userMessage.id, generatedAt })
+        : null;
+      if (grounded?.ok) {
+        generative = {
+          content: grounded.value.reply,
+          metadata: {
+            projectBrain: {
+              version: PROJECT_BRAIN_METADATA_VERSION,
+              mode: "generative",
+              statements: grounded.value.statements,
+              sources: grounded.value.sources,
+              constitutionVersion: PROJECT_BRAIN_CONSTITUTION_VERSION,
+              provider: response.provider,
+              model: response.model,
+              citations: grounded.value.citations,
+              context: contextSummary(context),
+            },
           },
-        },
-      };
-    } else {
-      console.warn(
-        JSON.stringify({
-          event: "project_brain.invalid_model_output",
-          projectId: scope.projectId,
-          stage: parsed ? "guardrails" : "schema",
-          failureCodes: grounded && !grounded.ok ? grounded.failures.map((f) => f.code) : [],
-        }),
-      );
+        };
+      } else {
+        console.warn(
+          JSON.stringify({
+            event: "project_brain.invalid_model_output",
+            projectId: scope.projectId,
+            stage: parsed ? "guardrails" : "schema",
+            finishReason: response.finishReason ?? null,
+            failureCodes: grounded && !grounded.ok ? grounded.failures.map((f) => f.code) : [],
+          }),
+        );
+      }
+    } catch (error) {
+      reason = classifyInferenceFailure(error);
+      console.warn(JSON.stringify({ event: "project_brain.inference_unavailable", projectId: scope.projectId, reason }));
     }
-  } catch (error) {
-    reason = classifyInferenceFailure(error);
-    console.warn(JSON.stringify({ event: "project_brain.inference_unavailable", projectId: scope.projectId, reason }));
   }
 
   if (generative) {
@@ -215,7 +236,7 @@ async function generate(
     return { status: "completed", replayed: true, conversationId: conversation.id, userMessage, reply: existingDegraded, retryFailed: true };
   }
 
-  const degraded = buildDegradedReply(context);
+  const degraded = buildDegradedReply(context, reason);
   const metadata: ProjectBrainReplyMetadata = {
     projectBrain: {
       version: PROJECT_BRAIN_METADATA_VERSION,

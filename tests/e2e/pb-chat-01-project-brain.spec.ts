@@ -11,7 +11,13 @@
  * HTTP call to api.openai.com. Everything else — including strict output parsing and
  * citation validation — is the product. Stub replies are prefixed "[stub model]".
  *
- * Run (disposable stack + dev server on the same env):
+ * Entitlement: the fixtures are Free-plan users. Generative Project Brain is included for
+ * them ONLY because the dev server runs the certified closed-free-beta profile
+ * (PMFREAK_OPERATING_PROFILE=closed-free-beta); outside it the commercial Advanced AI
+ * entitlement applies and these users would get limited mode.
+ *
+ * Run (disposable stack + dev server on the same env, the server started with
+ * PMFREAK_OPERATING_PROFILE=closed-free-beta):
  *   OPERATIONAL_FLOW_TEST_SUPABASE_URL=... OPERATIONAL_FLOW_TEST_SERVICE_ROLE_KEY=...
  *   OPERATIONAL_FLOW_TEST_BASE_URL=http://localhost:3417 PB_CHAT_STUB_LOG=<file> \
  *   npx playwright test tests/e2e/pb-chat-01-project-brain.spec.ts
@@ -81,10 +87,14 @@ async function seedTenant(label: string): Promise<Tenant> {
 }
 
 const PROJECT_STATE_TABLES = [
-  "operational_raw_inputs", "operational_normalized_events", "evidence_items", "risk_issue_records", "recommended_actions",
-  "operational_decision_records", "material_action_proposals", "execution_tasks", "canonical_task_outcomes",
+  "operational_sources", "operational_raw_inputs", "operational_normalized_events", "evidence_items", "operational_signals",
+  "risk_issue_records", "governance_events", "recommended_actions", "operational_decision_records", "material_action_proposals",
+  "execution_tasks", "canonical_task_outcomes", "canonical_outcome_observations", "raid_items",
 ];
-const MEMORY_TABLES = ["project_memories", "operational_memory_entries", "vault_nutrients", "intervention_memory"];
+const MEMORY_TABLES = [
+  "project_memories", "operational_memory_entries", "operational_memory_records", "operational_memory_runtime_records",
+  "vault_nutrients", "intervention_memory", "runtime_conversation_state",
+];
 
 async function stateCounts(workspaceId: string) {
   const counts: Record<string, number | string> = {};
@@ -97,6 +107,9 @@ async function stateCounts(workspaceId: string) {
     const { count, error } = await admin.from(table).select("*", { count: "exact", head: true });
     counts[table] = error ? `unavailable` : count ?? 0;
   }
+  // The conversation must not touch the project row itself either.
+  const projects = must(await admin.from("projects").select("id, status, updated_at").eq("workspace_id", workspaceId).order("id"), "projects");
+  counts.projects = JSON.stringify(projects);
   return counts;
 }
 
@@ -150,6 +163,12 @@ test("SIT-A: a project status question gets a grounded answer with validated sou
   // Open by default and first-class: the composer is visible without clicking anything.
   await expect(brain(page).getByTestId("project-brain-input")).toBeVisible();
   await expect(page.getByTestId("chat-determinism-disclosure")).toHaveCount(0);
+  // Honest contract: prose is synthesis; listed claims show what they cite, not proof of every sentence.
+  await expect(brain(page).getByTestId("project-brain-disclosure")).toContainText("a citation is not proof of every sentence");
+  // closed-free-beta: a Free-plan user is entitled to generative Project Brain.
+  const initial = await (await page.request.get(`/api/projects/${t.main.projectA}/brain/turns`)).json();
+  expect(initial.generativeAvailable).toBe(true);
+  expect(initial.limitedModeReason).toBeNull();
   await shot(page, "01-project-brain-open-by-default");
 
   const baseline = await stateCounts(t.main.workspaceId);
@@ -168,6 +187,10 @@ test("SIT-A: a project status question gets a grounded answer with validated sou
     expect(table === "projects" ? row.id : row.project_id).toBe(t.main.projectA);
   }
   await expect(reply.getByTestId("project-brain-statements")).toBeVisible();
+  await expect(reply.getByTestId("project-brain-synthesis-label")).toBeVisible();
+  // The stub cited an invented S999; the server stripped it, and the customer is told.
+  await expect(reply.getByTestId("project-brain-grounding-notice")).toContainText("could not be fully linked to project records");
+  await expect(reply.getByTestId("project-brain-conversational-note")).toHaveCount(0);
   await shot(page, "02-grounded-answer-with-sources");
   expect(await stateCounts(t.main.workspaceId)).toEqual(baseline);
 });
@@ -247,6 +270,9 @@ test("SIT-B: an off-topic question is answered without project sources and write
   await expect(reply).toHaveAttribute("data-mode", "generative");
   await expect(reply.locator("[data-source-id]")).toHaveCount(0);
   await expect(reply.getByTestId("project-brain-statements")).toHaveCount(0);
+  // No claims → presented as a general answer, never as source-backed project status.
+  await expect(reply.getByTestId("project-brain-conversational-note")).toBeVisible();
+  await expect(reply.getByTestId("project-brain-grounding-notice")).toHaveCount(0);
   expect(await stateCounts(t.main.workspaceId)).toEqual(baseline);
   await page.reload();
   await expect(brain(page).getByText("Why are my boogers green?")).toBeVisible({ timeout: 45_000 });

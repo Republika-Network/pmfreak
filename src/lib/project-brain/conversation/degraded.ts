@@ -3,8 +3,10 @@
 //
 // Used when generative inference cannot produce a valid answer: provider not
 // configured, timeout, circuit open, quota/cost ceiling, or output that failed
-// validation. It is deterministic, it says so in its first sentence, and it only
-// repeats what this turn's project-scoped context actually loaded:
+// validation — and when generative Project Brain is not included for this user
+// (no provider call is made at all; see generative-access.ts). It is
+// deterministic, it says so in its first sentence, and it only repeats what this
+// turn's project-scoped context actually loaded:
 //
 //   * a family that loaded with records → the records are named (and cited);
 //   * a family that loaded empty        → "none appear among the most recent
@@ -24,10 +26,16 @@ export type DegradedReason =
   | "timeout"
   | "rate_limited"
   | "usage_limit"
-  | "invalid_output";
+  | "invalid_output"
+  /** Generative Project Brain is not included for this user; the provider was never called. */
+  | "not_entitled";
 
 export const DEGRADED_NOTICE =
   "Project Brain is temporarily operating in limited mode, so I can't compose a full answer to your question right now.";
+
+/** Not temporary, so it must not say "temporarily" or invite a retry. */
+export const NOT_ENTITLED_NOTICE =
+  "Project Brain is in limited mode because full generative answers aren't included in your current plan, so I can't compose a full answer to your question.";
 
 const SECTIONS: Array<{ families: ProjectBrainSourceFamily[]; heading: string; empty: string }> = [
   { families: ["RISK", "ISSUE"], heading: "Risks and issues on record", empty: "No open risks or issues appear among the most recent records." },
@@ -39,8 +47,12 @@ const SECTIONS: Array<{ families: ProjectBrainSourceFamily[]; heading: string; e
 
 const MAX_ITEMS_PER_SECTION = 3;
 
-export function buildDegradedReply(context: ProjectBrainContext): { content: string; sources: ProjectBrainSourceReference[] } {
-  const lines: string[] = [DEGRADED_NOTICE, "", "Here is what this project's records show:"];
+export function buildDegradedReply(
+  context: ProjectBrainContext,
+  reason?: DegradedReason,
+): { content: string; sources: ProjectBrainSourceReference[] } {
+  const notEntitled = reason === "not_entitled";
+  const lines: string[] = [notEntitled ? NOT_ENTITLED_NOTICE : DEGRADED_NOTICE, "", "Here is what this project's records show:"];
   const cited: ProjectBrainContextSource[] = [];
 
   const project = context.sources.find((s) => s.family === "PROJECT");
@@ -65,6 +77,6 @@ export function buildDegradedReply(context: ProjectBrainContext): { content: str
     cited.push(...items);
   }
 
-  lines.push("", "Please try your question again shortly for a full answer.");
+  if (!notEntitled) lines.push("", "Please try your question again shortly for a full answer.");
   return { content: lines.join("\n"), sources: cited.map((s) => s.reference) };
 }

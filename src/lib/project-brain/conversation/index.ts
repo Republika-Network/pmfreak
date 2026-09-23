@@ -14,3 +14,4 @@ export * from "./degraded";
 export * from "./turn-service";
 export * from "./transcript-view";
 export { insertProjectBrainReply } from "./assistant-message-writer";
+export { resolveProjectBrainGenerativeAccess, type ProjectBrainGenerativeAccess } from "./generative-access";

@@ -23,10 +23,14 @@
 -- WHAT IT ADDS (additive only — no existing row is rewritten except the one-time
 -- sequence backfill, no row is deleted)
 --
---   context_messages.message_seq          monotonic insertion sequence; the
---                                         transcript orders by it, never by
---                                         created_at alone. Historical rows are
---                                         backfilled in (created_at, id) order.
+--   context_messages.message_seq          database-assigned, globally unique
+--                                         insertion sequence; the transcript
+--                                         orders by it, never by created_at
+--                                         alone. Historical rows are ranked by
+--                                         (created_at, id) with a window
+--                                         function; new rows always take
+--                                         nextval() (a trigger overrides any
+--                                         caller-supplied value).
 --   context_messages.client_message_id    client-generated idempotency id for a
 --                                         USER turn; unique per conversation.
 --   context_messages.reply_to_message_id  links an ASSISTANT reply to the user
@@ -77,24 +81,89 @@ alter table public.context_messages
   add column if not exists reply_to_message_id uuid references public.context_messages(id) on delete cascade,
   add column if not exists brain_mode text;
 
--- One-time backfill of historical rows, oldest first, ties broken by id so the
--- result is deterministic. Only rows that have no sequence yet are touched.
-with ordered as (
-  select id
+-- One-time backfill of historical rows: (created_at ASC, id ASC), so an older
+-- message always gets a lower sequence and a timestamp tie is broken by id.
+--
+-- The rank is computed by a WINDOW FUNCTION and stored as a plain value; nothing
+-- here depends on the order in which the UPDATE visits rows. (An earlier draft
+-- called nextval() from an UPDATE fed by an ORDER BY'd CTE. The planner may run
+-- that as a hash join, which calls nextval() in heap-scan order and silently
+-- ignores the CTE's ORDER BY — independent review reproduced a fully scrambled
+-- order on Postgres 17 and on a Supabase stack.)
+--
+-- Only rows without a sequence are touched. If some rows already carry one (the
+-- migration re-exercised in verification), the new ones are ranked after the
+-- current maximum, so no stored value is ever reused.
+with ranked as (
+  select
+    id,
+    (select coalesce(max(message_seq), 0) from public.context_messages)
+      + row_number() over (order by created_at asc, id asc) as seq
   from public.context_messages
   where message_seq is null
-  order by created_at asc, id asc
 )
 update public.context_messages m
-set message_seq = nextval('public.context_messages_message_seq_seq')
-from ordered
-where m.id = ordered.id;
+set message_seq = ranked.seq
+from ranked
+where m.id = ranked.id;
+
+-- Position the sequence strictly above every stored value, so the first message
+-- written after the upgrade sorts after all history. Empty table: nextval() → 1.
+select setval(
+  'public.context_messages_message_seq_seq',
+  coalesce((select max(message_seq) from public.context_messages), 1),
+  (select max(message_seq) is not null from public.context_messages)
+);
 
 alter table public.context_messages
   alter column message_seq set default nextval('public.context_messages_message_seq_seq'),
   alter column message_seq set not null;
 
 alter sequence public.context_messages_message_seq_seq owned by public.context_messages.message_seq;
+
+-- One global sequence feeds every conversation, so the order identity is
+-- globally unique (which also makes it unique within any one conversation).
+create unique index if not exists context_messages_message_seq_uidx
+  on public.context_messages (message_seq);
+
+-- ─── Transcript order is assigned by the database, never by the caller ─────
+--
+-- `message_seq` and `created_at` define transcript order, so no INSERT may choose
+-- them. Column defaults alone are not enough: a direct Data API insert can supply
+-- any value (independent review stored message_seq = -1 / 9e18 / duplicates and a
+-- 2019 created_at through the authenticated role, and GET then rendered the forged
+-- row first).
+--
+--   * message_seq  — always nextval(), for EVERY writer. No path has a legitimate
+--                    reason to pick a position in the transcript.
+--   * created_at   — the database clock for customer roles (anon/authenticated).
+--                    Trusted server-side writers (service role, migrations) keep
+--                    their value: the service-role Project Brain writer never sets
+--                    one, and operator backfills may need to preserve history.
+--
+-- The column default stays as a safety net for trigger-less paths; when the
+-- trigger runs, the default's value is discarded, so gaps in message_seq are
+-- expected and harmless (order, not density, is the contract).
+--
+-- Invoker rights on purpose: nextval() needs only the USAGE the column default
+-- already relies on; nothing here needs elevated privilege.
+create or replace function public.assign_context_message_order() returns trigger
+language plpgsql
+set search_path = pg_catalog, public
+as $$
+begin
+  new.message_seq := nextval('public.context_messages_message_seq_seq');
+  if current_user in ('anon', 'authenticated') then
+    new.created_at := now();
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists context_messages_assign_order on public.context_messages;
+create trigger context_messages_assign_order
+  before insert on public.context_messages
+  for each row execute function public.assign_context_message_order();
 
 -- ─── Invariants ─────────────────────────────────────────────────────────────
 

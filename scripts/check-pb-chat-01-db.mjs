@@ -104,18 +104,26 @@ if (phase === "seed-legacy") {
     admin.from("context_conversations").insert({ workspace_id: s.workspaceId, context_type: "project", project_id: s.projectA, title: "project conversation", created_by_user_id: s.member.id }).select("id").single(),
     "legacy conversation",
   );
-  // Two rows sharing ONE created_at: the ordering tie the old schema could not break.
-  const tie = "2026-09-01T12:00:00.000Z";
-  const legacy = await must(
-    admin.from("context_messages").insert([
-      { conversation_id: conversation.id, workspace_id: s.workspaceId, role: "user", content: "legacy question", created_by_user_id: s.member.id, created_at: "2026-09-01T11:59:00.000Z" },
-      { conversation_id: conversation.id, workspace_id: s.workspaceId, role: "assistant", content: "legacy deterministic reply A", metadata: { grounded: { openRisks: 0 } }, created_at: tie },
-      { conversation_id: conversation.id, workspace_id: s.workspaceId, role: "assistant", content: "legacy deterministic reply B", created_at: tie },
-    ]).select("id, created_at"),
-    "legacy messages",
-  );
-  writeFileSync(statePath, JSON.stringify({ ...s, password: PASSWORD, legacyConversationId: conversation.id, legacyMessageIds: legacy.map((m) => m.id) }));
-  console.log(`Seeded legacy conversation with ${legacy.length} messages under the pre-PB-CHAT-01 schema.`);
+  // ADVERSARIAL physical layout. Each row is its own INSERT, so heap order is exactly
+  // the order below — deliberately NOT chronological (T3, T1, T4, T2), plus a
+  // created_at tie whose HIGHER id is written first. A backfill that followed heap
+  // order (the defect an earlier draft had) cannot pass this; only a true
+  // (created_at, id) ranking can.
+  const T = (minute) => `2026-09-01T12:0${minute}:00.000Z`;
+  const tie = T(5);
+  const rows = [
+    { id: "00000000-0000-4000-8000-0000000000c3", role: "user", content: "T3 question", created_by_user_id: s.member.id, created_at: T(3) },
+    { id: "00000000-0000-4000-8000-0000000000c1", role: "user", content: "T1 question", created_by_user_id: s.member.id, created_at: T(1) },
+    { id: "00000000-0000-4000-8000-0000000000c4", role: "assistant", content: "T4 legacy deterministic reply", metadata: { grounded: { openRisks: 0 } }, created_at: T(4) },
+    { id: "00000000-0000-4000-8000-0000000000c2", role: "assistant", content: "T2 legacy deterministic reply", created_at: T(2) },
+    { id: "ffffffff-0000-4000-8000-0000000000f5", role: "assistant", content: "tie, HIGH id, written first", created_at: tie },
+    { id: "00000000-0000-4000-8000-0000000000a5", role: "assistant", content: "tie, LOW id, written second", created_at: tie },
+  ];
+  for (const row of rows) {
+    await must(admin.from("context_messages").insert({ conversation_id: conversation.id, workspace_id: s.workspaceId, ...row }), `legacy ${row.content}`);
+  }
+  writeFileSync(statePath, JSON.stringify({ ...s, password: PASSWORD, legacyConversationId: conversation.id, legacyMessageIds: rows.map((m) => m.id) }));
+  console.log(`Seeded legacy conversation with ${rows.length} messages under the pre-PB-CHAT-01 schema (adversarial physical order).`);
   process.exit(0);
 }
 
@@ -144,14 +152,26 @@ if (s.legacyConversationId) {
     const rows = await must(admin.from("context_messages").select("id, created_at, message_seq, content").eq("conversation_id", s.legacyConversationId).order("message_seq"), "legacy read");
     assert.equal(rows.length, s.legacyMessageIds.length);
     assert.ok(rows.every((r) => typeof r.message_seq === "number"));
-    // Backfill order = (created_at, id): the tie is broken by id, deterministically.
+    // Backfill order = (created_at, id), NOT the adversarial heap order it was written in.
     const expected = [...rows].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)).map((r) => r.id);
     assert.deepEqual(rows.map((r) => r.id), expected);
-    assert.equal(rows[0].content, "legacy question");
+    assert.deepEqual(rows.map((r) => r.content), [
+      "T1 question",
+      "T2 legacy deterministic reply",
+      "T3 question",
+      "T4 legacy deterministic reply",
+      "tie, LOW id, written second",
+      "tie, HIGH id, written first",
+    ]);
   });
   await check("upgrade: the member still reads the preserved thread through RLS", async () => {
     const rows = await must(member.from("context_messages").select("id").eq("conversation_id", s.legacyConversationId), "member legacy read");
     assert.equal(rows.length, s.legacyMessageIds.length);
+  });
+  await check("upgrade: the sequence continues strictly above every historical message_seq", async () => {
+    const [top] = await must(admin.from("context_messages").select("message_seq").order("message_seq", { ascending: false }).limit(1), "historical max");
+    const probe = await must(admin.from("context_messages").insert({ conversation_id: s.legacyConversationId, workspace_id: s.workspaceId, role: "user", content: "first message after upgrade", created_by_user_id: s.member.id }).select("message_seq").single(), "post-upgrade insert");
+    assert.ok(probe.message_seq > top.message_seq, `${probe.message_seq} must exceed ${top.message_seq}`);
   });
 }
 
@@ -266,6 +286,44 @@ await check("threads are isolated per project: each conversation holds only its 
   // the project boundary is the API + project_id filter. Documented residual.
   const colleagueRows = await must(colleague.from("context_messages").select("id").eq("conversation_id", convA), "colleague");
   assert.ok(colleagueRows.length > 0);
+});
+
+// ─── Transcript order is database-assigned (F4) ─────────────────────────────
+const recent = (iso) => Math.abs(Date.parse(iso) - Date.now()) < 10 * 60 * 1000;
+const maxSeq = async () => (await must(admin.from("context_messages").select("message_seq").order("message_seq", { ascending: false }).limit(1), "max seq"))[0].message_seq;
+
+await check("a member cannot choose message_seq or created_at: forged values are replaced by the database", async () => {
+  const existing = (await must(admin.from("context_messages").select("message_seq").eq("conversation_id", convA).order("message_seq").limit(1), "existing"))[0].message_seq;
+  const forged = [
+    { label: "negative seq + 2019", message_seq: -1, created_at: "2019-01-01T00:00:00Z" },
+    { label: "duplicate seq", message_seq: existing },
+    { label: "huge seq + future", message_seq: "9000000000000000000", created_at: "2099-01-01T00:00:00Z" },
+  ];
+  const stored = [];
+  for (const attempt of forged) {
+    const before = await maxSeq();
+    const { label, ...fields } = attempt;
+    const row = await must(member.from("context_messages").insert({ conversation_id: convA, workspace_id: s.workspaceId, role: "user", content: `forged order: ${label}`, created_by_user_id: s.member.id, ...fields }).select("id, message_seq, created_at").single(), label);
+    assert.ok(row.message_seq > before, `${label}: stored ${row.message_seq} must come from the sequence (> ${before})`);
+    assert.ok(recent(row.created_at), `${label}: created_at ${row.created_at} must be the database clock`);
+    stored.push(row.id);
+  }
+  // The forged rows sit at the END of the transcript, in the order they were written.
+  const tail = await must(admin.from("context_messages").select("id").eq("conversation_id", convA).order("message_seq", { ascending: false }).limit(stored.length), "tail");
+  assert.deepEqual(tail.map((r) => r.id).reverse(), stored);
+});
+
+await check("message_seq is unique: no writer can make two rows share an order position", async () => {
+  const [a, b] = await must(admin.from("context_messages").select("id, message_seq").eq("conversation_id", convA).order("message_seq").limit(2), "two rows");
+  const dup = await admin.from("context_messages").update({ message_seq: a.message_seq }).eq("id", b.id);
+  assert.equal(dup.error?.code, "23505");
+});
+
+await check("the service-role Project Brain writer still gets a database-assigned sequence and timestamp", async () => {
+  const question = await must(member.from("context_messages").insert({ conversation_id: convA, workspace_id: s.workspaceId, role: "user", content: "order probe question", created_by_user_id: s.member.id, client_message_id: randomUUID() }).select("id, message_seq").single(), "question");
+  const reply = await must(admin.from("context_messages").insert({ conversation_id: convA, workspace_id: s.workspaceId, role: "assistant", content: "order probe reply", reply_to_message_id: question.id, brain_mode: "generative", message_seq: -42 }).select("message_seq, created_at").single(), "reply");
+  assert.ok(reply.message_seq > question.message_seq, "the reply sorts after the question it answers");
+  assert.ok(recent(reply.created_at));
 });
 
 await check("message_seq orders the transcript strictly by insertion", async () => {

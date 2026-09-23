@@ -20,6 +20,7 @@
 import type { InferenceJsonSchema, InferenceMessage } from "@/lib/ai/inference/types";
 import { EPISTEMIC_TYPES } from "../types";
 import type { ProjectBrainContext } from "./context-types";
+import { PROJECT_BRAIN_OUTPUT_LIMITS as LIMITS } from "./context-budget";
 
 export function escapeForPrompt(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -51,6 +52,10 @@ export const PROJECT_BRAIN_SYSTEM_PROMPT = [
   "- Do not label an inference as FACT. Use confidence high only when a RECORD source directly supports the claim.",
   "- General-knowledge or off-topic answers are allowed briefly, but they are NOT project statements: leave `statements` empty for them and do not cite sources.",
   "- Never describe creating, changing or saving anything. You cannot write to the project in this conversation.",
+  "",
+  "LIMITS (answers beyond them are cut off)",
+  `- reply: at most ${LIMITS.replyChars} characters. statements: at most ${LIMITS.statements}, only the material ones.`,
+  `- statement text at most ${LIMITS.statementChars} characters; inferenceBasis at most ${LIMITS.inferenceBasisChars}; reportedBy at most ${LIMITS.reportedByChars}; at most ${LIMITS.sourceIdsPerStatement} sourceIds per statement; at most ${LIMITS.contradictingClaims} contradictingClaims of ${LIMITS.contradictingClaimChars} characters.`,
   "",
   "Return only the JSON object required by the response schema.",
 ].join("\n");

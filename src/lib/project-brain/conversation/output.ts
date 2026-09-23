@@ -27,10 +27,11 @@ import {
   type QualitativeConfidenceLevel,
 } from "../types";
 import type { ProjectBrainContext, ProjectBrainContextSource } from "./context-types";
+import { MAX_CONTEXT_SOURCES, PROJECT_BRAIN_OUTPUT_LIMITS as LIMITS } from "./context-budget";
 
-export const MAX_REPLY_CHARS = 6000;
-export const MAX_STATEMENTS = 12;
-const MAX_STATEMENT_CHARS = 800;
+export const MAX_REPLY_CHARS = LIMITS.replyChars;
+export const MAX_STATEMENTS = LIMITS.statements;
+const MAX_STATEMENT_CHARS = LIMITS.statementChars;
 
 export type RawModelStatement = {
   text: string;
@@ -98,7 +99,7 @@ export type CitationReport = {
   rejectedCitations: number;
   /** Statements whose epistemic type or confidence was lowered to match their valid sources. */
   downgradedStatements: number;
-  /** Statements dropped because they were empty. */
+  /** Statements dropped because they were empty or beyond the statement limit. */
   droppedStatements: number;
 };
 
@@ -144,6 +145,7 @@ export function groundProjectBrainOutput(input: {
   };
 
   const statements: GroundedStatement[] = [];
+  citations.droppedStatements += Math.max(0, output.statements.length - MAX_STATEMENTS);
   for (const raw of output.statements.slice(0, MAX_STATEMENTS)) {
     const text = clip(raw.text, MAX_STATEMENT_CHARS);
     if (!text) {
@@ -152,7 +154,9 @@ export function groundProjectBrainOutput(input: {
     }
     const seen = new Set<string>();
     const sources: ProjectBrainSourceReference[] = [];
-    for (const id of raw.sourceIds) {
+    const cited = raw.sourceIds.slice(0, LIMITS.sourceIdsPerStatement);
+    citations.rejectedCitations += raw.sourceIds.length - cited.length;
+    for (const id of cited) {
       const source = resolve(id);
       if (source && !seen.has(source.alias)) {
         seen.add(source.alias);
@@ -176,10 +180,10 @@ export function groundProjectBrainOutput(input: {
     }
     if (type === "CONTRADICTION") {
       const claims: ContradictingClaim[] = [];
-      for (const claim of raw.contradictingClaims) {
+      for (const claim of raw.contradictingClaims.slice(0, LIMITS.contradictingClaims)) {
         const source = resolve(claim.sourceId);
         if (source && sources.some((s) => s.evidenceId === source.reference.evidenceId) && claim.claim.trim()) {
-          claims.push({ sourceEvidenceId: source.reference.evidenceId, claim: clip(claim.claim, 300) });
+          claims.push({ sourceEvidenceId: source.reference.evidenceId, claim: clip(claim.claim, LIMITS.contradictingClaimChars) });
         }
       }
       if (claims.length >= 2) contradictingClaims = claims;
@@ -207,8 +211,8 @@ export function groundProjectBrainOutput(input: {
       text,
       confidence: { kind: "qualitative", level: confidence },
       sources,
-      ...(reportedBy ? { reportedBy: clip(reportedBy, 120) } : {}),
-      ...(inferenceBasis ? { inferenceBasis: clip(inferenceBasis, 400) } : {}),
+      ...(reportedBy ? { reportedBy: clip(reportedBy, LIMITS.reportedByChars) } : {}),
+      ...(inferenceBasis ? { inferenceBasis: clip(inferenceBasis, LIMITS.inferenceBasisChars) } : {}),
       ...(contradictingClaims ? { contradictingClaims } : {}),
       ...(type === "RECOMMENDATION" ? { requiresHumanApproval: true } : {}),
       generatedAt,
@@ -239,4 +243,27 @@ export function groundProjectBrainOutput(input: {
   }
 
   return { ok: true, value: { reply: clip(output.reply, MAX_REPLY_CHARS), statements, sources, citations } };
+}
+
+/**
+ * The largest output the contract allows: every field at its limit, the longest
+ * enum values, the widest alias ("S48"). Its JSON size is what `maxTokens` must fit
+ * (see context-budget.ts); tests pin that relationship so the caps and the token
+ * ceiling cannot drift apart again.
+ */
+export function worstCaseProjectBrainOutput(): RawModelOutput {
+  const longestType = [...EPISTEMIC_TYPES].sort((a, b) => b.length - a.length)[0];
+  const alias = `S${MAX_CONTEXT_SOURCES}`;
+  return {
+    reply: "x".repeat(LIMITS.replyChars),
+    statements: Array.from({ length: LIMITS.statements }, () => ({
+      text: "x".repeat(LIMITS.statementChars),
+      epistemicType: longestType,
+      sourceIds: Array.from({ length: LIMITS.sourceIdsPerStatement }, () => alias),
+      confidence: "unknown" as QualitativeConfidenceLevel,
+      inferenceBasis: "x".repeat(LIMITS.inferenceBasisChars),
+      reportedBy: "x".repeat(LIMITS.reportedByChars),
+      contradictingClaims: Array.from({ length: LIMITS.contradictingClaims }, () => ({ sourceId: alias, claim: "x".repeat(LIMITS.contradictingClaimChars) })),
+    })),
+  };
 }

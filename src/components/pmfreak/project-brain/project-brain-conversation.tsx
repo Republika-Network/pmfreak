@@ -15,6 +15,13 @@ import type {
  * is not. Every send carries a client-generated id, so a retry — automatic or the
  * user's — is the same turn, never a duplicate.
  *
+ * What the customer is told, precisely: the prose of an answer is the model's
+ * conversational SYNTHESIS. The listed claims are the structured layer — each
+ * validated against the records supplied for this turn and labelled with its
+ * epistemic status — and their chips show which project records were cited. A
+ * citation proves which record was used, not that it semantically supports every
+ * sentence of the prose; nothing here claims otherwise.
+ *
  * Deliberately absent (PB-CHAT-02/03): attachments, screenshots, slash commands,
  * "create risk/decision" controls, "Add to project". Nothing here writes project
  * state; the only thing a send persists is the conversation itself.
@@ -109,7 +116,7 @@ function SourceChips({ sources, styles }: { sources: ProjectBrainSourceChip[]; s
   if (sources.length === 0) return null;
   return (
     <div className={`mt-3 border-t pt-2.5 ${styles.divider}`}>
-      <p className={`text-[11px] font-semibold uppercase tracking-[0.12em] ${styles.muted}`}>Based on</p>
+      <p className={`text-[11px] font-semibold uppercase tracking-[0.12em] ${styles.muted}`}>Records cited</p>
       <ul className="mt-1.5 flex flex-wrap gap-1.5" data-testid="project-brain-sources">
         {sources.map((source) => (
           <li key={source.id}>
@@ -131,16 +138,19 @@ function SourceChips({ sources, styles }: { sources: ProjectBrainSourceChip[]; s
 function Statements({ statements, styles }: { statements: ProjectBrainStatementView[]; styles: Record<string, string> }) {
   if (statements.length === 0) return null;
   return (
-    <ul className="mt-3 space-y-1.5" data-testid="project-brain-statements">
-      {statements.map((statement) => (
-        <li key={statement.id} className="text-xs leading-relaxed" data-epistemic-type={statement.epistemicType}>
-          <span className={`mr-1.5 rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] ${styles.divider} ${styles.muted}`}>
-            {EPISTEMIC_BADGE[statement.epistemicType] ?? statement.epistemicLabel}
-          </span>
-          {statement.text}
-        </li>
-      ))}
-    </ul>
+    <div className="mt-3">
+      <p className={`text-[11px] font-semibold uppercase tracking-[0.12em] ${styles.muted}`}>Claims about this project</p>
+      <ul className="mt-1.5 space-y-1.5" data-testid="project-brain-statements">
+        {statements.map((statement) => (
+          <li key={statement.id} className="text-xs leading-relaxed" data-epistemic-type={statement.epistemicType}>
+            <span className={`mr-1.5 rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] ${styles.divider} ${styles.muted}`}>
+              {EPISTEMIC_BADGE[statement.epistemicType] ?? statement.epistemicLabel}
+            </span>
+            {statement.text}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -165,6 +175,7 @@ function ProjectThread({ projectId, projectName, variant = "dark", onTranscriptS
   const styles = STYLES[variant];
   const [messages, setMessages] = useState<ProjectBrainMessageView[]>([]);
   const [generativeAvailable, setGenerativeAvailable] = useState(true);
+  const [limitedModeReason, setLimitedModeReason] = useState<"not_included" | "unavailable" | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -178,11 +189,17 @@ function ProjectThread({ projectId, projectName, variant = "dark", onTranscriptS
     let live = true;
     fetch(`/api/projects/${encodeURIComponent(projectId)}/brain/turns`, { cache: "no-store" })
       .then(async (res) => {
-        const data = (await res.json().catch(() => ({}))) as { messages?: ProjectBrainMessageView[]; generativeAvailable?: boolean; error?: string };
+        const data = (await res.json().catch(() => ({}))) as {
+          messages?: ProjectBrainMessageView[];
+          generativeAvailable?: boolean;
+          limitedModeReason?: "not_included" | "unavailable" | null;
+          error?: string;
+        };
         if (!res.ok) throw new Error(data.error ?? "Unable to load the conversation.");
         if (!live) return;
         setMessages(data.messages ?? []);
         setGenerativeAvailable(data.generativeAvailable !== false);
+        setLimitedModeReason(data.limitedModeReason ?? null);
       })
       .catch((error: unknown) => {
         if (live) setLoadError(error instanceof Error ? error.message : "Unable to load the conversation.");
@@ -305,13 +322,23 @@ function ProjectThread({ projectId, projectName, variant = "dark", onTranscriptS
                 {message.origin === "legacy_project_chat" ? (
                   <p className={`mb-1 text-[11px] ${styles.muted}`}>Earlier rule-based Project Chat reply</p>
                 ) : null}
+                {message.brain?.mode === "generative" ? (
+                  <p className={`mb-1 text-[11px] ${styles.muted}`} data-testid="project-brain-synthesis-label">AI-written answer</p>
+                ) : null}
                 <p>{message.content}</p>
+                {message.brain?.conversationalOnly ? (
+                  <p className={`mt-2 text-[11px] ${styles.muted}`} data-testid="project-brain-conversational-note">
+                    General answer — not linked to this project&apos;s records.
+                  </p>
+                ) : null}
                 {message.brain ? <Statements statements={message.brain.statements} styles={styles} /> : null}
                 {message.brain ? <SourceChips sources={message.brain.sources} styles={styles} /> : null}
                 {message.brain?.groundingAdjusted ? (
-                  <p className={`mt-2 text-[11px] ${styles.muted}`}>Some claims could not be linked to project records and are marked accordingly.</p>
+                  <p className={`mt-2 text-[11px] ${styles.muted}`} data-testid="project-brain-grounding-notice">
+                    Some generated claims could not be fully linked to project records.
+                  </p>
                 ) : null}
-                {message.brain?.mode === "degraded" && !upgraded.has(message.replyToMessageId) ? (
+                {message.brain?.mode === "degraded" && message.brain.reason !== "not_entitled" && !upgraded.has(message.replyToMessageId) ? (
                   <button type="button" className={`mt-2 ${styles.link}`} onClick={() => retryDegraded(message)} disabled={sending}>
                     Try again with Project Brain
                   </button>
@@ -334,7 +361,9 @@ function ProjectThread({ projectId, projectName, variant = "dark", onTranscriptS
       <div className={`border-t px-4 py-3 sm:px-5 ${styles.divider}`}>
         {!generativeAvailable ? (
           <p className={`mb-2 ${styles.notice}`} data-testid="project-brain-limited-mode">
-            Project Brain is temporarily operating in limited mode: answers list what this project&apos;s records show, without a full generative answer.
+            {limitedModeReason === "not_included"
+              ? "Full generative Project Brain answers aren't included in your current plan. Answers list what this project's records show."
+              : "Project Brain is temporarily operating in limited mode: answers list what this project's records show, without a full generative answer."}
           </p>
         ) : null}
         <form
@@ -368,7 +397,7 @@ function ProjectThread({ projectId, projectName, variant = "dark", onTranscriptS
           </button>
         </form>
         <p className={`mt-2 px-1 text-[11px] ${styles.muted}`} data-testid="project-brain-disclosure">
-          Project Brain answers from this project&apos;s records and this conversation. Project claims show the records they rely on. It cannot change the project.
+          Project Brain writes its answers from this project&apos;s records and this conversation. Listed claims show which records they cite; a citation is not proof of every sentence. It cannot change the project.
         </p>
       </div>
     </div>

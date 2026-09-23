@@ -8,8 +8,8 @@
 //
 // Sized against the default model's 128k-token window with a wide margin: the
 // whole project context is capped at ~24k characters (≈6k tokens), history at
-// 24 messages × 1.2k characters, the question at 4k characters, and the reply at
-// 900 output tokens.
+// 24 messages × 1.2k characters, the question at 4k characters, and the output at
+// the bounded contract below (maxTokens is derived from it).
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { ProjectBrainSourceFamily } from "./context-types";
@@ -52,10 +52,48 @@ export const SOURCE_FAMILY_BUDGET: ReadonlyArray<{ family: ProjectBrainSourceFam
 /** Supplemental direct reads (all project-scoped, all bounded). */
 export const SUPPLEMENTAL_READ_LIMIT = 15;
 
+/**
+ * The OUTPUT contract: the largest legal model answer. The model is told these
+ * limits in the system prompt, and output.ts clips to them, so every value here
+ * bounds what one turn can emit — and therefore what `maxTokens` must fit.
+ *
+ * Kept deliberately small: a Project Brain turn is a concise answer plus a few
+ * material claims, not a report.
+ */
+export const PROJECT_BRAIN_OUTPUT_LIMITS = {
+  replyChars: 2000,
+  statements: 6,
+  statementChars: 280,
+  sourceIdsPerStatement: 4,
+  inferenceBasisChars: 280,
+  reportedByChars: 80,
+  contradictingClaims: 2,
+  contradictingClaimChars: 160,
+} as const;
+
+/**
+ * How `maxTokens` is derived (pinned by tests/pb-chat-01-project-brain-conversation.test.ts):
+ *
+ *   worst-case legal output  = JSON of a reply and statements with EVERY field at its
+ *                              limit above (measured by worstCaseProjectBrainOutput()
+ *                              in output.ts: ≈ 9.1k characters)
+ *   tokens                  ≤ characters / OUTPUT_CHARS_PER_TOKEN_FLOOR
+ *                              (3: a conservative floor for Latin-script prose and
+ *                              JSON punctuation/keys; typical English is ≈ 4)
+ *   maxTokens               ≥ that × OUTPUT_TOKEN_SAFETY_MARGIN, rounded up.
+ *
+ * So a maximal legal answer fits with margin, while a runaway answer is still cut
+ * off (it then fails strict parsing and the turn degrades honestly; the truncation
+ * is logged as `project_brain.output_truncated`). Scripts that tokenize at close to
+ * one character per token (e.g. CJK) can still exceed the ceiling at the extreme.
+ */
+export const OUTPUT_CHARS_PER_TOKEN_FLOOR = 3;
+export const OUTPUT_TOKEN_SAFETY_MARGIN = 1.2;
+
 /** Inference parameters for a conversational turn. */
 export const PROJECT_BRAIN_INFERENCE = {
   temperature: 0.2,
-  maxTokens: 900,
+  maxTokens: 3700,
   timeoutMs: 20_000,
   maxAttempts: 2,
   retryDelayMs: 500,

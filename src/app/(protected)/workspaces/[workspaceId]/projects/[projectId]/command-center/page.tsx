@@ -702,7 +702,7 @@ export default async function ProjectCommandCenterPage({
       <section aria-labelledby="project-brain-heading" data-zone="project-brain" className="rounded-3xl border border-slate-200 bg-white">
         <div className="px-5 pt-5">
           <h2 id="project-brain-heading" className="text-lg font-semibold text-slate-900">Project Brain</h2>
-          <p className="mt-1 text-xs text-slate-500">Ask about this project. Answers are grounded in this project&apos;s records only.</p>
+          <p className="mt-1 text-xs text-slate-500">Ask about this project. Answers are written from this project&apos;s records and conversation; listed claims show the records they cite.</p>
         </div>
         <div className="h-[480px] max-h-[70vh]">
           <ProjectBrainConversation projectId={project.id} projectName={project.name} variant="light" />
