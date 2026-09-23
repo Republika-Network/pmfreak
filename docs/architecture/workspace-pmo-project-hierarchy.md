@@ -77,6 +77,13 @@ API: `/api/context-chat` (GET history, POST message). Scope authorization
 pins each level to a real row in the caller's workspace (`getPmoById`,
 `requireProjectAccess`) before any read/write.
 
+> **PB-CHAT-01 update.** The PROJECT scope is no longer served by this
+> deterministic responder. A project's conversation is the persisted, generative
+> Project Brain (`/api/projects/[id]/brain/turns`, see
+> `docs/project-brain-conversation.md`), hosted in the Project Command Center.
+> `/api/context-chat` answers `410` for `contextType=project`; workspace and PMO
+> chats are unchanged.
+
 ## Navigation (Changes 2, 8, 9)
 
 - Sidebar (`operational-shell.tsx`) now renders a Workspace block (active
@@ -90,7 +97,8 @@ pins each level to a real row in the caller's workspace (`getPmoById`,
 - Route policy registry registers `/workspaces`, `/pmos`, `/chat` as
   workspace-contextual.
 - Projects open on **Overview** (`/projects/[id]`) with a section tab bar
-  (`project-tab-nav.tsx`); Chat is one tab. Existing surfaces (Execution,
+  (`project-tab-nav.tsx`). (PB-CHAT-01 removed the Chat tab: the project
+  conversation is Project Brain inside the Project Command Center.) Existing surfaces (Execution,
   Documents, Meetings, Evidence, Risks, Reports…) are reused via
   `?projectId=` links rather than rebuilt (Change 13).
 - Project creation now lands on the project Overview, not the Command
@@ -108,7 +116,7 @@ pins each level to a real row in the caller's workspace (`getPmoById`,
 | `/pmos/[pmoId]/settings` | PMO settings + members/agents/templates entry points. |
 | `/chat` | Workspace chat / executive console across all PMOs. |
 | `/projects/[id]` | Project Overview (landing view). |
-| `/projects/[id]/chat` | Project chat (fully isolated). |
+| `/projects/[id]/chat` | Compatibility redirect (PB-CHAT-01) to the canonical Project Command Center, whose Project Brain panel holds the project's one conversation. |
 | `/projects/[id]/settings` | Project admin: rename, status, methodology, move between PMOs, icon/color, duplicate, delete. |
 
 ## Active workspace selection

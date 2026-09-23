@@ -37,6 +37,16 @@ export const GOVERNANCE_POLICY_REGISTRY: Record<GovernanceAction, GovernancePoli
   "workspace.manage": { requiredPermission: "manage_workspace", allowedActorTypes: ["user"], agentCompatible: false, denyEventType: "workspace_scope_violation", riskLevel: "critical", workspaceScoped: true },
   "executive.view": { requiredPermission: "view_executive", allowedActorTypes: ["user", "ai_agent"], agentCompatible: true, denyEventType: "denied_permission", riskLevel: "medium", workspaceScoped: true },
   "privileged.use": { requiredPermission: "manage_workspace", allowedActorTypes: ["system"], agentCompatible: false, denyEventType: "suspicious_permission_escalation", riskLevel: "critical", workspaceScoped: true, requiresSystemContext: true },
+  // PB-CHAT-01 — interactive Project Brain conversation. Project-scoped read: the
+  // caller must hold `read` on THIS project (requireProjectPermission), so a
+  // member of workspace W cannot converse about a project outside W. Humans only
+  // (not agent-compatible), low risk because the action is read-only against
+  // project state: the only writes behind it are the transcript itself and AI
+  // usage accounting. It is intentionally absent from decisionNeedsApproval —
+  // an ordinary chat turn needs no approval workflow — and it grants nothing
+  // that "ai.execute", "project.write", "memory.write" or "document.upload"
+  // gate. Provider usage/cost controls still apply inside runInference.
+  "project_brain.converse": { requiredPermission: "read", allowedActorTypes: ["user"], agentCompatible: false, denyEventType: "project_scope_violation", riskLevel: "low", projectScoped: true },
 };
 
 const decisionNeedsApproval = (input: GovernanceEvaluationInput, riskLevel: string): { decision: GovernanceDecisionState; approvalType: ApprovalType; reviewerRoleRequired: GovernanceActorRole } | null => {

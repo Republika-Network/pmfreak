@@ -391,6 +391,18 @@ export const ABUSE_PROTECTION_REGISTRY: readonly AbuseRegistryEntry[] = [
     enforced: true,
   },
   {
+    // PB-CHAT-01: interactive Project Brain turns. Generous per-user ceiling for
+    // conversation; runInference additionally enforces the per-workspace daily
+    // request/cost ceilings and concurrency bound.
+    id: "ai.module_output.project_brain_turn",
+    file: "src/app/api/projects/[id]/brain/turns/route.ts",
+    classification: "project-scoped-ai-cost",
+    requiredProtection: "per-user rate limit",
+    windowSeconds: 3600,
+    maxAttempts: 120,
+    enforced: true,
+  },
+  {
     id: "ai.module_output.meta_intelligence",
     file: "src/app/api/ai/meta-intelligence/route.ts",
     classification: "project-scoped-ai-cost",

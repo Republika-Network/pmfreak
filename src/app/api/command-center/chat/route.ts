@@ -12,10 +12,14 @@ function isConversationTurn(value: unknown): value is ConversationTurn {
 }
 
 /**
- * The Command Center chat's only server endpoint: takes a natural-language message and routes it
- * through the Sprint 8 Conversational Brain Gateway (`runConversationChat`). Deliberately thin —
- * no LLM calls, no persistence, no RAG — the gateway itself is a deterministic, rule-based
- * domain function; this route's only job is auth plus request/response shaping.
+ * Internal, deterministic Conversational Brain Gateway endpoint (`runConversationChat`).
+ * Deliberately thin — no LLM calls, no persistence, no RAG.
+ *
+ * RETIRED FROM THE CUSTOMER UI BY PB-CHAT-01. It receives no project state, so it must never
+ * again power a visible project conversation: the Command Center now hosts the persisted,
+ * project-grounded Project Brain (`/api/projects/[id]/brain/turns`). No `src/` UI calls this
+ * route; tests/pb-chat-01-project-brain-conversation.test.ts pins that. It is kept only for
+ * backward compatibility with the gateway's own contract tests.
  */
 export async function POST(request: Request) {
   const user = await getAuthUser();

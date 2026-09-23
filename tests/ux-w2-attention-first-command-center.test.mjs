@@ -1,7 +1,7 @@
 /**
  * UX-W2 — the Command Center is attention-first.
  *
- * Before W2 the Command Center answered "what would you like to type?": `CommandFeed`
+ * Before W2 the Command Center answered "what would you like to type?": the chat feed
  * owned `<main>`, and Needs You / After Your Decision / the nine-agent dock were a
  * 320px right rail that a phone could only reach through an overlay.
  *
@@ -56,7 +56,7 @@ const ATTENTION_FIRST_ORDER = [
   "cc-section-what-changed",
   "cc-section-in-progress",
   "cc-section-monitoring",
-  "cc-section-ask-pmfreak",
+  "cc-section-project-brain",
 ];
 
 // ───────────────────────── 1-2. the primary surface is attention ─────────────────────────
@@ -70,28 +70,31 @@ test("W2: Needs You is the first section of the Command Center's main canvas", (
   assert.equal(harness.screen.headerBeforeCanvasBody, true);
 });
 
-test("W2: the conversation is the last section, and it does not open the viewport", () => {
-  assert.equal(harness.screen.chatRole, "COPILOT");
-  assert.equal(harness.screen.mainOrder.at(-1), "cc-section-ask-pmfreak");
-  // Collapsed by default: the conversation region is `hidden`, so it is out of the layout,
-  // out of the tab order and out of the accessibility tree. Chat is one click away, not the
-  // canvas. (It stays MOUNTED — see the draft-lifecycle tests below; that is a different
-  // guarantee from being visible, and both are required.)
-  const collapsed = harness.canvas.askPmfreak;
-  assert.match(collapsed, /data-testid="cc-ask-pmfreak-region" class="[^"]*"|hidden[^>]*data-testid="cc-ask-pmfreak-region"/);
-  const collapsedRegion = /<div id="[^"]*"([^>]*)data-testid="cc-ask-pmfreak-region"/.exec(collapsed);
+test("W2 + PB-CHAT-01: Project Brain follows the attention sections and is open by default", () => {
+  assert.equal(harness.screen.chatRole, "PROJECT_BRAIN");
+  // Attention still opens the canvas; the conversation never displaces it.
+  assert.equal(harness.screen.mainOrder.at(-1), "cc-section-project-brain");
+  // PB-CHAT-01 made the conversation first-class: the SCREEN opens it by default.
+  assert.match(layout, /const \[chatOpen, setChatOpen\] = useState\(true\);/);
+  // The panel still supports collapsing, and a collapsed region is `hidden` — out of the
+  // layout, the tab order and the accessibility tree — while staying MOUNTED (see the
+  // draft-lifecycle tests below).
+  const collapsed = harness.canvas.projectBrain;
+  const collapsedRegion = /<div id="[^"]*"([^>]*)data-testid="cc-project-brain-region"/.exec(collapsed);
   assert.ok(collapsedRegion, "the conversation region must be present in the collapsed panel");
   assert.match(collapsedRegion[1], /\bhidden\b/, "the collapsed conversation region must be hidden");
-  assert.match(text(collapsed), /Ask PMFreak about this project/);
-  // Expanding reveals the same region, no longer hidden, with the real CommandFeed in it.
-  const expanded = harness.chatExpanded.askPmfreak;
-  const expandedRegion = /<div id="[^"]*"([^>]*)data-testid="cc-ask-pmfreak-region"/.exec(expanded);
+  assert.match(text(collapsed), /Ask Project Brain about this project/);
+  // Expanded: the same region, not hidden, with the real Project Brain conversation in it.
+  const expanded = harness.chatExpanded.projectBrain;
+  const expandedRegion = /<div id="[^"]*"([^>]*)data-testid="cc-project-brain-region"/.exec(expanded);
   assert.ok(expandedRegion, "the conversation region must be present when expanded");
   assert.doesNotMatch(expandedRegion[1], /\bhidden\b/, "the expanded conversation region must not be hidden");
-  assert.match(expanded, /<input\b/);
-  assert.match(expanded, /chat-determinism-disclosure/);
-  assert.match(text(expanded), /answers are composed from your project data by deterministic rules/);
-  // The transcript is not discarded by collapsing — the collapsed control says what it holds.
+  assert.match(expanded, /<textarea\b/);
+  assert.match(expanded, /data-testid="project-brain-conversation"/);
+  assert.match(expanded, /project-brain-disclosure/);
+  // The deterministic-rules disclosure belonged to the retired feed and must not survive.
+  assert.doesNotMatch(expanded, /chat-determinism-disclosure|deterministic rules/);
+  // The collapsed control says how much the persisted thread holds.
   assert.match(text(collapsed), /2 messages/);
 });
 
@@ -299,7 +302,7 @@ test("W2: no internal certification vocabulary reached the new customer surfaces
     "src/modules/workspace/presentation/command-center/command-center-canvas.tsx",
     "src/modules/workspace/presentation/command-center/what-changed-panel.tsx",
     "src/modules/workspace/presentation/command-center/monitoring-panel.tsx",
-    "src/modules/workspace/presentation/command-center/ask-pmfreak-panel.tsx",
+    "src/modules/workspace/presentation/command-center/project-brain-panel.tsx",
     "src/modules/workspace/presentation/command-center/change-read-model.ts",
   ];
   for (const file of NEW_SURFACES) {
@@ -687,9 +690,9 @@ test("W2-P1-03: the summary's fetch time is not reported as project activity", (
 });
 
 
-// ───────── Codex P2: collapsing Ask PMFreak must not discard an unsent draft ─
+// ───────── Codex P2: collapsing Project Brain must not discard an unsent draft ─
 //
-// The draft is `CommandFeed`'s own local state, and React keeps local state exactly as long
+// The draft is the Project Brain conversation's own local state, and React keeps local state exactly as long
 // as the same element type stays at the same position across renders. So the property that
 // decides whether a draft survives a collapse is whether the child is RENDERED IN BOTH
 // STATES, IN THE SAME PLACE. `{open ? children : null}` answered no, and typing, collapsing
@@ -704,7 +707,7 @@ test("W2-CODEX: the conversation is rendered in both states, so collapsing canno
     assert.equal(shape.regionPresent, true, `${state}: the conversation region must be rendered`);
     assert.equal(shape.composerRendered, true, `${state}: the composer must be rendered`);
     assert.equal(shape.composerInsideRegion, true, `${state}: the composer must sit inside the region`);
-    assert.equal(shape.disclosureRendered, true, `${state}: the real CommandFeed must be the child`);
+    assert.equal(shape.disclosureRendered, true, `${state}: the real Project Brain conversation must be the child`);
   }
   // Identical position inside the region in both states: React therefore reconciles it as
   // the same instance and keeps its state, rather than mounting a fresh empty one.
@@ -719,7 +722,7 @@ test("W2-CODEX: a collapsed conversation is hidden, not merely invisible", () =>
   assert.equal(harness.askPanel.collapsed.regionHidden, true);
   assert.equal(harness.askPanel.expanded.regionHidden, false);
   // And the wrapper carries no display utility, which would override the attribute.
-  const panelSrc = read("src/modules/workspace/presentation/command-center/ask-pmfreak-panel.tsx");
+  const panelSrc = read("src/modules/workspace/presentation/command-center/project-brain-panel.tsx");
   const region = /hidden=\{!open\}[\s\S]{0,320}?className="([^"]*)"/.exec(panelSrc);
   assert.ok(region, "the region must set hidden from the open flag");
   assert.doesNotMatch(region[1], /\b(block|flex|grid|inline|inline-block|table|contents)\b/, "a display utility would defeat `hidden`");
@@ -735,18 +738,20 @@ test("W2-CODEX: there is exactly one conversation instance, in both states", () 
   assert.equal(harness.askPanel.collapsed.composerInstances, 1);
   assert.equal(harness.askPanel.expanded.composerInstances, 1);
   // And the whole Command Center still mounts the panel once.
-  assert.equal((harness.canvas.populated.match(/data-testid="cc-section-ask-pmfreak"/g) ?? []).length, 1);
-  assert.equal((harness.screen.order.filter((id) => id === "cc-section-ask-pmfreak")).length, 1);
+  assert.equal((harness.canvas.populated.match(/data-testid="cc-section-project-brain"/g) ?? []).length, 1);
+  assert.equal((harness.screen.order.filter((id) => id === "cc-section-project-brain")).length, 1);
 });
 
 test("W2-CODEX: collapsing is presentation only — it sends nothing and owns no message state", () => {
   // The panel has no submit path and no message state of its own: it cannot send on
   // collapse, and it cannot drop a transcript, because it holds neither.
-  const panelSrc = read("src/modules/workspace/presentation/command-center/ask-pmfreak-panel.tsx");
-  assert.doesNotMatch(panelSrc, /onSendMessage|useState|postConversationMessage/);
-  // The transcript lives in the screen, which keeps it across collapses.
-  assert.match(layout, /const \[messages, setMessages\] = useState<ChatMessage\[\]>\(\[\]\);/);
-  assert.match(layout, /chatMessageCount=\{messages\.length\}/);
+  const panelSrc = read("src/modules/workspace/presentation/command-center/project-brain-panel.tsx");
+  assert.doesNotMatch(panelSrc, /onSendMessage|useState|fetch\(/);
+  // PB-CHAT-01: the transcript is persisted server-side; the screen only holds the count the
+  // conversation reports, so collapsing cannot drop a message.
+  assert.match(layout, /const \[chatMessageCount, setChatMessageCount\] = useState\(0\);/);
+  assert.match(layout, /onTranscriptSizeChange=\{setChatMessageCount\}/);
+  assert.match(layout, /chatMessageCount=\{chatMessageCount\}/);
 });
 
 // ───────── Codex P2: the future-activity ceiling is the SERVER's clock ────────

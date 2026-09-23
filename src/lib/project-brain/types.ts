@@ -39,9 +39,31 @@ export type SourceAuthorityLevel = "primary" | "secondary" | "unverified";
  * stores evidence content itself, only a pointer to it plus the metadata a
  * Project Brain statement needs to cite it honestly.
  */
+/**
+ * The persisted table a source reference points into. The first three are the
+ * Sprint 0 pipelines; the rest were added by PB-CHAT-01 so a conversational
+ * answer can cite the canonical operational records it was grounded in. Each
+ * value is the literal table name — no parallel vocabulary.
+ */
+export type ProjectBrainSourceSystem =
+  | "project_evidence"
+  | "evidence_items"
+  | "project_configuration"
+  | "projects"
+  | "operational_signals"
+  | "risk_issue_records"
+  | "recommended_actions"
+  | "operational_decision_records"
+  | "material_action_proposals"
+  | "execution_tasks"
+  | "canonical_task_outcomes"
+  | "canonical_outcome_observations"
+  | "project_milestones"
+  | "raid_items";
+
 export type ProjectBrainSourceReference = {
   evidenceId: string;
-  sourceSystem: "project_evidence" | "evidence_items" | "project_configuration";
+  sourceSystem: ProjectBrainSourceSystem;
   title: string;
   evidenceType: string;
   recordedAt: string;

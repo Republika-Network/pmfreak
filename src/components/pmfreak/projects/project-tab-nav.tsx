@@ -3,8 +3,8 @@ import { projectHomePath } from "@/lib/projects/project-paths";
 import { projectCommandCenterPath } from "@/lib/projects/project-command-center-paths";
 
 /**
- * Project section navigation. The project opens on Overview; the chat is one
- * view among many (never the landing view). Sections that already exist as
+ * Project section navigation. The project opens on Overview; Project Brain, the
+ * project's conversation, lives inside the Project Command Center. Sections that already exist as
  * workspace surfaces are reused via ?projectId= links rather than rebuilt.
  *
  * Meetings and Risks & Issues intentionally omit ?projectId= and are labeled
@@ -29,11 +29,15 @@ import { projectCommandCenterPath } from "@/lib/projects/project-command-center-
  * NOTHING ELSE in this strip is rewritten, and that is the honest state of the
  * product rather than a half-finished migration:
  *
- *   - Chat and Settings still point at `/projects/[id]/chat` and
- *     `/projects/[id]/settings`. `07-route-layout-and-navigation-architecture.md`
- *     §2's ratified Project family does not contain `chat` or `settings` at all,
- *     so `/workspaces/W/projects/P/chat` is not a route this architecture
- *     authorizes — writing it here would invent one and 404.
+ *   - There is no Chat tab. PB-CHAT-01 unified the project conversation into
+ *     the Project Brain panel of the Project Command Center; the legacy
+ *     `/projects/[id]/chat` path survives only as a redirect there, so a tab
+ *     for it would advertise a second chat that no longer exists.
+ *   - Settings still points at `/projects/[id]/settings`.
+ *     `07-route-layout-and-navigation-architecture.md` §2's ratified Project
+ *     family does not contain `settings`, so `/workspaces/W/projects/P/settings`
+ *     is not a route this architecture authorizes — writing it here would invent
+ *     one and 404.
  *   - Execution, Timeline, Tasks, Documents, Evidence and Reports point at
  *     workspace-wide modules with a `?projectId=`. Their canonical replacements
  *     (`…/projects/[projectId]/tasks`, `/milestones`, `/documents`, …) are in the
@@ -56,12 +60,11 @@ export function ProjectTabNav({
    */
   workspaceId: string;
   projectId: string;
-  active: "overview" | "command-center" | "chat" | "settings";
+  active: "overview" | "command-center" | "settings";
 }) {
   const tabs: { label: string; href: string; key?: string }[] = [
     { label: "Overview", href: projectHomePath(workspaceId, projectId), key: "overview" },
     { label: "Project Command Center", href: projectCommandCenterPath(workspaceId, projectId), key: "command-center" },
-    { label: "Chat", href: `/projects/${projectId}/chat`, key: "chat" },
     { label: "Execution", href: `/command-center?projectId=${projectId}` },
     { label: "Timeline", href: `/dashboard?projectId=${projectId}` },
     { label: "Tasks", href: `/follow-up-dashboard?projectId=${projectId}` },

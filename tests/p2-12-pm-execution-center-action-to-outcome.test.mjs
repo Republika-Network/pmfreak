@@ -1232,7 +1232,8 @@ test("P2-12 N4: opening one drawer clears the others", () => {
     const direct = (body.match(new RegExp(`${setter}\\(`, "g")) ?? []).length;
     assert.equal(direct, 0, `${setter} must only be called inside selectDrawer`);
   }
-  for (const handler of ["handleNeedsYouSelect", "handleChainSelect", "handleAgentSelect", "handleSourceClick", "handleTopBarSourceClick", "closeDrawer"]) {
+  // (PB-CHAT-01 removed the chat-source `handleSourceClick` along with the deterministic feed.)
+  for (const handler of ["handleNeedsYouSelect", "handleChainSelect", "handleAgentSelect", "handleTopBarSourceClick", "closeDrawer"]) {
     assert.match(layout, new RegExp(`${handler}[\\s\\S]{0,260}selectDrawer\\(`), `${handler} must route through selectDrawer`);
   }
 });

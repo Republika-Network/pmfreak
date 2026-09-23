@@ -33,8 +33,8 @@ import { ExecutionQueue } from "../src/modules/workspace/presentation/command-ce
 import { deriveWhatChanged } from "../src/modules/workspace/presentation/command-center/change-read-model";
 import { CommandCenterCanvas } from "../src/modules/workspace/presentation/command-center/command-center-canvas";
 import { AgentDock } from "../src/modules/workspace/presentation/command-center/agent-dock";
-import { CommandFeed } from "../src/modules/workspace/presentation/command-center/command-feed";
-import { AskPmfreakPanel } from "../src/modules/workspace/presentation/command-center/ask-pmfreak-panel";
+import { ProjectBrainConversation } from "../src/components/pmfreak/project-brain/project-brain-conversation";
+import { ProjectBrainPanel } from "../src/modules/workspace/presentation/command-center/project-brain-panel";
 import { CommandCenterLayout } from "../src/modules/workspace/screens/command-center/command-center-layout";
 import type { ProjectListItem } from "../src/modules/workspace/presentation/command-center/types";
 
@@ -306,7 +306,7 @@ function renderCanvas(data: OperationalSummary | undefined, overrides: CanvasOve
       chatOpen={false}
       onToggleChat={noop}
       chatMessageCount={2}
-      chat={<CommandFeed messages={[]} onSendMessage={noop} onSourceClick={noop} onActionClick={noop} />}
+      chat={<ProjectBrainConversation projectId="proj-1" projectName="Apollo" />}
       activityLoading={false}
       activityErrorMessage={null}
       {...overrides}
@@ -753,9 +753,9 @@ const freshnessHeader = section(
 
 
 
-// ── W2 Codex remediation: the copilot panel never unmounts the conversation ──
+// ── W2 Codex remediation: the Project Brain panel never unmounts the conversation ──
 //
-// An unsent draft is `CommandFeed`'s own local state, and local state survives exactly as
+// An unsent draft is the Project Brain conversation's own local state, and local state survives exactly as
 // long as the component stays mounted. React preserves it when the same element type sits
 // at the same position across renders, so the property that decides whether a draft
 // survives collapse is: IS THE CHILD RENDERED IN BOTH STATES, IN THE SAME PLACE?
@@ -765,18 +765,18 @@ const freshnessHeader = section(
 
 function askPanelMarkup(open: boolean): string {
   return renderToStaticMarkup(
-    <AskPmfreakPanel open={open} onToggle={noop} messageCount={2}>
-      <CommandFeed messages={[]} onSendMessage={noop} onSourceClick={noop} onActionClick={noop} />
-    </AskPmfreakPanel>
+    <ProjectBrainPanel open={open} onToggle={noop} messageCount={2}>
+      <ProjectBrainConversation projectId="proj-1" projectName="Apollo" />
+    </ProjectBrainPanel>
   );
 }
 
 /** The conversation region's own attributes, and where the composer sits inside it. */
 function askPanelShape(open: boolean) {
   const markup = askPanelMarkup(open);
-  const regionAt = markup.indexOf('data-testid="cc-ask-pmfreak-region"');
+  const regionAt = markup.indexOf('data-testid="cc-project-brain-region"');
   const regionOpenTag = regionAt < 0 ? null : markup.slice(markup.lastIndexOf("<div", regionAt), markup.indexOf(">", regionAt) + 1);
-  const composerAt = markup.indexOf("<input");
+  const composerAt = markup.indexOf("<textarea");
   return {
     regionPresent: regionAt >= 0,
     regionHidden: regionOpenTag !== null && /\shidden\b/.test(regionOpenTag),
@@ -784,8 +784,8 @@ function askPanelShape(open: boolean) {
     composerRendered: composerAt >= 0,
     // ...and it is rendered INSIDE the region, so hiding the region hides it.
     composerInsideRegion: regionAt >= 0 && composerAt > regionAt,
-    composerInstances: (markup.match(/<input/g) ?? []).length,
-    disclosureRendered: markup.includes("chat-determinism-disclosure"),
+    composerInstances: (markup.match(/<textarea/g) ?? []).length,
+    disclosureRendered: markup.includes("project-brain-disclosure"),
     /** Bytes from the region's opening tag to the composer: the child's position, which must
      *  be identical in both states for React to treat it as the same instance. */
     composerOffsetInRegion: regionAt >= 0 && composerAt >= 0 ? composerAt - regionAt : null,
@@ -804,7 +804,7 @@ process.stdout.write(
         whatChanged: section(populated, "cc-section-what-changed"),
         inProgress: section(populated, "cc-section-in-progress"),
         monitoring: section(populated, "cc-section-monitoring"),
-        askPmfreak: section(populated, "cc-section-ask-pmfreak"),
+        projectBrain: section(populated, "cc-section-project-brain"),
         header: section(populated, "cc-project-header"),
       },
       askPanel: {
@@ -812,7 +812,7 @@ process.stdout.write(
         expanded: askPanelShape(true),
       },
       chatExpanded: {
-        askPmfreak: section(chatExpanded, "cc-section-ask-pmfreak"),
+        projectBrain: section(chatExpanded, "cc-section-project-brain"),
         order: sectionOrder(chatExpanded),
       },
       emptyAttention: {

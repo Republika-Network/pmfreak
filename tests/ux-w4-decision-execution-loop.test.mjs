@@ -975,7 +975,8 @@ test("the human phase is never persisted or sent to a write path", () => {
 test("W3's frozen contracts survive: attention stays the primary surface", () => {
   const canvas = read("src/modules/workspace/presentation/command-center/command-center-canvas.tsx");
   assert.match(canvas, /data-primary-surface="NEEDS_YOU"/);
-  assert.match(canvas, /data-chat-role="COPILOT"/);
+  // PB-CHAT-01: the conversation became Project Brain; attention is still the primary surface.
+  assert.match(canvas, /data-chat-role="PROJECT_BRAIN"/);
   // Needs You is still first in the document, ahead of In Progress.
   assert.ok(
     canvas.indexOf("<NeedsYouQueue") < canvas.indexOf("<ExecutionQueue"),

@@ -232,7 +232,7 @@ test("project creation lands in the command center scoped to the new project", (
   assert.ok(wizard.includes("router.push(`/command-center?projectId=${result.projectId}"));
 });
 
-test("project overview exposes chat as one tab among many", () => {
+test("project tab strip: the conversation lives in the Project Command Center, not a Chat tab (PB-CHAT-01)", () => {
   // The strip moved to src/components/pmfreak/projects/ with the canonical
   // Project Home slice: it is now rendered by canonical Project Home
   // (/workspaces/[workspaceId]/projects/[projectId]) as well as by legacy Project
@@ -240,6 +240,7 @@ test("project overview exposes chat as one tab among many", () => {
   // is what this test is about, and that is unchanged.
   const tabNav = fs.readFileSync("src/components/pmfreak/projects/project-tab-nav.tsx", "utf8");
   assert.ok(tabNav.includes('{ label: "Overview"'));
-  assert.ok(tabNav.includes('{ label: "Chat"'));
+  assert.ok(!tabNav.includes('{ label: "Chat"'), "no second project chat is advertised");
+  assert.ok(tabNav.includes('label: "Project Command Center"'));
   assert.ok(tabNav.includes("Settings"));
 });

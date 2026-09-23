@@ -10,7 +10,7 @@ import { NeedsYouQueue } from "./needs-you-queue";
 import { WhatChangedPanel } from "./what-changed-panel";
 import { ExecutionQueue } from "./execution-queue";
 import { MonitoringPanel } from "./monitoring-panel";
-import { AskPmfreakPanel } from "./ask-pmfreak-panel";
+import { ProjectBrainPanel } from "./project-brain-panel";
 
 /**
  * The attention-first Command Center composition.
@@ -23,7 +23,7 @@ import { AskPmfreakPanel } from "./ask-pmfreak-panel";
  * DOM order is the semantic order, and it is the mobile order:
  *
  *   1. project context / health   2. needs your attention   3. what changed
- *   4. in progress                5. PMFreak is monitoring  6. ask PMFreak
+ *   4. in progress                5. PMFreak is monitoring  6. Project Brain
  *
  * On a wide viewport the same nodes are placed into two columns — attention and what
  * changed on the left, in progress and monitoring in the right rail, the conversation
@@ -31,7 +31,8 @@ import { AskPmfreakPanel } from "./ask-pmfreak-panel";
  * one tree, so a small screen cannot end up with a different priority than a large one,
  * and no attention content is reachable only through an overlay.
  *
- * Chat is present, one click from every screen, and never the canvas.
+ * Project Brain (PB-CHAT-01) is the project's one persisted conversation: open by
+ * default and first-class, but it never displaces attention as the canvas.
  */
 export function CommandCenterCanvas({
   project,
@@ -135,7 +136,7 @@ export function CommandCenterCanvas({
       className="flex min-h-0 min-w-0 flex-1 flex-col"
       data-testid="command-center-canvas"
       data-primary-surface="NEEDS_YOU"
-      data-chat-role="COPILOT"
+      data-chat-role="PROJECT_BRAIN"
     >
       <ProjectTopBar
         project={project}
@@ -204,11 +205,11 @@ export function CommandCenterCanvas({
             />
           </div>
 
-          {/* 6 — the copilot. Last, across both columns. */}
+          {/* 6 — Project Brain. Across both columns, open by default. */}
           <div className="min-w-0 xl:col-span-2 xl:col-start-1 xl:row-start-3">
-            <AskPmfreakPanel open={chatOpen} onToggle={onToggleChat} messageCount={chatMessageCount}>
+            <ProjectBrainPanel open={chatOpen} onToggle={onToggleChat} messageCount={chatMessageCount}>
               {chat}
-            </AskPmfreakPanel>
+            </ProjectBrainPanel>
           </div>
         </div>
 

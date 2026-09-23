@@ -73,7 +73,9 @@ test("command center hydration", () => {
   assert.match(commandCenterPage, /loadLatestOperationalGovernanceBrief/);
   assert.match(commandCenterPage, /initialBrief=\{initialBrief\}/);
   assert.match(commandCenterClient, /initialBrief\?: OperationalGovernanceBrief \| null/);
-  assert.match(commandCenterLayout, /I can help you review changes, spot risks, prepare updates, create tasks, or generate a project brief\./);
+  // PB-CHAT-01: the client-seeded welcome bubble (which claimed it could "create tasks") is
+  // gone — the conversation is the persisted Project Brain transcript, never seeded copy.
+  assert.doesNotMatch(commandCenterLayout, /I can help you review changes, spot risks, prepare updates, create tasks/);
   assert.match(commandCenterLayout, /deriveNeedsYou/);
 });
 
