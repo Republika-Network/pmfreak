@@ -79,7 +79,8 @@ test("project settings only sends pmoId in the PATCH body when the user actually
 
 test("listMessages fetches the newest N messages (descending + limit) then restores chronological order, rather than limiting an ascending query", () => {
   const fn = contextChatService.slice(contextChatService.indexOf("export async function listMessages"));
-  assert.ok(/order\("created_at", \{ ascending: false \}\)/.test(fn), "must order descending before applying limit to take the most recent rows");
+  // PB-CHAT-01: ordered by the insertion sequence (stable under timestamp ties), still descending.
+  assert.ok(/order\("message_seq", \{ ascending: false \}\)/.test(fn), "must order descending before applying limit to take the most recent rows");
   assert.ok(/\.reverse\(\)/.test(fn), "must reverse the descending page back into chronological order for callers");
 });
 

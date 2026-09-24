@@ -48,7 +48,12 @@ export type GovernanceAction =
   | "ai.manage"
   | "workspace.manage"
   | "executive.view"
-  | "privileged.use";
+  | "privileged.use"
+  // PB-CHAT-01: interactive, read-only Project Brain conversation. Deliberately
+  // NOT a flavour of "ai.execute": it authorizes conversational inference over
+  // one project's records and nothing else — no project write, no tool, no
+  // Evidence or operational mutation.
+  | "project_brain.converse";
 
 // PMFreak governance decision outcomes. "require_*_approval" values route into
 // governance_approval_requests; these strings are persisted.

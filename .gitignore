@@ -63,6 +63,8 @@ uploads/
 /artifacts/p2-16/
 # P2-17 PMO attention browser screenshots (tests/e2e/p2-17-pmo-attention.spec.ts).
 /artifacts/p2-17/
+# PB-CHAT-01 Project Brain browser screenshots (tests/e2e/pb-chat-01-project-brain.spec.ts).
+/artifacts/pb-chat-01/
 /test-results/
 /playwright-report/
 /.playwright/

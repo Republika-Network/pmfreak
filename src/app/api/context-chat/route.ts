@@ -41,7 +41,7 @@ function handleAccessError(error: unknown) {
 async function resolveAndAuthorizeScope(
   input: { contextType?: unknown; pmoId?: unknown; projectId?: unknown },
   userId: string
-): Promise<{ scope: ContextScope } | { error: "workspace_missing" | "invalid_scope" } | { denied: NextResponse }> {
+): Promise<{ scope: ContextScope } | { error: "workspace_missing" | "invalid_scope" } | { denied: NextResponse } | { retired: NextResponse }> {
   const contextType = typeof input.contextType === "string" ? input.contextType : null;
 
   if (contextType === "workspace") {
@@ -66,7 +66,16 @@ async function resolveAndAuthorizeScope(
     const workspaceId = await getProjectWorkspaceId(projectId);
     if (!workspaceId) return { denied: NextResponse.json({ error: "Project not found." }, { status: 404 }) };
     await requireProjectAccess(projectId, "read");
-    return { scope: { type: "project", workspaceId, projectId } };
+    // PB-CHAT-01: the project conversation is the Project Brain, served by
+    // /api/projects/[id]/brain/turns. This deterministic path no longer reads or
+    // writes project threads (and the database now refuses member-authored
+    // replies in them), so it answers 410 with the canonical location instead.
+    return {
+      retired: NextResponse.json(
+        { error: "Project chat moved to Project Brain.", canonical: `/api/projects/${encodeURIComponent(projectId)}/brain/turns` },
+        { status: 410 },
+      ),
+    };
   }
 
   return { error: "invalid_scope" };
@@ -85,6 +94,7 @@ export async function GET(request: Request) {
       user.id
     );
     if ("denied" in resolved) return resolved.denied;
+    if ("retired" in resolved) return resolved.retired;
     if ("error" in resolved) {
       return NextResponse.json({ error: resolved.error === "workspace_missing" ? "Workspace context required." : "Invalid context scope." }, { status: 400 });
     }
@@ -116,6 +126,7 @@ export async function POST(request: Request) {
 
     const resolved = await resolveAndAuthorizeScope(body, user.id);
     if ("denied" in resolved) return resolved.denied;
+    if ("retired" in resolved) return resolved.retired;
     if ("error" in resolved) {
       return NextResponse.json({ error: resolved.error === "workspace_missing" ? "Workspace context required." : "Invalid context scope." }, { status: 400 });
     }

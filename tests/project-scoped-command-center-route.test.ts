@@ -1084,7 +1084,8 @@ test("the Project tab strip gains exactly one canonical entry, built by the help
     tabNav,
     /\{ label: "Project Command Center", href: projectCommandCenterPath\(workspaceId, projectId\), key: "command-center" \}/,
   );
-  assert.match(tabNav, /active: "overview" \| "command-center" \| "chat" \| "settings"/);
+  // PB-CHAT-01 removed the Chat tab: the conversation is Project Brain inside this Command Center.
+  assert.match(tabNav, /active: "overview" \| "command-center" \| "settings"/);
   // One entry, not two, and no hand-typed path anywhere in the strip.
   assert.equal(tabNav.match(/projectCommandCenterPath\(/g)?.length, 1);
   assert.doesNotMatch(withoutComments(tabNav), /["'`]\/workspaces\/[^"'`]*\/projects\//);

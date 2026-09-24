@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { OperationalSummary } from "@/lib/operational-flow/types";
-import type { Agent, ChatMessage, DrawerContent, MemoryItem, NeedsYouItem, ProjectListItem, RepositoryItem } from "../../presentation/command-center/types";
+import type { Agent, DrawerContent, MemoryItem, NeedsYouItem, ProjectListItem, RepositoryItem } from "../../presentation/command-center/types";
 import {
   deriveAgents,
   deriveAllGovernedAttention,
@@ -31,20 +31,15 @@ import type { ExecutionOperation, GovernedExecutionChain } from "../../presentat
 import { deriveWhatChanged } from "../../presentation/command-center/change-read-model";
 import { deriveLastUpdatedLabel } from "../../presentation/command-center/activity-read-model";
 import { assessAttentionCompleteness } from "../../presentation/command-center/attention-completeness";
-import { chatMessagesToConversationTurns, conversationResultToAssistantMessage, postConversationMessage } from "../../presentation/command-center/conversation-data";
 import { ProjectSidebar } from "../../presentation/command-center/project-sidebar";
 import { CommandCenterCanvas } from "../../presentation/command-center/command-center-canvas";
-import { CommandFeed } from "../../presentation/command-center/command-feed";
+import { ProjectBrainConversation } from "@/components/pmfreak/project-brain/project-brain-conversation";
 import { AgentDock } from "../../presentation/command-center/agent-dock";
 import { DetailDrawer } from "../../presentation/command-center/detail-drawer";
 import { VaultIntakePanel } from "../../presentation/command-center/vault-intake-panel";
 import { CloseIcon } from "../../presentation/command-center/icons";
 import { WorkspaceOnboardingPanel } from "@/components/pmfreak/onboarding/workspace-onboarding-panel";
 import { ScheduleExposurePanel } from "@/components/pmfreak/schedule-exposure/schedule-exposure-panel";
-
-function nextId(prefix: string) {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
 
 /** Default "remind me later" horizon for deferring a RAID-derived suggested action. */
 function deferralDate(): string {
@@ -62,30 +57,6 @@ function deriveMemory(data: OperationalSummary | undefined): MemoryItem[] {
     risks > 0 ? { id: "risks", label: `Risks · ${risks}` } : null,
     commitments > 0 ? { id: "commitments", label: `Commitments · ${commitments}` } : null,
   ].filter(Boolean) as MemoryItem[];
-}
-
-function buildRealMessages(project: ProjectListItem, needsYou: NeedsYouItem[]): ChatMessage[] {
-  const welcome: ChatMessage = {
-    id: "welcome",
-    role: "assistant",
-    content: `${project.fullName} is ready. I can help you review changes, spot risks, prepare updates, create tasks, or generate a project brief.`,
-  };
-  const topItems = needsYou.slice(0, 3).map((item) => item.title);
-  if (topItems.length === 0) {
-    return [welcome];
-  }
-  return [
-    welcome,
-    {
-      id: "summary",
-      role: "assistant",
-      content:
-        topItems.length === 1
-          ? "One thing needs your attention right now."
-          : `${topItems.length} things need your attention right now.`,
-      structuredList: topItems,
-    },
-  ];
 }
 
 function MobileOverlay({ open, onClose, side, children }: { open: boolean; onClose: () => void; side: "left" | "right"; children: React.ReactNode }) {
@@ -151,30 +122,15 @@ export function CommandCenterLayout({
   // a pending read, so it must not read as one.
   const raidLoading = Boolean(selectedProject?.id) && raidActions === undefined && !raidError;
 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [userInteracted, setUserInteracted] = useState(false);
-  // Tracks whether the chat has been seeded from the first real operational-flow load for this
-  // mount (a fresh mount — and fresh seeding — happens automatically whenever the active project
-  // changes, since the page keys CommandCenterClient by projectId).
-  const [seededFromFlowData, setSeededFromFlowData] = useState<typeof flowData>(undefined);
+  /** PB-CHAT-01: how many persisted Project Brain messages the active project's thread
+   *  holds, reported by the conversation itself so a collapsed panel can say so. The
+   *  transcript lives on the server (context_messages), not in this screen. */
+  const [chatMessageCount, setChatMessageCount] = useState(0);
+  /** Confirmation of a completed notes intake. Shown as a notice, never injected into the
+   *  Project Brain transcript as if the Brain had said it. */
+  const [intakeNotice, setIntakeNotice] = useState<string | null>(null);
 
-  if (!userInteracted && seededFromFlowData === undefined && flowData !== undefined && selectedProject) {
-    setSeededFromFlowData(flowData);
-    if (hasRealData) {
-      setMessages(buildRealMessages(selectedProject, deriveNeedsYou(flowData, async () => {})));
-    } else {
-      // Honest first message: no invented findings, no fake sources — just the real state.
-      setMessages([
-        {
-          id: "welcome",
-          role: "assistant",
-          content: `${selectedProject.fullName} has no recorded project data yet. Add your first notes and I'll start tracking risks, commitments, and decisions from them.`,
-        },
-      ]);
-    }
-  }
-
-  // Ad-hoc drawers (chat sources, agent cards) are content snapshots. Canonical attention items
+  // Ad-hoc drawers (agent cards, top-bar sources) are content snapshots. Canonical attention items
   // are addressed by their stable id instead, so an open drawer always re-reads the freshest
   // persisted state — that is what reconciles it when a decision lands or another actor decides.
   const [drawerContent, setDrawerContent] = useState<DrawerContent | null>(null);
@@ -214,10 +170,10 @@ export function CommandCenterLayout({
   const [projectionFloor, setProjectionFloor] = useState<number>(() => Date.now());
   const [leftOpen, setLeftOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
-  /** Chat is the copilot layer: present on every screen, expanded only on demand. The
-   *  transcript lives in `messages` above and survives collapsing — this flag governs
-   *  visibility, never conversation state. */
-  const [chatOpen, setChatOpen] = useState(false);
+  /** PB-CHAT-01: Project Brain is open by default — the conversation is first-class, not
+   *  hidden behind a click. Collapsing governs visibility only; the thread is persisted
+   *  and the conversation component stays mounted either way. */
+  const [chatOpen, setChatOpen] = useState(true);
 
   /** Records a canonical Decision. Rejects on failure so the drawer keeps the rationale, stays
    *  open and shows the error — never an optimistic success. The status posted is a canonical
@@ -367,45 +323,6 @@ export function CommandCenterLayout({
     ? `PMFreak is still monitoring ${monitoring.areas.map((area) => area.label.toLowerCase()).join(", ")}.`
     : null;
 
-  const handleSendMessage = (text: string) => {
-    setUserInteracted(true);
-    setChatOpen(true);
-    const userMessage: ChatMessage = { id: nextId("user"), role: "user", content: text };
-    let historyForGateway: ChatMessage[] = [];
-    setMessages((current) => {
-      const next = [...current, userMessage];
-      historyForGateway = next;
-      return next;
-    });
-
-    void postConversationMessage({
-      message: text,
-      workspaceId,
-      activeProjectId: selectedProject?.id,
-      activeProjectName: selectedProject?.fullName,
-      conversationHistory: chatMessagesToConversationTurns(historyForGateway),
-    })
-      .then((result) => {
-        setMessages((current) => [...current, conversationResultToAssistantMessage(nextId("assistant"), result)]);
-      })
-      .catch(() => {
-        setMessages((current) => [
-          ...current,
-          {
-            id: nextId("assistant"),
-            role: "assistant",
-            content: "Sorry — I couldn't process that just now. Please try again in a moment.",
-          },
-        ]);
-      });
-  };
-
-  // Suggested-action chips post the action through the real gateway — no faked
-  // "starting on..." confirmation for work nothing is actually doing.
-  const handleActionClick = (action: string) => {
-    handleSendMessage(action);
-  };
-
   /**
    * One drawer at a time.
    *
@@ -424,15 +341,6 @@ export function CommandCenterLayout({
     setOpenAttentionId(next.attentionId ?? null);
     setDrawerContent(next.content ?? null);
     setFollowDecidedRecommendationId(next.followRecommendationId ?? null);
-  };
-
-  const handleSourceClick = (source: string) => {
-    selectDrawer({ content: {
-      title: source,
-      why: "This source was used to help answer your question.",
-      evidence: [source],
-      nextStep: "Open the source to see the full context.",
-    } });
   };
 
   const handleTopBarSourceClick = (source: RepositoryItem) => {
@@ -574,8 +482,7 @@ export function CommandCenterLayout({
         : drawerContent;
 
   const handleIntakeComplete = (summary: string) => {
-    setUserInteracted(true);
-    setMessages((current) => [...current, { id: nextId("assistant"), role: "assistant", content: summary }]);
+    setIntakeNotice(summary);
     void mutateFlow();
     void mutateRaidActions();
     onEvidenceAdded?.();
@@ -605,8 +512,8 @@ export function CommandCenterLayout({
         {/*
          * The attention-first canvas IS the main region. Everything a PM opens this screen
          * to know — what needs them, what changed, what is under way, what is being watched
-         * — is in the document itself, in that order, on every viewport. The conversation
-         * is the last section, collapsed until asked for.
+         * — is in the document itself, in that order, on every viewport. Project Brain,
+         * the project's one persisted conversation, follows them, open by default.
          */}
         <main className="flex min-w-0 flex-1 flex-col">
           <CommandCenterCanvas
@@ -662,14 +569,13 @@ export function CommandCenterLayout({
             }
             chatOpen={chatOpen}
             onToggleChat={setChatOpen}
-            chatMessageCount={messages.length}
+            chatMessageCount={chatMessageCount}
             chat={
-              <CommandFeed
-                messages={messages}
-                onSendMessage={handleSendMessage}
-                onSourceClick={handleSourceClick}
-                onActionClick={handleActionClick}
-                onOpenNotes={() => setNotesOpen((v) => !v)}
+              <ProjectBrainConversation
+                key={selectedProject.id}
+                projectId={selectedProject.id}
+                projectName={selectedProject.fullName}
+                onTranscriptSizeChange={setChatMessageCount}
               />
             }
             activityLoading={flowLoading}
@@ -683,6 +589,13 @@ export function CommandCenterLayout({
                     onClose={() => setNotesOpen(false)}
                     onIntakeComplete={handleIntakeComplete}
                   />
+                </div>
+              ) : intakeNotice ? (
+                <div className="flex items-start justify-between gap-3 border-b border-white/10 px-4 py-3 text-xs text-zinc-300" role="status">
+                  <span>{intakeNotice}</span>
+                  <button type="button" onClick={() => setIntakeNotice(null)} className="text-zinc-500 hover:text-zinc-300">
+                    Dismiss
+                  </button>
                 </div>
               ) : null
             }

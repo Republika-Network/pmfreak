@@ -224,7 +224,14 @@ export type ContextMessageRow = {
   metadata: Record<string, unknown> | null; // jsonb
   created_by_user_id: string | null; // uuid references auth.users
   created_at: string;                // timestamptz
+  // PB-CHAT-01 (20260915000000_pb_chat_01_project_brain_conversation.sql)
+  message_seq: number;               // bigint not null — transcript order
+  client_message_id: string | null;  // uuid — user-turn idempotency id
+  reply_to_message_id: string | null; // uuid references context_messages — the user turn an assistant reply answers
+  brain_mode: ContextMessageBrainMode | null; // text — Project Brain reply mode
 };
+
+export type ContextMessageBrainMode = "generative" | "degraded";
 
 export const CONTEXT_MESSAGE_SELECTABLE_COLUMNS = [
   "id",
@@ -235,6 +242,10 @@ export const CONTEXT_MESSAGE_SELECTABLE_COLUMNS = [
   "metadata",
   "created_by_user_id",
   "created_at",
+  "message_seq",
+  "client_message_id",
+  "reply_to_message_id",
+  "brain_mode",
 ] as const satisfies ReadonlyArray<keyof ContextMessageRow>;
 
 // ─────────────────────────────────────────────────────────────────────────────

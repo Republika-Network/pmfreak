@@ -351,12 +351,26 @@ test("P2-12 H5: P2-12 introduced no migration and no new API route, and no LATER
   // acceptance in scripts/check-p2-07-db.mjs and scripts/check-p2-08-db.mjs, which record a
   // revocation timestamped OLDER than the authorization it revokes and prove it still wins.
   //
+  // PB-CHAT-01 ships exactly one: the Project Brain transcript hardening of the EXISTING
+  // `context_conversations` / `context_messages` tables. It adds four columns
+  // (message_seq, client_message_id, reply_to_message_id, brain_mode), their shape
+  // constraints and unique indexes, a same-conversation reply-target trigger and a
+  // database-assigned transcript-order trigger; it backfills `message_seq` for historical
+  // rows by a window-function rank over (created_at, id); and it replaces the members'
+  // FOR ALL policies with INSERT-only ones (UPDATE/DELETE revoked, member-authored
+  // assistant rows refused in project threads). No existing column, row content or
+  // table is dropped; no P2-12 canonical table (execution, outcome, decision, action) is
+  // touched. It was independently reviewed (PR #625 pre-merge review and remediation) and
+  // carries its own acceptance in scripts/check-pb-chat-01-db.mjs and
+  // tests/pb-chat-01-project-brain-conversation.test.ts.
+  //
   // Exact full paths only: no wildcard, no timestamp prefix, no directory grant. Anything
   // not named here still fails this assertion, which is the protection P2-12 actually needs.
   const REVIEWED_LATER_MIGRATIONS = new Set([
     "supabase/migrations/20260907000000_p2_14_intake_source_classification_hardening.sql",
     "supabase/migrations/20260908000000_p2_02_attention_membership_snapshot.sql",
     "supabase/migrations/20260912000000_material_action_terminal_revocation.sql",
+    "supabase/migrations/20260915000000_pb_chat_01_project_brain_conversation.sql",
   ]);
   const unreviewedMigrations = changed
     .filter((file) => file.startsWith("supabase/migrations/"))
@@ -367,7 +381,22 @@ test("P2-12 H5: P2-12 introduced no migration and no new API route, and no LATER
   // `createdAt`/`evaluationTime`/`expiresAt` from the operational-flow handler so a
   // browser clock could no longer define a governance window. That is a removal of client
   // authority at an existing boundary, not new API surface.
-  assert.deepEqual(added.filter((file) => /^src\/app\/api\/.*route\.ts$/.test(file)), []);
+  //
+  // Like migrations, the base is `merge-base HEAD origin/main`, so a later verified
+  // increment that legitimately adds a route must be NAMED here. PB-CHAT-01 adds exactly
+  // one: `/api/projects/[id]/brain/turns`, the persisted Project Brain conversation. It
+  // derives scope from the route (never the body), requires project read access and the
+  // project-scoped `project_brain.converse` governance action, and writes only the
+  // conversation transcript — no P2-12 execution, outcome, decision or action state. It
+  // was independently reviewed (PR #625) and carries its own acceptance in
+  // tests/pb-chat-01-project-brain-conversation.test.ts and
+  // tests/e2e/pb-chat-01-project-brain.spec.ts. Exact path only.
+  const REVIEWED_ADDED_ROUTES = new Set(["src/app/api/projects/[id]/brain/turns/route.ts"]);
+  assert.deepEqual(
+    added.filter((file) => /^src\/app\/api\/.*route\.ts$/.test(file)).filter((file) => !REVIEWED_ADDED_ROUTES.has(file)),
+    [],
+    "no UNREVIEWED API route may be added",
+  );
 
   // …and the surface area of the existing routes must not grow WITHOUT REVIEW: no
   // operation branch may appear that a verified increment did not deliberately introduce.
@@ -1232,7 +1261,8 @@ test("P2-12 N4: opening one drawer clears the others", () => {
     const direct = (body.match(new RegExp(`${setter}\\(`, "g")) ?? []).length;
     assert.equal(direct, 0, `${setter} must only be called inside selectDrawer`);
   }
-  for (const handler of ["handleNeedsYouSelect", "handleChainSelect", "handleAgentSelect", "handleSourceClick", "handleTopBarSourceClick", "closeDrawer"]) {
+  // (PB-CHAT-01 removed the chat-source `handleSourceClick` along with the deterministic feed.)
+  for (const handler of ["handleNeedsYouSelect", "handleChainSelect", "handleAgentSelect", "handleTopBarSourceClick", "closeDrawer"]) {
     assert.match(layout, new RegExp(`${handler}[\\s\\S]{0,260}selectDrawer\\(`), `${handler} must route through selectDrawer`);
   }
 });

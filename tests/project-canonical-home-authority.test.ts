@@ -817,8 +817,9 @@ test("24. ProjectTabNav's Overview link is canonical", () => {
   // one it actually read.
   assert.match(tabNav, /workspaceId: string;/);
   assert.match(canonicalHome, /<ProjectTabNav workspaceId=\{workspaceId\}/);
-  assert.match(projectChat, /<ProjectTabNav workspaceId=\{project\.workspace_id\}/);
   assert.match(projectSettings, /<ProjectTabNav workspaceId=\{project\.workspace_id\}/);
+  // PB-CHAT-01: the legacy chat path renders nothing of its own any more — no tab strip.
+  assert.doesNotMatch(projectChat, /<ProjectTabNav/);
 });
 
 test("25. the other Project tabs are NOT falsely canonicalized", () => {
@@ -826,7 +827,6 @@ test("25. the other Project tabs are NOT falsely canonicalized", () => {
   // Every tab other than Overview and the Project Command Center — the two whose
   // canonical screens exist — still points where its screen actually is.
   const expected: [string, string][] = [
-    ["Chat", "`/projects/${projectId}/chat`"],
     ["Execution", "`/command-center?projectId=${projectId}`"],
     ["Timeline", "`/dashboard?projectId=${projectId}`"],
     ["Tasks", "`/follow-up-dashboard?projectId=${projectId}`"],
@@ -838,6 +838,10 @@ test("25. the other Project tabs are NOT falsely canonicalized", () => {
   for (const [label, href] of expected) {
     assert.ok(tabNav.includes(`{ label: "${label}", href: ${href}`), `${label} must keep its shipped destination`);
   }
+  // PB-CHAT-01: no Chat tab. The project conversation is Project Brain inside the Project
+  // Command Center, and a tab to the legacy path would advertise a second chat.
+  assert.doesNotMatch(tabNav, /label: "Chat"/);
+  assert.doesNotMatch(tabNav, /\/projects\/\$\{projectId\}\/chat/);
   // The rest of the ratified map's Project children do not exist, so no tab may
   // claim them. `command-center` is deliberately absent from this list now: its
   // screen ships, and the tab pointing at it is asserted positively in
@@ -856,32 +860,38 @@ test("25. the other Project tabs are NOT falsely canonicalized", () => {
   assert.equal(tabNav.match(/projectHomePath\(/g)?.length, 1);
 });
 
-test("25b. Project Chat, Settings and Follow-up are not migrated by this slice", () => {
-  // §2's ratified Project family contains no `chat`, `settings` or `follow-up`
-  // member, so there is no canonical destination and inventing one would be
-  // inventing architecture. Each still renders its own screen at its own path.
+test("25b. Project Chat is a compatibility redirect; Settings and Follow-up are not migrated", () => {
+  // PB-CHAT-01 unified the project conversation into Project Brain, which lives in the
+  // canonical Project Command Center. The legacy chat path survives only as a redirect
+  // there — through the ONE route builder, with the workspace read from the project row.
   assert.ok(read("src/app/(protected)/projects/[id]/chat/page.tsx").length > 0);
   assert.ok(read("src/app/(protected)/projects/[id]/settings/page.tsx").length > 0);
-  assert.match(projectChat, /<ContextChatPanel/, "Chat still renders its own screen");
-  assert.match(projectChat, /contextType="project"/);
+  assert.doesNotMatch(projectChat, /<ContextChatPanel/, "no second project chat UI");
+  assert.match(projectChat, /redirect\(projectCommandCenterPath\(project\.workspace_id, project\.id\)\)/);
+  assert.match(projectChat, /\.select\("id, workspace_id"\)/);
+  assert.match(projectChat, /notFound\(\)/, "an unreadable project stays a 404, not an existence oracle");
+  // §2's ratified Project family still contains no `settings` or `follow-up` member, so
+  // those keep rendering their own screens at their own paths.
   assert.match(projectSettings, /<ProjectSettingsClient/, "Settings still renders its own screen");
   assert.match(projectSettings, /listPmos\(project\.workspace_id\)/);
   assert.match(projectFollowUp, /<FollowUpDashboardClient projectId=\{id\} \/>/, "Follow-up is untouched");
-  // Neither is a redirect, and neither invented a canonical child path.
   for (const [name, source] of [
     ["chat", projectChat],
     ["settings", projectSettings],
     ["follow-up", projectFollowUp],
   ] as const) {
-    assert.doesNotMatch(source, /redirect\(/, `${name} must still render, not redirect`);
     assert.doesNotMatch(
       source,
       /workspaces\/\$\{[^}]*\}\/projects/,
       `${name} must not hand-build a canonical child path`,
     );
   }
-  // What DID change is only where their Project-Home links point.
-  assert.match(projectChat, /href=\{projectHomePath\(project\.workspace_id, project\.id\)\}/);
+  for (const [name, source] of [
+    ["settings", projectSettings],
+    ["follow-up", projectFollowUp],
+  ] as const) {
+    assert.doesNotMatch(source, /redirect\(/, `${name} must still render, not redirect`);
+  }
   assert.match(projectSettings, /href=\{projectHomePath\(project\.workspace_id, project\.id\)\}/);
 });
 

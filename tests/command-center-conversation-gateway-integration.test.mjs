@@ -3,17 +3,16 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 
 import { runConversationChat } from "../src/lib/command-center/conversation-chat.ts";
-import {
-  chatMessagesToConversationTurns,
-  conversationResultToAssistantMessage,
-} from "../src/modules/workspace/presentation/command-center/conversation-data.ts";
 
 const route = fs.readFileSync("src/app/api/command-center/chat/route.ts", "utf8");
 const layout = fs.readFileSync("src/modules/workspace/screens/command-center/command-center-layout.tsx", "utf8");
-const feed = fs.readFileSync("src/modules/workspace/presentation/command-center/command-feed.tsx", "utf8");
 const types = fs.readFileSync("src/modules/workspace/presentation/command-center/types.ts", "utf8");
 
-// ─── Wiring (static) — the chat UI must go through the gateway, not a mock/rigid path ──────────
+// PB-CHAT-01 retired this deterministic gateway from the customer UI: the Command Center now
+// hosts the persisted Project Brain conversation. The route and the gateway are kept (their
+// behavioral contract is still pinned below); only the UI wiring assertions changed.
+
+// ─── Wiring (static) ────────────────────────────────────────────────────────────────────────────
 
 test("the chat API route calls the Sprint 8 gateway seam, not a mock or LLM path", () => {
   assert.match(route, /runConversationChat/);
@@ -31,22 +30,19 @@ test("the pure chat seam calls runConversationalBrainGateway, not a direct playb
   assert.match(chatSeam, /runConversationalBrainGateway/);
 });
 
-test("command-center-layout no longer hardcodes the legacy canned response", () => {
+test("command-center-layout no longer calls the deterministic gateway (PB-CHAT-01)", () => {
   assert.doesNotMatch(layout, /still learning to answer open-ended questions/);
-  assert.match(layout, /postConversationMessage/);
-  assert.match(layout, /conversationResultToAssistantMessage/);
+  assert.doesNotMatch(layout, /postConversationMessage|conversationResultToAssistantMessage|\/api\/command-center\/chat/);
+  assert.match(layout, /<ProjectBrainConversation/);
+  // The client-side gateway adapter and the feed it rendered are gone.
+  assert.equal(fs.existsSync("src/modules/workspace/presentation/command-center/conversation-data.ts"), false);
+  assert.equal(fs.existsSync("src/modules/workspace/presentation/command-center/command-feed.tsx"), false);
 });
 
-test("ChatMessage type carries gateway metadata for a debug/approval surface", () => {
+test("ChatMessage type still carries gateway metadata for the retained gateway contract", () => {
   assert.match(types, /gatewayMeta/);
   assert.match(types, /requiresApproval: boolean/);
   assert.match(types, /missingContext: string\[\]/);
-});
-
-test("the assistant bubble renders an approval indicator and a dev-only debug panel", () => {
-  assert.match(feed, /requiresApproval/);
-  assert.match(feed, /Requires your approval/);
-  assert.match(feed, /process\.env\.NODE_ENV !== "production"/);
 });
 
 // ─── Behavioral — open-ended messages must never hit the unsupported/insufficient-context path ─
@@ -98,42 +94,4 @@ test("conversation history is forwarded and bounded to the most recent turns", (
   const longHistory = Array.from({ length: 20 }, (_, i) => ({ role: i % 2 === 0 ? "user" : "assistant", message: `turn ${i}` }));
   const result = runConversationChat({ message: "¿Qué recomiendas?", conversationHistory: longHistory });
   assert.equal(result.route, "recommendation_handler");
-});
-
-// ─── Client-side mapping helpers ────────────────────────────────────────────────────────────────
-
-test("chatMessagesToConversationTurns maps role/content and bounds history length", () => {
-  const messages = Array.from({ length: 5 }, (_, i) => ({ id: `${i}`, role: i % 2 === 0 ? "user" : "assistant", content: `msg ${i}` }));
-  const turns = chatMessagesToConversationTurns(messages, 3);
-  assert.equal(turns.length, 3);
-  assert.deepEqual(turns[0], { role: messages[2].role, message: "msg 2" });
-});
-
-test("conversationResultToAssistantMessage preserves the full gateway result as metadata", () => {
-  const gatewayResult = {
-    intent: "communication_draft",
-    route: "communications_handler",
-    mode: "draft",
-    response: "Borrador listo.",
-    summary: "Borrador listo.",
-    recommendedNextSteps: ["Revisa el borrador."],
-    missingContext: ["stakeholder"],
-    confidence: 70,
-    requiresApproval: true,
-    auditRelevant: true,
-    diagnostics: { intentSignals: [], routingReason: "test", contextConfidence: 60 },
-  };
-  const message = conversationResultToAssistantMessage("assistant-1", gatewayResult);
-  assert.equal(message.role, "assistant");
-  assert.equal(message.content, "Borrador listo.");
-  assert.deepEqual(message.gatewayMeta, {
-    intent: "communication_draft",
-    route: "communications_handler",
-    mode: "draft",
-    confidence: 70,
-    requiresApproval: true,
-    auditRelevant: true,
-    missingContext: ["stakeholder"],
-    recommendedNextSteps: ["Revisa el borrador."],
-  });
 });

@@ -3,7 +3,9 @@
  *
  * Verified surface classification (per the independent review errata and
  * re-verified at HEAD in this sprint):
- *   - Command Center chat  → deterministic rule-based gateway (no LLM)
+ *   - Command Center chat  → Project Brain (PB-CHAT-01): REAL LLM inference when the
+ *                            provider is healthy, explicit "limited mode" otherwise.
+ *                            The old deterministic gateway route remains, UI-less.
  *   - First Insight brief  → deterministic engine over onboarding answers
  *   - Onboarding transition → fixed-duration animation (no analysis at all)
  *   - Copilot (/api/copilot) → REAL LLM inference (may claim AI)
@@ -23,11 +25,16 @@ test("command-center chat route remains deterministic (no LLM imports)", () => {
     "chat route now touches LLM inference — update the chat disclosure copy and this test together");
 });
 
-test("command-center chat input discloses the deterministic nature", () => {
-  const src = read("src/modules/workspace/presentation/command-center/command-feed.tsx");
-  assert.ok(src.includes("chat-determinism-disclosure"), "determinism disclosure removed from chat input");
-  assert.ok(/deterministic rules/.test(src), "disclosure copy must say responses are rule-based");
-  assert.ok(!/Ask this project anything/.test(src), "open-ended placeholder implies generative AI");
+test("the Command Center conversation is Project Brain, with honest generative/limited-mode copy (PB-CHAT-01)", () => {
+  // The deterministic feed and its "not generative AI" disclosure were retired with the
+  // feed itself; the surface that replaced it IS generative when the provider is healthy.
+  assert.ok(!existsSync("src/modules/workspace/presentation/command-center/command-feed.tsx"), "the deterministic feed must stay retired");
+  const src = read("src/components/pmfreak/project-brain/project-brain-conversation.tsx");
+  assert.ok(src.includes("project-brain-disclosure"), "Project Brain must disclose what it answers from");
+  assert.ok(/answers from this project/.test(src), "disclosure must say answers come from this project's records");
+  assert.ok(/cannot change the project/.test(src), "disclosure must say the conversation cannot write project state");
+  assert.ok(/limited mode/.test(src), "degraded behaviour must be named, never passed off as a full answer");
+  assert.ok(!/deterministic rules/.test(src), "the retired deterministic disclosure must not be reused on a generative surface");
 });
 
 test("legacy AIActivationTransition component (fabricated 'analyzing' stages) is retired, not merely edited", () => {

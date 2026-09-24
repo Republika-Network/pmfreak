@@ -207,8 +207,9 @@ export type Agent = {
 
 /** Sprint 8 Conversational Brain Gateway diagnostics carried alongside an assistant message.
  * Kept loosely typed (plain strings) rather than importing the Playbook Engine's own unions so
- * this UI-facing type doesn't couple tightly to the domain layer's vocabulary. Only rendered in
- * a dev-only debug panel today — see `command-feed.tsx`. */
+ * this UI-facing type doesn't couple tightly to the domain layer's vocabulary. No customer
+ * surface renders it: PB-CHAT-01 retired the deterministic Command Center feed in favour of the
+ * persisted Project Brain conversation. */
 export type ChatGatewayMeta = {
   intent: string;
   route: string;

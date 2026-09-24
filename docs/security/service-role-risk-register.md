@@ -95,13 +95,14 @@ A usage is **not** legitimate under strict criteria if it reads/writes only the 
 | `src/app/api/v1/delegations/route.ts` | Same `governance_delegations` RLS bug as above. | Same fix: correct the table name in the migration. |
 | `src/lib/workspace-team.ts` | `workspace_memberships` has no RLS enabled. Seat snapshot reads this table without a policy restricting results to workspace members. | Add a SELECT policy on `workspace_memberships` using `is_workspace_member(workspace_id)`. |
 
-### KEEP — strict criteria confirmed (23 files)
+### KEEP — strict criteria confirmed (24 files)
 
 | File | Criterion | Justification |
 |------|-----------|---------------|
 | `src/lib/security/agent-attestation.ts` | L3 | Nonce replay protection IS the security primitive |
 | `src/lib/security/telemetry.ts` | L3 | Audit trail must not be suppressible by the actor being logged |
 | `src/lib/security/governance-runtime.ts` | L1 | `governance_approval_requests` INSERT revoked for authenticated role |
+| `src/lib/project-brain/conversation/assistant-message-writer.ts` | L1 | PB-CHAT-01: assistant-row INSERT into PROJECT conversations denied to authenticated role; replies are written by the system after project-scoped governance |
 | `src/lib/security/trust-domains.ts` | L3 | Trust domain lifecycle IS the security primitive |
 | `src/lib/security/trust-handshakes.ts` | L3 | Handshake protocol IS the trust establishment mechanism |
 | `src/lib/security/trust-coordination.ts` | L3 | Revocation registry IS the security primitive |

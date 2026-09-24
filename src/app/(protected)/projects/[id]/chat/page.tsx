@@ -1,29 +1,27 @@
-import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { requireAuthUser } from "@/lib/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { evaluateCapabilityAccess } from "@/lib/security/capability-flow";
-import { ContextChatPanel } from "@/components/pmfreak/chat/context-chat-panel";
-import { ProjectTabNav } from "@/components/pmfreak/projects/project-tab-nav";
-import { projectHomePath } from "@/lib/projects/project-paths";
+import { projectCommandCenterPath } from "@/lib/projects/project-command-center-paths";
 
 export const dynamic = "force-dynamic";
 
 type Props = { params: Promise<{ id: string }> };
 
 /**
- * Project Chat — this project's own isolated conversation. History, memory,
- * and grounding never cross into any other project, PMO, or the workspace.
+ * Legacy Project Chat — now a COMPATIBILITY REDIRECT (PB-CHAT-01).
  *
- * DELIBERATELY NOT MIGRATED BY THIS SLICE.
- * `07-route-layout-and-navigation-architecture.md` §2's ratified Project family
- * has no `chat` member, so there is no canonical `/workspaces/W/projects/P/chat`
- * to move to and no architecture evidence authorizing one; §9 does not classify
- * this path at all. What DID change is where its two Project-Home links point:
- * the breadcrumb and the tab strip now lead to canonical Project Home, which is
- * safe because `projects.workspace_id` is read right here on this page. That is a
- * link correction, not a route migration — this screen still lives at
- * `/projects/[id]/chat` and still renders itself.
+ * This screen used to render its own deterministic `ContextChatPanel`, a second
+ * project chat competing with the Command Center's. PB-CHAT-01 unified both into
+ * ONE persisted Project Brain conversation that lives in the Project Command
+ * Center. Bookmarks and external links to `/projects/[id]/chat` keep working:
+ * they land on the canonical Project Command Center for the same project, whose
+ * Project Brain panel shows the same (preserved) thread.
+ *
+ * The workspace segment comes from the project's OWN row (`projects.workspace_id`,
+ * read with the caller's RLS client) — never from a cookie — and the canonical
+ * route re-authorizes on arrival. An unreadable project is a 404, exactly as
+ * before, so the redirect is not an existence oracle.
  */
 export default async function ProjectChatPage({ params }: Props) {
   await requireAuthUser();
@@ -32,40 +30,12 @@ export default async function ProjectChatPage({ params }: Props) {
 
   const { data: project } = await supabase
     .from("projects")
-    .select("id, workspace_id, name, icon")
+    .select("id, workspace_id")
     .eq("id", id)
-    .maybeSingle();
+    .maybeSingle<{ id: string; workspace_id: string }>();
   if (!project) notFound();
 
   await evaluateCapabilityAccess({ workspaceId: project.workspace_id, projectId: project.id, permission: "read" });
 
-  return (
-    <main className="space-y-5">
-      <header className="rounded-3xl border border-slate-200 bg-white p-6">
-        <p className="text-xs uppercase tracking-[0.24em] text-cyan-800">
-          <Link href={projectHomePath(project.workspace_id, project.id)} className="hover:text-cyan-900">{project.name}</Link> / Chat
-        </p>
-        <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-900">
-          {project.icon ? <span className="mr-2">{project.icon}</span> : null}
-          {project.name} — Chat
-        </h1>
-        <div className="mt-4">
-          <ProjectTabNav workspaceId={project.workspace_id} projectId={project.id} active="chat" />
-        </div>
-      </header>
-
-      <ContextChatPanel
-        contextType="project"
-        projectId={project.id}
-        title="Project Conversation"
-        subtitle="Private to this project. Other projects, PMOs, and the workspace chat can never see or reuse this thread."
-        placeholder="What changed this week? Which risks are open?"
-        suggestions={[
-          "Summarize this project's status",
-          "Which risks are open?",
-          "What is overdue?",
-        ]}
-      />
-    </main>
-  );
+  redirect(projectCommandCenterPath(project.workspace_id, project.id));
 }

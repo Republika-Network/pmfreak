@@ -48,6 +48,19 @@ export const PRIVILEGED_ACCESS_REGISTRY: readonly PrivilegedAccessEntry[] = [
     needsRlsBeforeSwap: false,
   },
   {
+    file: "src/lib/project-brain/conversation/assistant-message-writer.ts",
+    purpose: "PB-CHAT-01 Project Brain reply persistence: the assistant reply to a project conversation turn is written to context_messages by the system on behalf of the requesting actor. INSERT of assistant rows into PROJECT conversations is denied to the authenticated role (20260915000000_pb_chat_01_project_brain_conversation.sql) so a member can never author a reply — with fabricated source citations — that others would read as Project Brain output.",
+    riskLevel: "MEDIUM",
+    mitigations: [
+      "Only called by /api/projects/[id]/brain/turns after authentication, project-derived workspace resolution and the project-scoped project_brain.converse governance check",
+      "Re-proves the target conversation is THIS project's thread in THIS workspace before writing",
+      "Writes exactly one table and one row shape (role=assistant with reply_to_message_id and brain_mode); no project state, Evidence or memory store",
+      "Partial unique index allows at most one reply per (user turn, mode), so replays cannot duplicate replies",
+    ],
+    strictCriteriaMet: "L1",
+    needsRlsBeforeSwap: false,
+  },
+  {
     file: "src/lib/security/trust-domains.ts",
     purpose: "Trust domain and signing key lifecycle management: reads/writes trust domains, signing keys, and verifier policies for the capability claims infrastructure. These tables span tenant boundaries and cannot be governed by single-tenant RLS.",
     riskLevel: "HIGH",
