@@ -47,6 +47,12 @@ Scope comes only from the route: the project id is the path segment and the work
 Bodies carrying `workspaceId`, `projectId` or `attachments` are refused (`400`). An
 unknown project and an inaccessible one are the same `403`.
 
+Both handlers bootstrap the runtime authority themselves (`bootstrapRuntimeConsumer()`,
+idempotent, before the first access check), so the route never depends on another route
+having run first in the same process — the first request a fresh server or serverless
+instance serves works. A bootstrap failure refuses the request; it is never a way around
+authorization (`tests/module-mocks/pb-chat-01-cold-runtime-*.test.mjs`).
+
 ## Governance
 
 `project_brain.converse` (`GOVERNANCE_POLICY_REGISTRY`): project-scoped, `read`
@@ -143,7 +149,9 @@ structured `statements` are the grounded layer: each carries an epistemic label,
 source chips show which project records it cited. Citation validation is an
 **identity/scope** check — the cited alias was supplied in this turn for this project —
 **not** a semantic check that the record supports the claim, and nothing in the product
-says otherwise. The UI labels the prose as AI-written; an answer with no statements is
+says otherwise. Accordingly the FACT badge reads **"Cites project records"**: a source
+reference proves which record was cited (identity/scope), not that the record entails the
+claim. The UI labels the prose as AI-written; an answer with no statements is
 marked as a general answer not linked to project records; and a notice appears whenever a
 citation was rejected or a statement was downgraded or dropped.
 

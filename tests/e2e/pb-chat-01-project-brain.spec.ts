@@ -187,6 +187,11 @@ test("SIT-A: a project status question gets a grounded answer with validated sou
     expect(table === "projects" ? row.id : row.project_id).toBe(t.main.projectA);
   }
   await expect(reply.getByTestId("project-brain-statements")).toBeVisible();
+  // RC-2: a FACT with a valid project source says only that it CITES records — citation
+  // validation checks identity/scope, not that the record proves the claim.
+  const fact = reply.locator('[data-epistemic-type="FACT"]').first();
+  await expect(fact).toContainText("Cites project records");
+  await expect(reply).not.toContainText(/from project records/i);
   await expect(reply.getByTestId("project-brain-synthesis-label")).toBeVisible();
   // The stub cited an invented S999; the server stripped it, and the customer is told.
   await expect(reply.getByTestId("project-brain-grounding-notice")).toContainText("could not be fully linked to project records");
@@ -272,6 +277,7 @@ test("SIT-B: an off-topic question is answered without project sources and write
   await expect(reply.getByTestId("project-brain-statements")).toHaveCount(0);
   // No claims → presented as a general answer, never as source-backed project status.
   await expect(reply.getByTestId("project-brain-conversational-note")).toBeVisible();
+  await expect(reply).not.toContainText("Cites project records");
   await expect(reply.getByTestId("project-brain-grounding-notice")).toHaveCount(0);
   expect(await stateCounts(t.main.workspaceId)).toEqual(baseline);
   await page.reload();

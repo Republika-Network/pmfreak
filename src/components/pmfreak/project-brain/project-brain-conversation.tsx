@@ -70,9 +70,13 @@ const STYLES: Record<Variant, Record<string, string>> = {
   },
 };
 
-/** Customer wording for the epistemic contract — a label, never the ontology. */
+/**
+ * Customer wording for the epistemic contract — a label, never the ontology.
+ * FACT says only what the server checked: the claim CITES valid project records (identity
+ * and scope). It must not suggest the records prove the claim or that it came from them.
+ */
 const EPISTEMIC_BADGE: Record<string, string> = {
-  FACT: "From project records",
+  FACT: "Cites project records",
   REPORTED: "Reported",
   INFERENCE: "Inference",
   ASSUMPTION: "Unverified",

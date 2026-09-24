@@ -1091,6 +1091,10 @@ test("R-F5c: customer copy separates AI synthesis from cited claims and never cl
   assert.match(component, /data-testid="project-brain-grounding-notice"/);
   assert.match(component, /Some generated claims could not be fully linked to project records\./);
   assert.match(component, /a citation is not proof of every sentence/);
+  // RC-2: the FACT badge states only that the claim cites records (identity/scope checked),
+  // never that the claim came from, or is proven by, them.
+  assert.match(component, /FACT: "Cites project records"/);
+  assert.doesNotMatch(component, /from project records/i);
   assert.match(component, /Records cited/);
   // A plan limit offers no pointless "try again".
   assert.match(component, /message\.brain\.reason !== "not_entitled"/);

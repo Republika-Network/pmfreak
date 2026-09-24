@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { AccessDeniedError, enforceRuntimeAuthorization, requireProjectPermission } from "@/aoc/runtime-consumer";
+import { AccessDeniedError, bootstrapRuntimeConsumer, enforceRuntimeAuthorization, requireProjectPermission } from "@/aoc/runtime-consumer";
 import { denyFromAccessError, denyResponse } from "@/lib/security/deny-response";
 import { safeLegacyErrorResponse } from "@/lib/security/safe-route-error";
 import { abuseDenyResponse, enforceAbuseLimit } from "@/lib/security/abuse-protection";
@@ -49,6 +49,11 @@ import {
  * generative Project Brain; any other profile requires the commercial Advanced AI
  * entitlement. An un-entitled turn is still persisted and answered in limited
  * mode, and never reaches the provider. Nothing in the request body can change it.
+ *
+ * Each handler bootstraps the runtime authority itself (`bootstrapRuntimeConsumer`,
+ * idempotent) before its first access check, so the route never depends on another route
+ * having run first in this process. A bootstrap failure is an ordinary route error: the
+ * request is refused, never authorized some other way.
  */
 
 const ROUTE_ID = "/api/projects/[id]/brain/turns";
@@ -100,6 +105,7 @@ function buildStore(scope: Extract<ContextScope, { type: "project" }>, userId: s
 export async function GET(_request: Request, context: RouteContext) {
   const { id: projectId } = await context.params;
   try {
+    bootstrapRuntimeConsumer();
     const resolved = await resolveProject(projectId);
     if ("denied" in resolved) return resolved.denied;
     const scope = { type: "project" as const, workspaceId: resolved.workspaceId, projectId };
@@ -123,6 +129,7 @@ export async function GET(_request: Request, context: RouteContext) {
 export async function POST(request: Request, context: RouteContext) {
   const { id: projectId } = await context.params;
   try {
+    bootstrapRuntimeConsumer();
     const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
     if (!body || typeof body !== "object") return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
 
