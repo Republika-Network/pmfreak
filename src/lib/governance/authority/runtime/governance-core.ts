@@ -26,6 +26,13 @@ export type GovernanceEvaluationInput = { actorType: GovernanceActorType; actorU
 type GovernancePolicy = { requiredPermission: GovernancePermission; minimumRole?: GovernanceActorRole; allowedActorTypes: GovernanceActorType[]; agentCompatible: boolean; denyEventType: GovernanceAuditEventType; riskLevel: GovernanceRiskLevel; projectScoped?: boolean; workspaceScoped?: boolean; requiresSystemContext?: boolean };
 export const GOVERNANCE_POLICY_REGISTRY: Record<GovernanceAction, GovernancePolicy> = {
   "project.read": { requiredPermission: "read", allowedActorTypes: ["user", "ai_agent"], agentCompatible: true, denyEventType: "project_scope_violation", riskLevel: "low", projectScoped: true },
+  // SIT-024 — workspace-scoped read (membership visibility). Resolved only for a
+  // `read` requirement that carries no projectId (resolveGovernanceAction), so a
+  // workspace read can no longer be mis-evaluated as a projectId-less project.read.
+  // Checked by requireGovernancePermission(workspaceId, "read"): the caller must hold
+  // a recognized workspace_memberships role in THIS workspace. Humans only — the
+  // callers are human route guards, and no agent path is widened by it.
+  "workspace.read": { requiredPermission: "read", allowedActorTypes: ["user"], agentCompatible: false, denyEventType: "workspace_scope_violation", riskLevel: "low", workspaceScoped: true },
   "project.write": { requiredPermission: "write", allowedActorTypes: ["user", "ai_agent"], agentCompatible: true, denyEventType: "denied_permission", riskLevel: "medium", projectScoped: true },
   "memory.read": { requiredPermission: "read", allowedActorTypes: ["user", "ai_agent"], agentCompatible: true, denyEventType: "denied_permission", riskLevel: "medium", projectScoped: true },
   "memory.write": { requiredPermission: "write_memory", allowedActorTypes: ["user", "ai_agent"], agentCompatible: true, denyEventType: "denied_permission", riskLevel: "high", projectScoped: true },

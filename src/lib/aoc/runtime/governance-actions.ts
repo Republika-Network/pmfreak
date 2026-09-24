@@ -13,8 +13,9 @@
 import type { GovernanceAction } from "@/lib/governance/authority/runtime";
 import type { Permission } from "@/lib/security/rbac";
 
-// Permission → GovernanceAction.
-// Canonical mapping consumed by access-guards, agent-access, server-authorization, capability-flow.
+// Permission → GovernanceAction, context-free. `read` resolves to the PROJECT-scoped
+// "project.read". Human authorization guards must not index this map directly for a
+// requirement that may lack a projectId — use resolveGovernanceAction below (SIT-024).
 export const PERMISSION_TO_GOVERNANCE_ACTION: Record<Permission, GovernanceAction> = {
   read: "project.read",
   write: "project.write",
@@ -30,6 +31,26 @@ export const PERMISSION_TO_GOVERNANCE_ACTION: Record<Permission, GovernanceActio
   view_executive: "executive.view",
   upload_documents: "document.upload",
 } as const;
+
+export type GovernanceResourceScope = "workspace" | "project";
+
+// Actions that differ at WORKSPACE scope. Only `read` differs today: project.read is
+// projectScoped, so a workspace-only read resolved to it is denied before membership
+// is ever consulted (SIT-024). Every other permission keeps its mapping above.
+const WORKSPACE_SCOPE_ACTION_OVERRIDES: Partial<Record<Permission, GovernanceAction>> = {
+  read: "workspace.read",
+};
+
+/**
+ * Scope-aware Permission → GovernanceAction resolution for human authorization guards.
+ * A permission is not an action: `read` at workspace scope is "workspace.read", at
+ * project scope "project.read". Project scope is never inferred — pass "project" only
+ * when the requirement carries a projectId.
+ */
+export function resolveGovernanceAction(permission: Permission, scope: GovernanceResourceScope): GovernanceAction {
+  if (scope === "workspace") return WORKSPACE_SCOPE_ACTION_OVERRIDES[permission] ?? PERMISSION_TO_GOVERNANCE_ACTION[permission];
+  return PERMISSION_TO_GOVERNANCE_ACTION[permission];
+}
 
 // CapabilityPermission → GovernanceAction.
 // Used by createCapabilityRequest to map capability request types to runtime actions.

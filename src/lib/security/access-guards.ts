@@ -4,7 +4,7 @@ import { logSecurityEvent } from "@/lib/security/telemetry";
 import { type Permission, type WorkspaceRole } from "@/lib/security/rbac";
 import { authorizeRuntimeAction, buildEnterpriseRuntimeRequest } from "@/aoc/runtime-consumer";
 import { AccessDeniedError } from "@/lib/governance/authority/runtime/access-guards-bridge";
-import { PERMISSION_TO_GOVERNANCE_ACTION } from "@/lib/aoc/runtime/governance-actions";
+import { PERMISSION_TO_GOVERNANCE_ACTION, resolveGovernanceAction } from "@/lib/aoc/runtime/governance-actions";
 
 export { AccessDeniedError };
 
@@ -30,7 +30,7 @@ async function authorizeGuard(input: {
   resourceId: string;
   metadata?: Record<string, unknown>;
 }) {
-  const action = GOVERNANCE_ACTION_BY_PERMISSION[input.permission];
+  const action = resolveGovernanceAction(input.permission, input.projectId ? "project" : "workspace");
   const decision = await authorizeRuntimeAction(
     buildEnterpriseRuntimeRequest({
       user: input.user,
@@ -111,6 +111,8 @@ export async function requireGovernancePermission(workspaceId: string, permissio
 
 export async function requireAgentScope(input: { workspaceId: string; agentId: string; permission: Permission; projectId?: string }) {
   const user = await requireAuthenticatedGuardUser({ routeId: "requireAgentScope", workspaceId: input.workspaceId, projectId: input.projectId, permission: input.permission });
+  // Agent path keeps the context-free map: workspace.read is human-only (SIT-024), so an
+  // agent read without a projectId stays denied exactly as before.
   const action = GOVERNANCE_ACTION_BY_PERMISSION[input.permission];
   const decision = await authorizeRuntimeAction(
     buildEnterpriseRuntimeRequest({

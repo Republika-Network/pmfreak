@@ -17,6 +17,8 @@ Net effect: anyone could `curl` a signup request (or use DevTools) with `role=ad
 | **Founder/internal role** | boolean | `isFounderOrInternalUser()` in `src/lib/auth.ts`: internal email domains (`@pmfreak.ai`, `@onchainfest.xyz`) or the `FOUNDER_EMAIL_ALLOWLIST` env var | Early-access founder endpoints, trial-expiry bypass |
 | **Requested role** (signup form input) | n/a | **Does not exist.** The signup form no longer collects a role. | Nothing — the field is gone from the UI and ignored server-side if injected manually. |
 
+Workspace read authorization never consults the display role: the runtime resolves the caller's `workspace_memberships.role` in the access-verification adapter, which normalizes the persisted `pm` → `PM` and `viewer` → `external_stakeholder` (both hold `read`). A display role of "viewer" shown in the UI is therefore unrelated to whether a workspace read is allowed — see [`workspace-read-authorization-boundary.md`](./workspace-read-authorization-boundary.md) (SIT-024).
+
 ## What client input is never trusted
 
 - The signup form (`src/app/signup/page.tsx`) has no role selector.

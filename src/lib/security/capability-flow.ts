@@ -3,7 +3,7 @@ import { type Permission } from "@/lib/security/rbac";
 import { AccessDeniedError, requireWorkspaceRole } from "@/lib/security/access-guards";
 import { requireAuthenticatedUser } from "@/lib/security/server-authorization";
 import { authorizeRuntimeAction, buildEnterpriseRuntimeRequest } from "@/aoc/runtime-consumer";
-import { CAPABILITY_PERMISSION_TO_GOVERNANCE_ACTION, PERMISSION_TO_GOVERNANCE_ACTION } from "@/lib/aoc/runtime/governance-actions";
+import { CAPABILITY_PERMISSION_TO_GOVERNANCE_ACTION, resolveGovernanceAction } from "@/lib/aoc/runtime/governance-actions";
 
 // Named for this flow rather than after the canonical @aoc/protocol contracts:
 // these are narrower PMFreak request/grant vocabularies, not canonical capability
@@ -73,7 +73,7 @@ export async function createCapabilityRequest(input: { workspaceId: string; targ
 // Fails closed: if the runtime is unavailable or denies, access is denied with no local fallback.
 export async function evaluateCapabilityAccess(input: { workspaceId: string; projectId?: string; permission: Permission }) {
   const { user } = await requireAuthenticatedUser();
-  const action = PERMISSION_TO_GOVERNANCE_ACTION[input.permission];
+  const action = resolveGovernanceAction(input.permission, input.projectId ? "project" : "workspace");
   let decision: Awaited<ReturnType<typeof authorizeRuntimeAction>>;
   try {
     decision = await authorizeRuntimeAction(
