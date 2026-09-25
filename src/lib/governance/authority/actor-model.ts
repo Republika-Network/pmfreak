@@ -38,6 +38,11 @@ export type GovernancePermission =
 // GOVERNANCE_POLICY_REGISTRY.
 export type GovernanceAction =
   | "project.read"
+  // SIT-024: read access at WORKSPACE scope (workspace membership visibility). Distinct
+  // from "project.read", which stays project-scoped and requires a projectId. Same
+  // `read` permission — this is a scope, not a new permission — and it grants no
+  // management, write, memory, AI, billing or member authority.
+  | "workspace.read"
   | "project.write"
   | "memory.read"
   | "memory.write"

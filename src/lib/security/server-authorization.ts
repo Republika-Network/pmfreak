@@ -2,7 +2,7 @@ import { getAuthUser, type AuthUserContext } from "@/lib/auth";
 import { AccessDeniedError } from "@/lib/security/access-guards";
 import type { Permission, WorkspaceRole } from "@/lib/security/rbac";
 import { authorizeRuntimeAction, buildEnterpriseRuntimeRequest } from "@/aoc/runtime-consumer";
-import { PERMISSION_TO_GOVERNANCE_ACTION } from "@/lib/aoc/runtime/governance-actions";
+import { resolveGovernanceAction } from "@/lib/aoc/runtime/governance-actions";
 
 export type AuthenticatedContext = { user: AuthUserContext };
 
@@ -48,9 +48,6 @@ export function requireSystemOrWebhookSecret(receivedSecret: string | null | und
 
 export type CapabilityRequirement = { permission: Permission; workspaceId?: string; projectId?: string };
 
-// Canonical mapping lives in governance-actions.ts; use it directly.
-const ACTION_BY_PERMISSION = PERMISSION_TO_GOVERNANCE_ACTION;
-
 export async function evaluateCapability(requirement: CapabilityRequirement) {
   const { user } = await requireAuthenticatedUser();
   const resourceType = requirement.projectId ? "project" : "workspace";
@@ -58,7 +55,9 @@ export async function evaluateCapability(requirement: CapabilityRequirement) {
   const decision = await authorizeRuntimeAction(
     buildEnterpriseRuntimeRequest({
       user,
-      action: ACTION_BY_PERMISSION[requirement.permission],
+      // Scope-aware (SIT-024): a workspace-only `read` is "workspace.read"; with a
+      // projectId it stays the project-scoped "project.read".
+      action: resolveGovernanceAction(requirement.permission, resourceType),
       routeId: "server-authorization.evaluateCapability",
       workspaceId: requirement.workspaceId ?? user.companyId ?? null,
       projectId: requirement.projectId ?? null,
