@@ -20,11 +20,14 @@ import { flattenVisible, treeKeyAction, type TreeNode } from "./context-tree-mod
 export function ContextTreeView({
   nodes,
   onToggle,
+  onRetryBranch,
   onNavigate,
   label = "Workspaces, projects and conversations",
 }: {
   nodes: TreeNode[];
   onToggle: (key: string, open?: boolean) => void;
+  /** Re-requests one workspace's branch after its read failed (F2). */
+  onRetryBranch?: (workspaceId: string) => void;
   /** Called after a link is followed — the mobile drawer closes on it. */
   onNavigate?: () => void;
   label?: string;
@@ -71,6 +74,7 @@ export function ContextTreeView({
           }}
           onFocusItem={setFocusKey}
           onToggle={onToggle}
+          onRetryBranch={onRetryBranch}
           onNavigate={onNavigate}
         />
       ))}
@@ -84,6 +88,7 @@ function TreeRow({
   register,
   onFocusItem,
   onToggle,
+  onRetryBranch,
   onNavigate,
 }: {
   node: TreeNode;
@@ -91,6 +96,7 @@ function TreeRow({
   register: (key: string, element: HTMLElement | null) => void;
   onFocusItem: (key: string) => void;
   onToggle: (key: string, open?: boolean) => void;
+  onRetryBranch?: (workspaceId: string) => void;
   onNavigate?: () => void;
 }) {
   if (node.kind === "notice") {
@@ -113,7 +119,10 @@ function TreeRow({
   const common = {
     role: "treeitem" as const,
     "aria-level": node.level,
-    "aria-selected": node.current || (node.inActivePath && node.kind === "project") ? true : undefined,
+    // F7: a single-select tree exposes exactly ONE selected item — the current page.
+    // Ancestors of it (its workspace, PMO, project) are marked `data-active` and styled,
+    // but are never presented to assistive technology as a second selection.
+    "aria-selected": node.current ? true : undefined,
     tabIndex: node.key === tabStop ? 0 : -1,
     "data-tree-key": node.key,
     "data-tree-kind": node.kind,
@@ -139,10 +148,40 @@ function TreeRow({
   const group = node.children.length > 0 ? (
     <ul role="group" className="space-y-0.5">
       {node.children.map((child) => (
-        <TreeRow key={child.key} node={child} tabStop={tabStop} register={register} onFocusItem={onFocusItem} onToggle={onToggle} onNavigate={onNavigate} />
+        <TreeRow
+          key={child.key}
+          node={child}
+          tabStop={tabStop}
+          register={register}
+          onFocusItem={onFocusItem}
+          onToggle={onToggle}
+          onRetryBranch={onRetryBranch}
+          onNavigate={onNavigate}
+        />
       ))}
     </ul>
   ) : null;
+
+  if (node.kind === "retry") {
+    return (
+      <li role="none">
+        <button
+          type="button"
+          {...common}
+          ref={(element) => register(node.key, element)}
+          onClick={() => node.retryWorkspaceId && onRetryBranch?.(node.retryWorkspaceId)}
+          data-testid="context-tree-retry"
+          className={`${rowClass} font-medium text-cyan-800 hover:text-cyan-900`}
+        >
+          <span aria-hidden className="w-3.5 shrink-0" />
+          <svg aria-hidden viewBox="0 0 16 16" className="h-4 w-4 shrink-0">
+            <path d="M13 8a5 5 0 11-1.5-3.6M13 2.5v3h-3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <span className="min-w-0 flex-1 truncate">{node.label}</span>
+        </button>
+      </li>
+    );
+  }
 
   if (node.expandable) {
     return (

@@ -112,6 +112,7 @@ function treeFor(pathname: string, extraExpanded: string[] = []) {
       expanded: attr("aria-expanded"),
       selected: attr("aria-selected"),
       current: attr("aria-current"),
+      active: attr("data-active"),
       tabIndex: attr("tabindex") ?? attr("tabIndex"),
       href: attr("href"),
     };
@@ -164,6 +165,18 @@ process.stdout.write(
         // A route naming a workspace the caller is not a member of highlights nothing.
         onForeign: treeFor("/workspaces/ws-zzz/projects/p-zzz"),
         withBetaExpandedToo: treeFor("/workspaces/ws-a/projects/p-frontera", ["ws:ws-b", "pmo:pmo-b"]),
+        // F2: workspace B's branch read failed; opening it shows a retry item.
+        withFailedBranch: (() => {
+          const scope = resolveConversationScope("/workspaces/ws-a/projects/p-frontera");
+          const expanded = routeExpandedKeys(scope, WORKSPACES, BRANCHES);
+          expanded.add("ws:ws-b");
+          const nodes = buildContextTree({ workspaces: WORKSPACES, branches: { ...BRANCHES, "ws-b": { status: "error" } }, expanded, scope });
+          const markup = renderToStaticMarkup(<ContextTreeView nodes={nodes} onToggle={() => {}} onRetryBranch={() => {}} />);
+          return {
+            markup,
+            visible: flattenVisible(nodes).map((node) => ({ key: node.key, kind: node.kind, retryWorkspaceId: node.retryWorkspaceId ?? null })),
+          };
+        })(),
       },
       conversation: {
         surface: conversationSurface,

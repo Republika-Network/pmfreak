@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, type ReactNode } from "react";
+import { anotherModalOwnsKeyboard, isPresented } from "./modal-stack";
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -16,6 +17,12 @@ const FOCUSABLE =
  *
  * `className` scopes WHERE it is modal — e.g. `lg:hidden` for the navigator,
  * which is a permanent column from `lg` up and only needs a sheet below it.
+ *
+ * `dismissWhen` (CHAT-SHELL-01 F3) is the media query at which the sheet stops being
+ * needed. CSS alone would only HIDE an open sheet when, say, a tablet rotates into the
+ * desktop layout — leaving its document-level Tab/Escape trap active over content no
+ * one can see. Crossing that breakpoint therefore CLOSES the sheet, and the key handler
+ * independently refuses to act for a sheet that is not presented.
  */
 export function ShellDrawer({
   open,
@@ -24,6 +31,8 @@ export function ShellDrawer({
   label,
   className = "",
   widthClass = "w-[19rem] max-w-[88vw]",
+  dismissWhen,
+  focusFallback,
   children,
 }: {
   open: boolean;
@@ -32,6 +41,14 @@ export function ShellDrawer({
   label: string;
   className?: string;
   widthClass?: string;
+  /** Media query at which the sheet is no longer modal content and must close (e.g. the permanent-nav breakpoint). */
+  dismissWhen?: string;
+  /**
+   * Where focus goes on close when the opener is no longer presented — e.g. after a
+   * breakpoint dismissal hid the ☰ button. Without it, focus would stay parked where the
+   * now-hidden sheet was, and a keyboard user would lose their place in the page.
+   */
+  focusFallback?: () => HTMLElement | null;
   children: ReactNode;
 }) {
   const panel = useRef<HTMLDivElement | null>(null);
@@ -43,13 +60,35 @@ export function ShellDrawer({
     const first = panel.current?.querySelector<HTMLElement>(FOCUSABLE);
     (first ?? panel.current)?.focus();
     return () => {
-      returnFocus.current?.focus?.();
+      const opener = returnFocus.current;
+      if (opener && opener.isConnected && isPresented(opener)) opener.focus();
+      else focusFallback?.()?.focus();
     };
+    // `focusFallback` is read at close time; re-running this effect for a new callback
+    // identity would re-take focus while the sheet is open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  useEffect(() => {
+    if (!open || !dismissWhen || typeof window === "undefined" || !window.matchMedia) return;
+    const query = window.matchMedia(dismissWhen);
+    if (query.matches) {
+      queueMicrotask(onClose);
+      return;
+    }
+    const onChange = () => {
+      if (query.matches) onClose();
+    };
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, [open, dismissWhen, onClose]);
 
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      // A sheet nobody can see owns no keys, and a dialog stacked on top of it owns them first.
+      if (!panel.current || !isPresented(panel.current)) return;
+      if (anotherModalOwnsKeyboard(panel.current)) return;
       if (event.key === "Escape") {
         event.stopPropagation();
         onClose();

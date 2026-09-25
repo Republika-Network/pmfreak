@@ -131,3 +131,19 @@ export function buildWorkspaceBranch(pmos: TreePmo[], projects: TreeProject[]): 
  * to the scope's canonical conversation surface.
  */
 export type ScopeConversation = { key: string; label: string; href: string };
+
+/**
+ * Where the shell's "New project" goes (CHAT-SHELL-01 F1): into the workspace the route
+ * is DISPLAYING, and into the PMO when a PMO surface is open. The ids are the route's
+ * unauthorized hints — `/projects/new` authorizes them before showing the form and the
+ * save action authorizes them again, so a wrong hint yields a refusal, never a project
+ * in some other workspace. Workspace Chat (and any non-family route) names no workspace
+ * in its URL; there the plain path means the preferred workspace, which is exactly the
+ * one Workspace Chat is showing.
+ */
+export function newProjectHref(scope: ConversationScope | null): string {
+  if (!scope || scope.kind === "workspace-chat") return "/projects/new";
+  const params = new URLSearchParams({ workspaceId: scope.workspaceId });
+  if (scope.kind === "pmo") params.set("pmoId", scope.pmoId);
+  return `/projects/new?${params.toString()}`;
+}

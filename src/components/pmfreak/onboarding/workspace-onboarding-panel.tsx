@@ -172,12 +172,23 @@ function StepRow({
 
 export function WorkspaceOnboardingPanel({
   surface = "dashboard",
+  workspaceId,
 }: {
   /** "dashboard" renders compact/dismissible; "setup" always renders expanded. */
   surface?: "dashboard" | "setup";
+  /**
+   * The workspace this panel is about, when the host already authorized one (e.g. the
+   * project conversation's routed workspace — CHAT-SHELL-01 F4). Sent on the read AND on
+   * every preference write; the route re-validates membership for it and never trusts it
+   * as-is. Omitted, the route answers for the preferred workspace, as before.
+   */
+  workspaceId?: string;
 }) {
+  const endpoint = workspaceId
+    ? `/api/workspace-activation?workspaceId=${encodeURIComponent(workspaceId)}`
+    : "/api/workspace-activation";
   const { data, error, isLoading, mutate } = useSWR<ActivationEnvelope>(
-    "/api/workspace-activation",
+    endpoint,
     fetcher,
     { refreshInterval: 30000 },
   );
@@ -189,7 +200,7 @@ export function WorkspaceOnboardingPanel({
   const patchPreferences = async (patch: Record<string, unknown>) => {
     setSaving(true);
     try {
-      await fetch("/api/workspace-activation", {
+      await fetch(endpoint, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patch),

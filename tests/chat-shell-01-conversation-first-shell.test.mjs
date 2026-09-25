@@ -33,6 +33,7 @@ import {
   treeKeyAction,
 } from "../src/components/pmfreak/conversation-shell/context-tree-model.ts";
 import { parseProjectTool, PROJECT_TOOLS } from "../src/components/pmfreak/conversation-shell/operational-tools.ts";
+import { newProjectHref } from "../src/lib/navigation/conversation-shell-scope.ts";
 import { projectBriefIndicators } from "../src/components/pmfreak/conversation-shell/project-brief-indicators.ts";
 import { parseCanonicalProjectRoute, projectHomePath, projectOverviewPath } from "../src/lib/projects/project-paths.ts";
 
@@ -159,8 +160,17 @@ test("the tree is an accessible hierarchy: Workspace → PMO → Project → Con
 
 test("the selected project and its conversation are obvious — and there is one selection", () => {
   const { items } = harness.trees.onFrontera;
+  // F7: a single-select tree exposes exactly ONE selected item — the current page.
   const selected = items.filter((item) => item.selected === "true").map((item) => item.key);
-  assert.deepEqual(selected, ["project:p-frontera", "project:p-frontera:project-brain"]);
+  assert.deepEqual(selected, ["project:p-frontera:project-brain"]);
+  assert.doesNotMatch(harness.trees.onFrontera.markup, /aria-multiselectable/);
+  // Workspace → PMO → Project are the ANCESTRY of that selection: marked, styled, never selected.
+  for (const key of ["ws:ws-a", "pmo:pmo-delivery", "project:p-frontera"]) {
+    const item = items.find((entry) => entry.key === key);
+    assert.equal(item.active, "true", `${key} is on the active path`);
+    assert.equal(item.selected, null, `${key} must not be exposed as a second selection`);
+    assert.equal(item.current, null);
+  }
   const current = items.filter((item) => item.current === "page").map((item) => item.key);
   assert.deepEqual(current, ["project:p-frontera:project-brain"], "the open conversation is the current page");
   // Roving tabindex: exactly one item is in the tab order, and it is the current one.
@@ -171,18 +181,21 @@ test("the selected project and its conversation are obvious — and there is one
   const overview = harness.trees.onFronteraOverview.items;
   assert.deepEqual(overview.filter((item) => item.current === "page").map((item) => item.key), ["project:p-frontera"]);
   assert.equal(overview.find((item) => item.key === "project:p-frontera:project-brain").current, null);
+  assert.deepEqual(overview.filter((item) => item.selected === "true").map((item) => item.key), ["project:p-frontera"]);
 });
 
 test("switching projects moves the selection with the route", () => {
   const onOther = harness.trees.onOther.items;
-  assert.equal(onOther.find((item) => item.key === "project:p-other").selected, "true");
-  assert.equal(onOther.find((item) => item.key === "project:p-frontera").selected, null, "the previous project is no longer selected");
+  assert.equal(onOther.find((item) => item.key === "project:p-other").active, "true");
+  assert.equal(onOther.find((item) => item.key === "project:p-other:project-brain").selected, "true");
+  assert.equal(onOther.find((item) => item.key === "project:p-frontera").active, null, "the previous project is no longer active");
+  assert.deepEqual(onOther.filter((item) => item.selected === "true").map((item) => item.key), ["project:p-other:project-brain"]);
   assert.equal(onOther.some((item) => item.key === "project:p-frontera:project-brain"), false, "its conversation leaf is gone");
   assert.equal(onOther.some((item) => item.key === "project:p-other:project-brain"), true);
   // A direct project (no PMO) is selected directly under its workspace.
   const onDirect = harness.trees.onDirect.items;
   assert.equal(onDirect.find((item) => item.key === "project:p-direct").level, "2");
-  assert.equal(onDirect.find((item) => item.key === "project:p-direct").selected, "true");
+  assert.equal(onDirect.find((item) => item.key === "project:p-direct").active, "true");
 });
 
 test("workspace and PMO conversations appear where the backend supports them — and only there", () => {
@@ -475,7 +488,7 @@ test("mobile: the tree opens from a menu as a modal sheet, and tools open as a s
   const drawer = read("src/components/pmfreak/conversation-shell/shell-drawer.tsx");
   assert.match(drawer, /event\.key === "Escape"/);
   assert.match(drawer, /event\.key !== "Tab"/, "Tab is trapped while open");
-  assert.match(drawer, /returnFocus\.current\?\.focus\?\.\(\)/, "focus returns to the opener");
+  assert.match(drawer, /opener\.focus\(\)/, "focus returns to the opener");
   const view = read(VIEW);
   assert.match(view, /<MenuButton onClick=\{shell\.openNavigation\} \/>/);
   assert.match(view, /md:hidden[\s\S]{0,40}>\s*Tools\s*</);
@@ -505,4 +518,95 @@ test("workspace and PMO chat fill the centre with the same endpoints and the sam
   assert.match(pmoChat, /resolveRoutedPmo\(user\.id, requestedWorkspaceId, requestedPmoId\)/);
   const panel = code("src/components/pmfreak/chat/context-chat-panel.tsx");
   assert.equal((panel.match(/\/api\/context-chat/g) ?? []).length, 2, "the same GET and POST, unchanged");
+});
+
+// ═══ 8. Review remediation (F1–F7) ══════════════════════════════════════════
+
+test("F1: 'New project' carries the displayed workspace; the target is authorized twice and never falls back", () => {
+  assert.equal(newProjectHref(resolveConversationScope("/workspaces/w-b/projects/p1")), "/projects/new?workspaceId=w-b");
+  assert.equal(newProjectHref(resolveConversationScope("/workspaces/w-b/pmos/m1/chat")), "/projects/new?workspaceId=w-b&pmoId=m1");
+  assert.equal(newProjectHref(resolveConversationScope("/workspaces/w-b")), "/projects/new?workspaceId=w-b");
+  assert.equal(newProjectHref(resolveConversationScope("/chat")), "/projects/new", "Workspace Chat IS the preferred workspace");
+  assert.match(code("src/components/pmfreak/conversation-shell/conversation-shell.tsx"), /href=\{newProjectPath\}/);
+  // The page authorizes the claim (or the PMO's own workspace) before showing the form.
+  const page = code("src/app/(protected)/projects/new/page.tsx");
+  assert.match(page, /const claim = requestedWorkspaceId \?\? \(pmoId \? await getPmoWorkspaceId\(pmoId\) : null\);/);
+  assert.match(page, /const access = await resolveRoutedWorkspace\(user\.id, claim\);\s*\n\s*if \(access\.access !== "granted"\)/);
+  assert.match(page, /<CreateProjectWizard pmoId=\{pmoId\} workspaceId=\{targetWorkspaceId \?\? undefined\} \/>/);
+  assert.match(page, /data-testid="create-project-target-workspace"/);
+  // The save action authorizes it AGAIN (a value that reached the browser can come back
+  // altered) and REFUSES rather than falling back to the preferred-workspace cookie.
+  const save = code("src/lib/projects/save-project-onboarding.ts");
+  const explicit = save.slice(save.indexOf("if (opts?.workspaceId)"), save.indexOf("} else {", save.indexOf("if (opts?.workspaceId)")));
+  assert.match(explicit, /const routed = await resolveRoutedWorkspace\(user\.id, opts\.workspaceId\);/);
+  assert.match(explicit, /if \(routed\.access !== "granted"\)[\s\S]*return \{\s*status: "fatal_failure"/);
+  assert.doesNotMatch(explicit, /resolveWriteWorkspace/);
+  assert.match(save, /workspace_id: ensured\.workspaceId/);
+  // After saving, the wizard lands in the workspace the SERVER created the project in.
+  const wizard = code("src/components/pmfreak/projects/create-project-wizard.tsx");
+  assert.match(wizard, /saveProjectOnboarding\(payload, correlationId, \{ pmoId: pmoId \?\? null, workspaceId: workspaceId \?\? null \}\)/);
+  assert.match(wizard, /workspaceCommandCenterPath\(result\.workspaceId, \{/);
+  assert.doesNotMatch(wizard, /router\.push\(`\/command-center\?projectId=/);
+});
+
+test("F2: a failed branch read is recoverable in place, by an explicit action, without a request loop", () => {
+  const { markup, visible } = harness.trees.withFailedBranch;
+  assert.match(markup, /Projects couldn&#x27;t be loaded\./);
+  const retry = visible.find((node) => node.kind === "retry");
+  assert.ok(retry, "a Retry item is offered");
+  assert.equal(retry.retryWorkspaceId, "ws-b");
+  assert.match(markup, /<button type="button" role="treeitem"[^>]*data-tree-kind="retry"[^>]*>/, "keyboard-reachable tree item");
+  const hook = code("src/components/pmfreak/conversation-shell/use-context-tree-data.ts");
+  // Automatic loading still touches only never-loaded branches…
+  assert.match(hook, /expanded\.has\(`ws:\$\{workspace\.id\}`\) && branches\[workspace\.id\] === undefined/);
+  // …and a failed branch is retried only by the Retry item or by reopening it, once per action.
+  assert.match(hook, /if \(branches\[workspaceId\]\?\.status === "loading"\) return;/);
+  assert.match(hook, /if \(willOpen && !isOpen && key\.startsWith\("ws:"\)\)/);
+  assert.match(hook, /if \(branches\[workspaceId\]\?\.status === "error"\) retryBranch\(workspaceId\);/);
+});
+
+test("F3/F5: shell sheets defer to stacked dialogs and never trap keys while not presented", () => {
+  const stack = code("src/components/pmfreak/conversation-shell/modal-stack.ts");
+  assert.match(stack, /document\.querySelectorAll\('\[aria-modal="true"\]'\)/, "generic: any modal dialog, not a list of known children");
+  assert.match(stack, /if \(owner && dialog\.contains\(owner\)\) continue;/);
+  for (const file of ["src/components/pmfreak/conversation-shell/shell-drawer.tsx", "src/components/pmfreak/conversation-shell/operational-inspector.tsx"]) {
+    const source = code(file);
+    assert.match(source, /if \(!panel\.current \|\| !isPresented\(panel\.current\)\) return;/, `${file}: no trap while invisible`);
+    assert.match(source, /if \(anotherModalOwnsKeyboard\(panel\.current\)\) return;/, `${file}: the topmost dialog owns the keys`);
+  }
+  assert.doesNotMatch(code("src/components/pmfreak/conversation-shell/operational-inspector.tsx"), /cc-detail-drawer/, "no hard-coded child");
+  // The navigator sheet closes when the permanent navigator takes over.
+  assert.match(code("src/components/pmfreak/conversation-shell/conversation-shell.tsx"), /className="lg:hidden"\s*\n\s*dismissWhen="\(min-width: 1024px\)"\s*\n\s*focusFallback=\{focusDesktopNavigator\}/);
+  // On close, focus returns to the opener only if it is still presented; otherwise to the
+  // permanent navigator's current item — never left parked in the hidden sheet.
+  assert.match(code("src/components/pmfreak/conversation-shell/shell-drawer.tsx"), /if \(opener && opener\.isConnected && isPresented\(opener\)\) opener\.focus\(\);\s*\n\s*else focusFallback\?\.\(\)\?\.focus\(\);/);
+  assert.match(code("src/components/pmfreak/conversation-shell/shell-drawer.tsx"), /query\.addEventListener\("change", onChange\)/);
+});
+
+test("F4: the Project tool's onboarding panel reads and writes the routed workspace", () => {
+  const view = code(VIEW);
+  assert.match(view, /<ProjectLinksTool links=\{links\} workspaceId=\{workspaceId\} \/>/);
+  assert.match(view, /<WorkspaceOnboardingPanel surface="dashboard" workspaceId=\{workspaceId\} \/>/);
+  const panel = code("src/components/pmfreak/onboarding/workspace-onboarding-panel.tsx");
+  assert.match(panel, /`\/api\/workspace-activation\?workspaceId=\$\{encodeURIComponent\(workspaceId\)\}`/);
+  assert.match(panel, /useSWR<ActivationEnvelope>\(\s*endpoint,/);
+  assert.match(panel, /await fetch\(endpoint, \{\s*method: "PATCH"/);
+  // The route validates membership for a supplied id on BOTH verbs, through RLS.
+  const route = code("src/app/api/workspace-activation/route.ts");
+  assert.equal((route.match(/await resolveMembership\(request, user\.id\)/g) ?? []).length, 2);
+  assert.match(route, /\.from\("workspace_memberships"\)\s*\n\s*\.select\("role"\)\s*\n\s*\.eq\("workspace_id", requestedWorkspaceId\)\s*\n\s*\.eq\("user_id", userId\)/);
+});
+
+test("F6: evidence from the operations inspector regenerates the brief — adopted only from a confirmed success", () => {
+  const view = code(VIEW);
+  assert.match(view, /onEvidenceAdded=\{onEvidenceAdded\}/);
+  assert.match(view, /hasBrief=\{brief\.hasBrief\}/);
+  assert.match(view, /\/operational-governance-brief`, \{\s*method: "POST"/);
+  assert.match(view, /if \(!response\.ok \|\| !payload\?\.brief\) throw new Error\("brief_regeneration_failed"\);/);
+  assert.match(view, /setBrief\(\{ hasBrief: true, indicators: projectBriefIndicators\(payload\.brief\) \}\);/);
+  assert.match(view, /if \(mounted\.current\) setBriefRefresh\("failed"\);/, "a failure never claims success");
+  assert.match(view, /brief\.indicators\.map/);
+  // The inspector still reports evidence after intake and after a RAID suggestion decision.
+  const inspector = code("src/modules/workspace/screens/command-center/command-center-layout.tsx");
+  assert.ok((inspector.match(/onEvidenceAdded\?\.\(\)/g) ?? []).length >= 2);
 });

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useState, type ReactNode } from "react";
-import { resolveConversationScope, type ConversationScope } from "@/lib/navigation/conversation-shell-scope";
+import { newProjectHref, resolveConversationScope, type ConversationScope } from "@/lib/navigation/conversation-shell-scope";
 import { computeCapabilityRevealState, computeNavigationRail } from "@/features/runtime/capability-reveal/capability-reveal-selectors";
 import { NAVIGATION_HIERARCHY } from "@/lib/workspace/navigation-hierarchy";
 import { WORKSPACE_COMMAND_CENTER_LEGACY_PATH } from "@/lib/workspace/command-center-paths";
@@ -62,6 +62,14 @@ export function ConversationShell({
   const openNavigation = useCallback(() => setNavOpen(true), []);
   const closeNavigation = useCallback(() => setNavOpen(false), []);
   const navigation = useMemo(() => ({ openNavigation }), [openNavigation]);
+  // After a breakpoint dismissal the ☰ opener is hidden; the permanent navigator's own
+  // tab stop (the current item) is where the user's place in the page now is.
+  const focusDesktopNavigator = useCallback(
+    () =>
+      document.querySelector<HTMLElement>('[data-testid="conversation-shell-navigator"] [role="treeitem"][tabindex="0"]') ??
+      document.querySelector<HTMLElement>('[data-testid="conversation-shell-navigator"] a[href]'),
+    [],
+  );
   // Conversation pages fill the centre exactly and manage their own regions
   // (transcript scroll, pinned composer); every other page is one padded column
   // that the centre region scrolls.
@@ -90,7 +98,7 @@ export function ConversationShell({
           className="hidden w-[272px] shrink-0 flex-col border-r border-slate-200 bg-[#F6F5F1] lg:flex"
           data-testid="conversation-shell-navigator"
         >
-          <NavigatorPanel user={user} tree={tree} capabilityProfile={capabilityProfile} />
+          <NavigatorPanel user={user} tree={tree} capabilityProfile={capabilityProfile} newProjectPath={newProjectHref(scope)} />
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col">
@@ -110,8 +118,17 @@ export function ConversationShell({
           </main>
         </div>
 
-        <ShellDrawer open={navOpen} onClose={closeNavigation} side="left" label="Navigation" className="lg:hidden">
-          <NavigatorPanel user={user} tree={tree} capabilityProfile={capabilityProfile} onNavigate={closeNavigation} />
+        {/* From `lg` the navigator is a permanent column; an open sheet closes there (F3). */}
+        <ShellDrawer
+          open={navOpen}
+          onClose={closeNavigation}
+          side="left"
+          label="Navigation"
+          className="lg:hidden"
+          dismissWhen="(min-width: 1024px)"
+          focusFallback={focusDesktopNavigator}
+        >
+          <NavigatorPanel user={user} tree={tree} capabilityProfile={capabilityProfile} newProjectPath={newProjectHref(scope)} onNavigate={closeNavigation} />
         </ShellDrawer>
       </div>
     </ShellNavigationContext.Provider>
@@ -146,11 +163,14 @@ function NavigatorPanel({
   user,
   tree,
   capabilityProfile,
+  newProjectPath,
   onNavigate,
 }: {
   user: ShellUser;
   tree: ContextTreeData;
   capabilityProfile: CapabilityProfile;
+  /** Carries the displayed workspace (F1) — see `newProjectHref`. */
+  newProjectPath: string;
   onNavigate?: () => void;
 }) {
   return (
@@ -161,8 +181,9 @@ function NavigatorPanel({
           <span className="truncate text-sm font-semibold tracking-tight text-slate-900">PMFreak</span>
         </Link>
         <Link
-          href="/projects/new"
+          href={newProjectPath}
           onClick={onNavigate}
+          data-testid="shell-new-project"
           className="shrink-0 rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 transition hover:border-slate-300 hover:text-slate-900"
         >
           + New project
@@ -187,7 +208,7 @@ function NavigatorPanel({
             </Link>
           </div>
         ) : (
-          <ContextTreeView nodes={tree.nodes} onToggle={tree.toggle} onNavigate={onNavigate} />
+          <ContextTreeView nodes={tree.nodes} onToggle={tree.toggle} onRetryBranch={tree.retryBranch} onNavigate={onNavigate} />
         )}
       </nav>
 

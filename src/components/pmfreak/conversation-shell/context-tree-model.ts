@@ -26,7 +26,7 @@ export type BranchState =
   | { status: "error" }
   | { status: "ready"; pmos: TreePmo[]; projects: TreeProject[] };
 
-export type TreeNodeKind = "workspace" | "pmo" | "project" | "conversation" | "overview" | "notice";
+export type TreeNodeKind = "workspace" | "pmo" | "project" | "conversation" | "overview" | "notice" | "retry";
 
 export type TreeNode = {
   /** Stable, unique across the whole tree. */
@@ -45,6 +45,8 @@ export type TreeNode = {
   inActivePath: boolean;
   status: string | null;
   icon: string | null;
+  /** For a `retry` node: the workspace whose branch read failed and can be re-requested. */
+  retryWorkspaceId?: string;
   children: TreeNode[];
 };
 
@@ -138,7 +140,24 @@ export function buildContextTree(input: {
       if (!branch || branch.status === "loading") {
         children.push(notice(`${key}:loading`, "Loading projects…", 2));
       } else if (branch.status === "error") {
+        // F2: a failed branch read is recoverable in place — never a dead end that only a
+        // full page reload clears. The retry is an explicit user action, so it cannot loop.
         children.push(notice(`${key}:error`, "Projects couldn't be loaded.", 2));
+        children.push({
+          key: `${key}:retry`,
+          kind: "retry",
+          label: "Retry loading projects",
+          href: null,
+          level: 2,
+          expandable: false,
+          expanded: false,
+          current: false,
+          inActivePath: false,
+          status: null,
+          icon: null,
+          retryWorkspaceId: workspace.id,
+          children: [],
+        });
       } else {
         const shaped = buildWorkspaceBranch(branch.pmos, branch.projects);
         for (const pmo of shaped.pmos) children.push(pmoNode(workspace.id, pmo, pmo.projects, expanded, scope));

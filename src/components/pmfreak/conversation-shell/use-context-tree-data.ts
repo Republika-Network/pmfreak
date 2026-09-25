@@ -134,11 +134,31 @@ export function useContextTreeData(scope: ConversationScope | null) {
     });
   }, [missingEntity, activeWorkspaceId, refreshedFor, loadBranch]);
 
+  /**
+   * F2 — re-request a branch whose read failed. Only an explicit user action calls this
+   * (the Retry item, or reopening the workspace), and a branch already loading is left
+   * alone, so a persistently failing endpoint produces one request per action — never a
+   * loop.
+   */
+  const retryBranch = useCallback(
+    (workspaceId: string) => {
+      if (branches[workspaceId]?.status === "loading") return;
+      void loadBranch(workspaceId);
+    },
+    [branches, loadBranch],
+  );
+
   const toggle = useCallback(
     (key: string, open?: boolean) => {
+      const isOpen = expanded.has(key);
+      const willOpen = open ?? !isOpen;
+      // Reopening a workspace whose branch failed tries it again (F2).
+      if (willOpen && !isOpen && key.startsWith("ws:")) {
+        const workspaceId = key.slice(3);
+        if (branches[workspaceId]?.status === "error") retryBranch(workspaceId);
+      }
       setToggles((current) => {
-        const isOpen = expanded.has(key);
-        const next = { ...current, [key]: open ?? !isOpen };
+        const next = { ...current, [key]: willOpen };
         try {
           globalThis.localStorage?.setItem(TOGGLES_STORAGE_KEY, JSON.stringify(next));
         } catch {
@@ -147,7 +167,7 @@ export function useContextTreeData(scope: ConversationScope | null) {
         return next;
       });
     },
-    [expanded],
+    [expanded, branches, retryBranch],
   );
 
   const nodes: TreeNode[] = useMemo(
@@ -161,6 +181,7 @@ export function useContextTreeData(scope: ConversationScope | null) {
     status: workspacesState.status,
     nodes,
     toggle,
+    retryBranch,
     retry: loadWorkspaces,
     hasProjects,
   };

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { OPERATIONAL_INSPECTOR_ID, ToolIcon } from "./operational-rail";
 import { PROJECT_TOOLS, projectToolDefinition, type ProjectToolKey } from "./operational-tools";
+import { anotherModalOwnsKeyboard, isPresented } from "./modal-stack";
 
 const OVERLAY_QUERY = "(max-width: 1279px)";
 const FOCUSABLE =
@@ -55,9 +56,12 @@ export function OperationalInspector({
     returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     (panel.current?.querySelector<HTMLElement>(FOCUSABLE) ?? panel.current)?.focus();
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      // F5: a dialog a tool opened on top of this sheet (the Tasks tool's add-task modal
+      // or task drawer, the Command Center detail drawer, …) owns Escape and Tab until it
+      // closes — one Escape closes only the topmost dialog, and focus stays inside it.
+      if (!panel.current || !isPresented(panel.current)) return;
+      if (anotherModalOwnsKeyboard(panel.current)) return;
       if (event.key === "Escape") {
-        // A detail drawer opened from a tool handles its own Escape first.
-        if (document.querySelector('[data-testid="cc-detail-drawer"][aria-hidden="false"]')) return;
         onClose();
         return;
       }
