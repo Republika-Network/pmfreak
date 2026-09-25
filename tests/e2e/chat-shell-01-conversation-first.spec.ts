@@ -290,3 +290,21 @@ test("MOBILE: the conversation owns the viewport; the tree and the tools open as
   await expect(tools).toBeHidden();
   await expect(conversation(page).getByTestId("project-brain-input")).toBeVisible();
 });
+
+test("TABLET: with the tool sheet open over the rail, tools can still be switched from inside it", async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 800 });
+  await signIn(page, t.main.email);
+  await openProject(page, t.main, t.main.frontera);
+  await expect(page.getByTestId("operational-rail")).toBeVisible();
+  await page.getByRole("navigation", { name: "Project tools" }).getByRole("button", { name: /Needs you/ }).click();
+  const sheet = page.getByRole("dialog", { name: /project tool/ });
+  await expect(sheet).toHaveAttribute("data-tool", "attention");
+  const switcher = sheet.getByRole("group", { name: "Switch project tool" });
+  await expect(switcher).toBeVisible();
+  await switcher.getByRole("button", { name: "Evidence" }).click();
+  await expect(sheet).toHaveAttribute("data-tool", "repository");
+  await expect(sheet.getByRole("button", { name: /Add project notes/i }).first()).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(sheet).toBeHidden();
+  await expect(conversation(page).getByTestId("project-brain-input")).toBeVisible();
+});

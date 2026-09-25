@@ -482,6 +482,9 @@ test("mobile: the tree opens from a menu as a modal sheet, and tools open as a s
   const inspector = read("src/components/pmfreak/conversation-shell/operational-inspector.tsx");
   assert.match(inspector, /role=\{overlay \? "dialog" : "complementary"\}/);
   assert.match(inspector, /aria-modal=\{overlay \? true : undefined\}/);
+  // Whenever the inspector is a sheet (below xl) it covers the rail, so the in-sheet tool
+  // switcher must be available at every one of those widths — not only below md.
+  assert.match(inspector, /xl:hidden" role="group" aria-label="Switch project tool"/);
 });
 
 test("the shell keeps sign-out a POST and keeps the rest of the product reachable", () => {

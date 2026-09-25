@@ -118,8 +118,9 @@ export function OperationalInspector({
           </button>
         </div>
 
-        {/* Below `md` there is no rail, so the tools are switched from here. */}
-        <div className="flex shrink-0 gap-1.5 overflow-x-auto border-b border-slate-200 px-3 py-2 md:hidden" role="group" aria-label="Switch project tool">
+        {/* Whenever the inspector is a sheet (below `xl`) it covers the rail — or there is
+            no rail at all below `md` — so the tools are switched from inside it. */}
+        <div className="flex shrink-0 gap-1.5 overflow-x-auto border-b border-slate-200 px-3 py-2 xl:hidden" role="group" aria-label="Switch project tool">
           {PROJECT_TOOLS.map((entry) => (
             <button
               key={entry.key}

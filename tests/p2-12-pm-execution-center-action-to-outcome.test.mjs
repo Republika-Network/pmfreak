@@ -391,7 +391,18 @@ test("P2-12 H5: P2-12 introduced no migration and no new API route, and no LATER
   // was independently reviewed (PR #625) and carries its own acceptance in
   // tests/pb-chat-01-project-brain-conversation.test.ts and
   // tests/e2e/pb-chat-01-project-brain.spec.ts. Exact path only.
-  const REVIEWED_ADDED_ROUTES = new Set(["src/app/api/projects/[id]/brain/turns/route.ts"]);
+  //
+  // CHAT-SHELL-01 adds exactly one: `/api/navigation/context-tree`, the conversation
+  // shell's navigation read. It is GET-only and writes nothing; it returns names, statuses
+  // and parent ids for the caller's own workspaces, and a workspace's PMOs and projects
+  // only after `requireWorkspaceMember` on the REQUESTED id, all through the caller's own
+  // RLS session — no service-role row read, no operational data. It carries its own
+  // acceptance in tests/chat-shell-01-conversation-first-shell.test.mjs and
+  // tests/e2e/chat-shell-01-conversation-first.spec.ts.
+  const REVIEWED_ADDED_ROUTES = new Set([
+    "src/app/api/projects/[id]/brain/turns/route.ts",
+    "src/app/api/navigation/context-tree/route.ts",
+  ]);
   assert.deepEqual(
     added.filter((file) => /^src\/app\/api\/.*route\.ts$/.test(file)).filter((file) => !REVIEWED_ADDED_ROUTES.has(file)),
     [],

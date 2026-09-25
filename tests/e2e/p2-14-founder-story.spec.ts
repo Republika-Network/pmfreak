@@ -111,15 +111,24 @@ async function shot(name: string) {
  */
 async function openTool(target: Page, key: string, label: RegExp) {
   const inspector = target.getByTestId("operational-inspector");
-  if ((await inspector.isVisible()) && (await inspector.getAttribute("data-tool")) === key) return;
-  const railButton = target.getByTestId("operational-rail").locator(`button[data-tool="${key}"]`);
-  if (await railButton.isVisible()) {
-    await railButton.click();
-  } else {
-    if (!(await inspector.isVisible())) await target.getByRole("button", { name: "Tools", exact: true }).click();
-    await inspector.getByRole("group", { name: "Switch project tool" }).getByRole("button", { name: label }).click();
-  }
-  await expect(inspector).toHaveAttribute("data-tool", key);
+  const isOpenOn = async () => (await inspector.isVisible()) && (await inspector.getAttribute("data-tool")) === key;
+  // Re-read the state before every attempt: a click that lands before the page has
+  // hydrated is dropped, and blindly clicking again could toggle an open tool closed.
+  await expect(async () => {
+    if (await isOpenOn()) return;
+    // Below 1280px an open inspector is a sheet over the rail; it carries its own switcher.
+    const sheetSwitcher = inspector.getByRole("group", { name: "Switch project tool" });
+    const railButton = target.getByTestId("operational-rail").locator(`button[data-tool="${key}"]`);
+    if ((await inspector.isVisible()) && (await sheetSwitcher.isVisible())) {
+      await sheetSwitcher.getByRole("button", { name: label }).click();
+    } else if (await railButton.isVisible()) {
+      await railButton.click();
+    } else {
+      if (!(await inspector.isVisible())) await target.getByRole("button", { name: "Tools", exact: true }).click();
+      await sheetSwitcher.getByRole("button", { name: label }).click();
+    }
+    await expect(inspector).toHaveAttribute("data-tool", key, { timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
 }
 
 /**
@@ -604,7 +613,9 @@ test.describe.serial("P2-14 authenticated two-tenant Founder browser story", () 
 
   test("STEP 16 — LIVE operational input becomes eligible Evidence, then an Observation is recorded", async () => {
     await openCommandCenter();
-    // Real product control: open the Command Center notes intake.
+    // Real product control: open the Command Center notes intake. CHAT-SHELL-01 moved it
+    // from the removed top bar into the Evidence tool beside the conversation.
+    await openTool(page, "repository", /Evidence/);
     await page.getByRole("button", { name: /Add project notes/i }).first().click();
 
     // Since UX-W0 (UX-P0-01) the customer intake panel records LIVE, always: the PM is no
