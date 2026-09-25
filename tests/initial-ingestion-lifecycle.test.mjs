@@ -88,7 +88,9 @@ test("only a completed guided entry lands on the dashboard", () => {
 test("the command-center page derives the landing view from the durable marker, not the query param alone", () => {
   assert.match(PAGE_SRC, /readInitialIngestionStatus\(/, "page must read the durable marker");
   assert.match(PAGE_SRC, /resolveCommandCenterLanding\(/, "page must derive the landing view");
-  assert.match(PAGE_SRC, /firstRun=\{landingView === "ingestion"\}/, "the inbox must open from the derived view");
+  // CHAT-SHELL-01: the page renders the guided inbox (or hands off to the project
+  // conversation) from the DERIVED view — never from the query hint alone.
+  assert.match(PAGE_SRC, /const guidedView = landingView === "ingestion" \|\|/, "the inbox must open from the derived view");
   assert.ok(
     !/firstRun=\{brainJustActivated\}/.test(PAGE_SRC),
     "the transient query param must no longer be the sole source of truth",

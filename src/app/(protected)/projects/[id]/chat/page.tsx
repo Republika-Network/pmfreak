@@ -2,7 +2,7 @@ import { notFound, redirect } from "next/navigation";
 import { requireAuthUser } from "@/lib/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { evaluateCapabilityAccess } from "@/lib/security/capability-flow";
-import { projectCommandCenterPath } from "@/lib/projects/project-command-center-paths";
+import { projectHomePath } from "@/lib/projects/project-paths";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +22,10 @@ type Props = { params: Promise<{ id: string }> };
  * read with the caller's RLS client) — never from a cookie — and the canonical
  * route re-authorizes on arrival. An unreadable project is a 404, exactly as
  * before, so the redirect is not an existence oracle.
+ *
+ * CHAT-SHELL-01: the conversation's home moved from the Project Command Center's
+ * panel to the canonical project route itself, so that is where this lands now
+ * — the same thread, rendered as the primary surface.
  */
 export default async function ProjectChatPage({ params }: Props) {
   await requireAuthUser();
@@ -37,5 +41,5 @@ export default async function ProjectChatPage({ params }: Props) {
 
   await evaluateCapabilityAccess({ workspaceId: project.workspace_id, projectId: project.id, permission: "read" });
 
-  redirect(projectCommandCenterPath(project.workspace_id, project.id));
+  redirect(projectHomePath(project.workspace_id, project.id));
 }

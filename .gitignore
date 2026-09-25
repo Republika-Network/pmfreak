@@ -65,6 +65,8 @@ uploads/
 /artifacts/p2-17/
 # PB-CHAT-01 Project Brain browser screenshots (tests/e2e/pb-chat-01-project-brain.spec.ts).
 /artifacts/pb-chat-01/
+# CHAT-SHELL-01 conversation-first shell browser screenshots (tests/e2e/chat-shell-01-conversation-first.spec.ts).
+/artifacts/chat-shell-01/
 /test-results/
 /playwright-report/
 /.playwright/

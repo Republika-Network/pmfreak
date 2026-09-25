@@ -102,17 +102,50 @@ async function shot(name: string) {
 }
 
 /**
+ * Open one of the project conversation's tools, the way a user would at any width.
+ *
+ * CHAT-SHELL-01: the Command Center's sections are the tools of the inspector beside the
+ * project's Project Brain conversation. From `md` up they are in the right-hand rail;
+ * below it the header's "Tools" button opens the inspector and its in-sheet switcher
+ * chooses the tool. Opening a tool is presentation only — it never navigates.
+ */
+async function openTool(target: Page, key: string, label: RegExp) {
+  const inspector = target.getByTestId("operational-inspector");
+  const isOpenOn = async () => (await inspector.isVisible()) && (await inspector.getAttribute("data-tool")) === key;
+  // Re-read the state before every attempt: a click that lands before the page has
+  // hydrated is dropped, and blindly clicking again could toggle an open tool closed.
+  await expect(async () => {
+    if (await isOpenOn()) return;
+    // Below 1280px an open inspector is a sheet over the rail; it carries its own switcher.
+    const sheetSwitcher = inspector.getByRole("group", { name: "Switch project tool" });
+    const railButton = target.getByTestId("operational-rail").locator(`button[data-tool="${key}"]`);
+    if ((await inspector.isVisible()) && (await sheetSwitcher.isVisible())) {
+      await sheetSwitcher.getByRole("button", { name: label }).click();
+    } else if (await railButton.isVisible()) {
+      await railButton.click();
+    } else {
+      if (!(await inspector.isVisible())) await target.getByRole("button", { name: "Tools", exact: true }).click();
+      await sheetSwitcher.getByRole("button", { name: label }).click();
+    }
+    await expect(inspector).toHaveAttribute("data-tool", key, { timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
+}
+
+/**
  * Reach the operational attention surface through the product's own navigation.
  *
- * `/command-center` first renders the project activation surface ("Project Brain Online").
- * The attention canvas (Needs your attention / In Progress) lives behind its real "Enter Command Center"
- * control. Clicking it is ordinary product navigation performed by the browser — it is not
+ * `/command-center` resolves the workspace and hands a project to its conversation with
+ * the Needs You tool open — or, while the durable initial-ingestion marker is still open,
+ * first renders the guided "Project Brain Online" view, whose real "Continue to Project
+ * Brain" control is how a user leaves it. Clicking it is ordinary product navigation, not
  * a shortcut around a gate, and nothing here fabricates state. The control is absent once
- * the surface is already open, so the click is conditional rather than assumed.
+ * the guided view is done, so the click is conditional rather than assumed.
  */
 async function enterOperationalSurface(target: Page = page) {
-  const enter = target.getByRole("button", { name: /Enter Command Center/i });
-  if (await enter.count()) await enter.first().click();
+  const proceed = target.getByRole("button", { name: /Continue to Project Brain/i });
+  if (await proceed.count()) await proceed.first().click();
+  await expect(target.getByTestId("project-conversation-center")).toBeVisible({ timeout: 45_000 });
+  await openTool(target, "attention", /Needs you/);
   await expect(target.getByRole("heading", { name: "Needs your attention" }).first()).toBeVisible({ timeout: 45_000 });
 }
 
@@ -123,14 +156,11 @@ async function openCommandCenter(target: Page = page) {
 }
 
 /**
- * The attention canvas.
- *
- * Until UX-W2 these queues were a desktop `<aside>` with a duplicate inside a mobile
- * overlay, so a test had to pick an instance. They are now one attention-first main canvas
- * mounted once at every width, addressed by the test id the canvas carries.
+ * The operational inspector — where the Command Center's queues now live, one tool at a
+ * time, beside the conversation (CHAT-SHELL-01). Mounted once at every width.
  */
 function attentionCanvas(target: Page = page) {
-  return target.getByTestId("command-center-canvas");
+  return target.getByTestId("operational-inspector");
 }
 
 /**
@@ -142,9 +172,10 @@ function attentionCanvas(target: Page = page) {
  * advances: no Action yet is "Not progressing", live work is "In Progress", an achieved
  * Outcome is "Closed" behind a disclosure. This follows the row instead of assuming a
  * position, expanding the disclosure first when the chain has reached a terminal state —
- * which is exactly what a PM would have to do.
+ * which is exactly what a PM would have to do. The queue is the "In progress" tool.
  */
 async function governedChainRow(target: Page = page) {
+  await openTool(target, "execution", /In progress/);
   const canvas = attentionCanvas(target);
   const closed = canvas.getByTestId("cc-closed-chains");
   if (await closed.count()) {
@@ -582,7 +613,9 @@ test.describe.serial("P2-14 authenticated two-tenant Founder browser story", () 
 
   test("STEP 16 — LIVE operational input becomes eligible Evidence, then an Observation is recorded", async () => {
     await openCommandCenter();
-    // Real product control: open the Command Center notes intake.
+    // Real product control: open the Command Center notes intake. CHAT-SHELL-01 moved it
+    // from the removed top bar into the Evidence tool beside the conversation.
+    await openTool(page, "repository", /Evidence/);
     await page.getByRole("button", { name: /Add project notes/i }).first().click();
 
     // Since UX-W0 (UX-P0-01) the customer intake panel records LIVE, always: the PM is no
@@ -714,6 +747,7 @@ test.describe.serial("P2-14 authenticated two-tenant Founder browser story", () 
     // A closed loop is filed under the "Closed" disclosure. Wait for it to render before
     // governedChainRow() decides whether to expand it — right after navigation the queue is
     // still loading, and an absent disclosure would be skipped rather than opened.
+    await openTool(page, "execution", /In progress/);
     await expect(attentionCanvas().getByTestId("cc-closed-chains")).toBeVisible({ timeout: 30_000 });
     const row = await governedChainRow();
     await expect(row).toBeVisible();
@@ -981,19 +1015,19 @@ test.describe.serial("P2-14 authenticated two-tenant Founder browser story", () 
 async function openCommandCenterResponsive(width: number) {
   await page.goto(A_PATH);
   await page.waitForLoadState("domcontentloaded");
-  const enter = page.getByRole("button", { name: /Enter Command Center/i });
-  if (await enter.count()) await enter.first().click();
-  // UX-W2: attention is the main canvas at EVERY width. Below xl it used to be reachable
-  // only through the top bar's "Open agents and notifications" overlay; now there is nothing
-  // to open, which is the stronger guarantee this narrow-viewport check exists to make.
+  const proceed = page.getByRole("button", { name: /Continue to Project Brain/i });
+  if (await proceed.count()) await proceed.first().click();
+  // CHAT-SHELL-01: at every width the conversation is the page and its composer is
+  // visible without searching; attention is one tap away in the tools.
+  await expect(page.getByTestId("project-conversation-center")).toBeVisible({ timeout: 45_000 });
+  await expect(page.getByTestId("project-brain-input")).toBeVisible();
+  await openTool(page, "attention", /Needs you/);
   const queueHeading = page.getByRole("heading", { name: "Needs your attention" });
   await expect(queueHeading.first()).toBeVisible({ timeout: 45_000 });
-  await expect(page.getByRole("button", { name: "Open agents and notifications" })).toHaveCount(0);
 
   // Intake stays reachable at every breakpoint: a Founder who can only see the queue but
-  // cannot add an operational record has not been given a usable surface. Since UX-W2 the
-  // persistent control is the project header's attach button rather than the chat
-  // composer's paperclip, because chat no longer opens by default; the accessible name is
-  // unchanged, so this is still the same guarantee.
+  // cannot add an operational record has not been given a usable surface. The notes
+  // intake is the Evidence tool's "Add project notes"; the accessible name is unchanged.
+  await openTool(page, "repository", /Evidence/);
   await expect(page.getByRole("button", { name: /Add project notes/i }).first()).toBeVisible();
 }

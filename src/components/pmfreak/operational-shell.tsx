@@ -15,6 +15,8 @@ import { SidebarPmoTree } from "@/components/pmfreak/navigation/sidebar-pmo-tree
 import { computeCapabilityRevealState, computeNavigationRail } from "@/features/runtime/capability-reveal/capability-reveal-selectors";
 import { AWAKENING_EVENT, isLensUnlocked, loadAwakeningState, deriveAwakeningState, type AwakeningState } from "@/lib/workspace/awakening-state";
 import type { CapabilityProfile } from "@/lib/workspace/pilot-capability-set";
+import { isConversationShellPath } from "@/lib/navigation/conversation-shell-scope";
+import { ConversationShell } from "@/components/pmfreak/conversation-shell/conversation-shell";
 
 type UserProject = { id: string; name: string };
 type DiscoverySummary = {
@@ -148,7 +150,45 @@ type OperationalShellProps = {
 };
 
 
-export function OperationalShell({ children, user, capabilityProfile = "pilot", workspaceId }: OperationalShellProps) {
+/**
+ * The protected area's shell ROUTER (CHAT-SHELL-01).
+ *
+ * It chooses chrome by route and owns nothing else:
+ *
+ *   - `/workspace/setup`                     → a bare frame (the onboarding wizard)
+ *   - the canonical Workspace → PMO → Project
+ *     family and Workspace Chat              → `ConversationShell`: context tree,
+ *                                              conversation-first centre, and the
+ *                                              page's own operational rail
+ *   - everything else                        → `OperationalRailShell`, unchanged
+ *
+ * The split is what keeps the operational rail's boot-time reads — discovery,
+ * recommended actions, execution tasks, the task graph, schedule, critical path,
+ * portfolio — off the conversation routes entirely. Those reads live in hooks of
+ * `OperationalRailShell`, and a component that is not rendered runs no hooks, so
+ * no conditional-hook contortion is needed to skip them.
+ */
+export function OperationalShell(props: OperationalShellProps) {
+  const pathname = usePathname();
+  if (pathname.startsWith("/workspace/setup")) {
+    return <div data-shell="pmfreak-light-workspace-setup" className="min-h-screen bg-[#FCFBF9] px-3 py-4 md:px-5 md:py-6">{props.children}</div>;
+  }
+  if (isConversationShellPath(pathname)) {
+    return (
+      <ConversationShell user={props.user} capabilityProfile={props.capabilityProfile}>
+        {props.children}
+      </ConversationShell>
+    );
+  }
+  return <OperationalRailShell {...props} />;
+}
+
+/**
+ * The operational rail shell — every protected route outside the conversation
+ * shell's family. Its body is unchanged by CHAT-SHELL-01; see `OperationalShell`
+ * for which routes still reach it.
+ */
+function OperationalRailShell({ children, user, capabilityProfile = "pilot", workspaceId }: OperationalShellProps) {
   const pathname = usePathname();
   const router = useRouter();
   const [projects, setProjects] = useState<UserProject[]>([]);
@@ -860,16 +900,8 @@ export function OperationalShell({ children, user, capabilityProfile = "pilot", 
   };
   const discoveryConfidence = Math.round(Number(discoverySummary?.confidence_score ?? 0));
 
-  // /workspace/setup is the onboarding wizard: a linear, single-purpose flow
-  // that intentionally has no workspace/PMO/project data to build this rail's
-  // navigation from yet, so it renders its own bare light shell instead
-  // (see (protected)/layout.tsx). Every other authenticated route — including
-  // Command Center, which used to get a bespoke bare shell here — renders
-  // through this same rail so the app has one consistent navigation surface.
-  if (pathname.startsWith("/workspace/setup")) {
-    return <div data-shell="pmfreak-light-workspace-setup" className="min-h-screen bg-[#FCFBF9] px-3 py-4 md:px-5 md:py-6">{children}</div>;
-  }
-
+  // /workspace/setup (the onboarding wizard's bare frame) and the conversation
+  // shell's routes are chosen by `OperationalShell` above and never reach here.
   return (
     <div data-shell="pmfreak-shell" className="min-h-screen bg-[#FCFBF9] text-slate-900">
       <div className="mx-auto flex w-full max-w-[1540px] gap-4 px-3 py-4 md:gap-6 md:px-5 md:py-6">

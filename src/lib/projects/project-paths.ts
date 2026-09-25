@@ -72,14 +72,29 @@
  * (`03-navigation-contracts.md` §2.3 rule 4, ADR-PMF-014 Rule 4). The parser
  * enforces that structurally — `…/command-center/anything` is refused, because
  * the pattern below admits at most one segment after the project id.
+ *
+ * CHAT-SHELL-01 — `home` IS THE PROJECT CONVERSATION
+ * --------------------------------------------------
+ * The family's root is now the conversation-first project surface: Project
+ * Brain in the centre of the shell, operational tools beside it. That is what a
+ * project link lands on, so every existing `projectHomePath` caller — the
+ * context tree, breadcrumbs, legacy `/projects/<id>` redirects — reaches it
+ * without changing. The key stays `home` because the URL did not move; what
+ * the URL shows did.
+ *
+ * `overview` is the screen that used to be at the root: project identity,
+ * execution CRUD, PM assignment, the analysis entry point and prior analyses.
+ * Nothing on it was removed; it moved one segment down so the root could become
+ * the conversation. It is a sibling of `command-center`, never nested in it.
  */
-export const PROJECT_SURFACES = ["home", "command-center"] as const;
+export const PROJECT_SURFACES = ["home", "overview", "command-center"] as const;
 
 export type ProjectSurface = (typeof PROJECT_SURFACES)[number];
 
 /** The path segment each surface adds after the project id. `home` adds none. */
 const SURFACE_SEGMENTS: Record<ProjectSurface, string> = {
   home: "",
+  overview: "overview",
   "command-center": "command-center",
 };
 
@@ -113,6 +128,15 @@ export function projectSurfacePath(workspaceId: string, projectId: string, surfa
 
 export function projectHomePath(workspaceId: string, projectId: string): string {
   return projectSurfacePath(workspaceId, projectId, "home");
+}
+
+/**
+ * The project's details screen (identity, execution, PM assignment, analyses) —
+ * what the family root rendered before CHAT-SHELL-01 made the root the project
+ * conversation.
+ */
+export function projectOverviewPath(workspaceId: string, projectId: string): string {
+  return projectSurfacePath(workspaceId, projectId, "overview");
 }
 
 /**

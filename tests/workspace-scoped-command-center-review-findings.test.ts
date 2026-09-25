@@ -113,7 +113,9 @@ test("P2 ingestion: reads and writes are scoped to the authorized workspace", ()
 });
 
 test("P2 ingestion: the client stops closing over a write that did not happen", () => {
-  assert.match(client, /if \(result\.ok\) setShowIntelligenceInbox\(false\);/);
+  // CHAT-SHELL-01: leaving the guided view now opens the project conversation — still
+  // only once the durable marker actually advanced.
+  assert.match(client, /if \(result\.ok\) openConversation\(\);/);
   assert.match(client, /setIngestionMarkerFailed\(true\)/);
   assert.match(client, /markInitialIngestionAction\(workspaceId, projectId, "completed"\)/);
 });

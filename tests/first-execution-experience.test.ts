@@ -356,10 +356,14 @@ test("onboarding activation rules are unmodified by the CTA wiring change (still
 const projectTaskList = read("src/components/pmfreak/tasks/project-task-list.tsx");
 // Project Home is the canonical, workspace-rooted route; `/projects/[id]` now
 // holds no screen and resolves into it (canonical Project Home slice).
-const projectDetailPage = read("src/app/(protected)/workspaces/[workspaceId]/projects/[projectId]/page.tsx");
+// CHAT-SHELL-01: the project details screen (tasks, PM assignment, analyses) moved
+// unchanged from the family root to `/overview`; the root is now the conversation.
+const projectDetailPage = read("src/app/(protected)/workspaces/[workspaceId]/projects/[projectId]/overview/page.tsx");
 
 test("project landing page renders the real task list, not a new board route", () => {
   assert.match(projectDetailPage, /ProjectTaskList/);
+  // And from the landing conversation, the Tasks tool mounts the same list.
+  assert.match(read("src/components/pmfreak/conversation-shell/project-conversation-view.tsx"), /<ProjectTaskList projectId=\{project\.id\}/);
 });
 
 test("project landing computes canCreateTask from real membership role in the PROJECT's workspace", () => {

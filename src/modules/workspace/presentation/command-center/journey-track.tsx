@@ -39,10 +39,10 @@ const MARK_GLYPHS: Readonly<Record<JourneyPhaseMark, string>> = Object.freeze({
 });
 
 const MARK_CLASSES: Readonly<Record<JourneyPhaseMark, string>> = Object.freeze({
-  complete: "text-emerald-300",
-  current: "text-sky-300 font-semibold",
-  upcoming: "text-zinc-500",
-  not_expected: "text-zinc-600",
+  complete: "text-emerald-800",
+  current: "text-sky-800 font-semibold",
+  upcoming: "text-slate-500",
+  not_expected: "text-slate-400",
 });
 
 export function JourneyTrack({
@@ -75,7 +75,7 @@ export function JourneyTrack({
               <span className="sr-only">{describePhaseMark(phase, mark)}</span>
             </span>
             {index < JOURNEY_PHASES.length - 1 && (
-              <span aria-hidden="true" className="text-[10px] text-zinc-600">
+              <span aria-hidden="true" className="text-[10px] text-slate-400">
                 →
               </span>
             )}

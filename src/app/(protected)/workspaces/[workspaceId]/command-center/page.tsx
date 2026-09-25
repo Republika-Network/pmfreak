@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { activateContextAction } from "@/app/(protected)/command-center/actions";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { requireAuthUser } from "@/lib/auth";
@@ -7,14 +8,13 @@ import { firstQueryValue, workspaceCommandCenterPath } from "@/lib/workspace/com
 import { listPmosWithProjects, type PmoWithProjects } from "@/lib/pmos/pmo-service";
 import { CommandCenterClient, CommandCenterEmptyState } from "@/features/command-center";
 import { resolveActiveProject } from "@/lib/resolve-active-project";
-import { getCompanySubscription } from "@/lib/billing";
-import { getPlanCapabilities } from "@/lib/feature-gates";
 import { WorkspaceContextBanner } from "@/components/pmfreak/workspace/workspace-context-banner";
 import { loadLatestOperationalGovernanceBrief } from "@/lib/projects/first-insight";
 import { noteFounderCommandCenterVisit } from "@/lib/founder-program/checkpoints";
 import { toProjectBrainOnboardingSnapshot } from "@/lib/projects/onboarding-snapshot";
 import { readInitialIngestionStatus, resolveCommandCenterLanding } from "@/lib/projects/initial-ingestion-state";
 import { summarizePortfolio } from "@/app/(protected)/command-center/portfolio-summary";
+import { projectHomePath } from "@/lib/projects/project-paths";
 
 /**
  * Workspace Command Center — the canonical, entity-qualified route.
@@ -46,6 +46,24 @@ import { summarizePortfolio } from "@/app/(protected)/command-center/portfolio-s
  *              access to a workspace they own.
  *   denied   — not a member, no such workspace, or deleted. One indistinguishable
  *              reply, so the route cannot be used to probe which ids exist (§7).
+ *
+ * CHAT-SHELL-01 — WHERE A RESOLVED PROJECT GOES
+ * --------------------------------------------
+ * This screen used to mount a second application for the resolved project: an
+ * inner project sidebar, an attention canvas and a collapsible Project Brain
+ * panel, inside the product shell. That nesting is what CHAT-SHELL-01 removes. A
+ * project's operational home is now its conversation — Project Brain in the
+ * centre, the Command Center's tools in the right-hand inspector — at the
+ * canonical project route. So once this screen has resolved and authorized a
+ * project, it hands off there with the inspector opened on "Needs you", which is
+ * what a Command Center visit was for.
+ *
+ * Two things still render HERE, because they are not the nested application:
+ * every state that has no project to hand off to (refusal, archived workspace,
+ * failed read, empty workspace, a `projectId` outside this workspace), and the
+ * guided first experience (the Project Intelligence Inbox) — shown while the
+ * durable initial-ingestion marker is open, on an activation hand-off, when the
+ * first brief failed to generate, or on an explicit `view=inbox`.
  */
 export default async function WorkspaceCommandCenterPage({
   params: routeParams,
@@ -106,10 +124,9 @@ export default async function WorkspaceCommandCenterPage({
     briefGeneration: firstQueryValue(rawParams.briefGeneration),
     error: firstQueryValue(rawParams.error),
     brainActivated: firstQueryValue(rawParams.brainActivated),
+    view: firstQueryValue(rawParams.view),
   };
   const fromOnboarding = params.from === "onboarding";
-  const subscription = await getCompanySubscription(user.companyId);
-  const capabilities = getPlanCapabilities(subscription.plan);
   const briefGenerationFailed = params.briefGeneration === "failed";
 
   const { data: projects, error: projectsError } = await supabase
@@ -277,8 +294,6 @@ export default async function WorkspaceCommandCenterPage({
   // but never set `brainActivated` and often carry no projectId at all.
   const brainJustActivated = params.brainActivated === "1" && params.projectId === resolution.project!.id;
 
-  const initialBrief = await loadLatestOperationalGovernanceBrief(resolution.project!.id, supabase);
-
   // Scoped by workspace_id in addition to id, matching the project list
   // query above — the active project id was already resolved against this
   // workspace's own project list, so this can never read another
@@ -303,46 +318,26 @@ export default async function WorkspaceCommandCenterPage({
     activationHint: brainJustActivated,
   });
 
-  // Operations strip: the Command Center is the workspace's operations
-  // console, so it surfaces the full PMO portfolio, not just one project.
-  // When the portfolio load failed the strip says so plainly — it must never
-  // render "0 PMOs · 0 projects", which would assert a count we do not have.
+  // Everything that is not the guided experience continues in the project's
+  // conversation. The project id was resolved against THIS workspace's own
+  // project list above, and the canonical route re-authorizes it on arrival.
+  const guidedView = landingView === "ingestion" || params.view === "inbox" || briefGenerationFailed;
+  if (!guidedView) {
+    redirect(`${projectHomePath(workspace.workspaceId, resolution.project!.id)}?tool=attention`);
+  }
+
+  const initialBrief = await loadLatestOperationalGovernanceBrief(resolution.project!.id, supabase);
 
   return (
     <div className="space-y-4">
       <WorkspaceContextBanner lens="Command Center" workspaceId={workspace.workspaceId} />
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white/80 px-4 py-3">
-        <p className="text-xs text-slate-600">
-          {portfolio.status === "available" ? (
-            <>
-              Operating across <span className="font-semibold text-slate-900">{portfolio.pmoCount}</span> PMO{portfolio.pmoCount === 1 ? "" : "s"} ·{" "}
-              <span className="font-semibold text-slate-900">{portfolio.projectCount}</span> project{portfolio.projectCount === 1 ? "" : "s"} ({portfolio.activeProjectCount} active)
-            </>
-          ) : (
-            "Portfolio overview is temporarily unavailable. The projects below are unaffected."
-          )}
-        </p>
-        <div className="flex gap-2 text-xs font-medium">
-          <Link href="/pmos" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-slate-700 transition hover:bg-slate-50">Manage PMOs</Link>
-          <Link href="/chat" className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-slate-700 transition hover:bg-slate-50">Workspace Chat</Link>
-        </div>
-      </div>
       <CommandCenterClient
         key={resolution.project!.id}
-        firstRun={landingView === "ingestion"}
         projectId={resolution.project!.id}
         projectName={resolution.project!.name}
         projectCreatedAt={projectCreatedAt}
         onboarding={onboardingSnapshot}
         workspaceId={workspace.workspaceId}
-        projects={projectList}
-        companyName={user.companyName}
-        role={user.role}
-        onboardingCompleted={user.onboardingCompleted}
-        planTier={subscription.plan}
-        canUseAdvancedAi={capabilities.advanced_ai_actions}
-        canUsePortfolioMemory={capabilities.organizational_memory}
-        canUseGovernanceDirectives={capabilities.governance_directives}
         initialBrief={initialBrief}
         briefGenerationFailed={briefGenerationFailed && !initialBrief}
       />

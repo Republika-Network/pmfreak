@@ -65,6 +65,14 @@ const PMO = "12341234-5678-5678-9abc-9abcdef0def0";
 const CANONICAL_HOME = `/workspaces/${WS}/projects/${PROJECT}`;
 
 const CANONICAL_HOME_FILE = "src/app/(protected)/workspaces/[workspaceId]/projects/[projectId]/page.tsx";
+/**
+ * CHAT-SHELL-01: the screen this suite calls "Project Home" — identity, execution
+ * CRUD, PM assignment, analyses — moved unchanged from the family root to
+ * `/overview`; the root now renders the project's conversation. Content
+ * assertions follow the screen to its new file; AUTHORITY assertions hold for
+ * both pages, because both are canonical Project surfaces.
+ */
+const PROJECT_DETAILS_FILE = "src/app/(protected)/workspaces/[workspaceId]/projects/[projectId]/overview/page.tsx";
 const LEGACY_HOME_FILE = "src/app/(protected)/projects/[id]/page.tsx";
 
 const read = (file: string) => readFileSync(file, "utf8");
@@ -74,6 +82,8 @@ const resolver = read("src/lib/projects/routed-project.ts");
 const routeStates = read("src/components/pmfreak/projects/project-route-states.tsx");
 const tabNav = read("src/components/pmfreak/projects/project-tab-nav.tsx");
 const canonicalHome = read(CANONICAL_HOME_FILE);
+const projectDetails = read(PROJECT_DETAILS_FILE);
+const conversationView = read("src/components/pmfreak/conversation-shell/project-conversation-view.tsx");
 const legacyHome = read(LEGACY_HOME_FILE);
 const projectsIndex = read("src/app/(protected)/projects/page.tsx");
 const workspaceHome = read("src/app/(protected)/workspaces/[workspaceId]/page.tsx");
@@ -236,8 +246,12 @@ test("6. an extra segment is not mistaken for Project Home", () => {
   // exist, which is what keeps the Command Center terminal (§4 rule 3).
   assert.equal(parseCanonicalProjectRoute(`${CANONICAL_HOME}/tasks/t1`), null);
   assert.equal(parseCanonicalProjectRoute(`${CANONICAL_HOME}/command-center/anything`), null);
-  // And the surface table claims exactly the two members whose screens ship.
-  assert.deepEqual([...PROJECT_SURFACES], ["home", "command-center"]);
+  // And the surface table claims exactly the members whose screens ship: the
+  // conversation at the root, the project details it displaced (CHAT-SHELL-01),
+  // and the Project Command Center.
+  assert.deepEqual([...PROJECT_SURFACES], ["home", "overview", "command-center"]);
+  assert.equal(parseCanonicalProjectRoute(`${CANONICAL_HOME}/overview`)?.surface, "overview");
+  assert.equal(parseCanonicalProjectRoute(`${CANONICAL_HOME}/overview/anything`), null, "overview is terminal too");
 });
 
 test("6b. the family grew without a competing regex", () => {
@@ -456,13 +470,15 @@ test("11. the preferred-workspace cookie cannot override explicit Project identi
 });
 
 test("12. canonical Project Home does not use the resolveCanonicalProject fallback", () => {
-  const code = withoutComments(canonicalHome);
-  assert.doesNotMatch(code, /resolveCanonicalProject/);
-  assert.doesNotMatch(code, /canonical-project-resolver/);
-  assert.doesNotMatch(code, /recoveredFrom/, "there is nothing to recover from on an explicit route");
-  assert.match(canonicalHome, /resolveRoutedProject\(user\.id, requestedWorkspaceId, requestedProjectId\)/);
-  assert.match(canonicalHome, /access\.access === "denied"/);
-  assert.match(canonicalHome, /return <ProjectNotAvailable \/>;/);
+  for (const page of [canonicalHome, projectDetails]) {
+    const code = withoutComments(page);
+    assert.doesNotMatch(code, /resolveCanonicalProject/);
+    assert.doesNotMatch(code, /canonical-project-resolver/);
+    assert.doesNotMatch(code, /recoveredFrom/, "there is nothing to recover from on an explicit route");
+    assert.match(page, /resolveRoutedProject\(user\.id, requestedWorkspaceId, requestedProjectId\)/);
+    assert.match(page, /access\.access === "denied"/);
+    assert.match(page, /return <ProjectNotAvailable \/>;/);
+  }
 });
 
 test("12b. the substituting resolver is gone from the whole tree", () => {
@@ -493,12 +509,14 @@ test("12b. the substituting resolver is gone from the whole tree", () => {
 });
 
 test("13. canonical Project Home does not use resolvePreferredWorkspace for role scope", () => {
-  const code = withoutComments(canonicalHome);
-  assert.doesNotMatch(code, /resolvePreferredWorkspace/);
-  assert.doesNotMatch(code, /workspaceResolution/);
-  // The role comes from the SAME verdict that established the parent, so the two
-  // cannot disagree.
-  assert.match(canonicalHome, /const canCreateTask = access\.role !== null && access\.role !== "viewer";/);
+  for (const page of [canonicalHome, projectDetails]) {
+    const code = withoutComments(page);
+    assert.doesNotMatch(code, /resolvePreferredWorkspace/);
+    assert.doesNotMatch(code, /workspaceResolution/);
+    // The role comes from the SAME verdict that established the parent, so the two
+    // cannot disagree.
+    assert.match(page, /const canCreateTask = access\.role !== null && access\.role !== "viewer";/);
+  }
   assert.match(resolver, /WHY `role` IS PART OF THE VERDICT/);
 });
 
@@ -543,31 +561,42 @@ test("13b. the role in the verdict is the caller's role in the PROJECT's workspa
 });
 
 test("14. canonical Home preserves the shipped Project Home functionality", () => {
-  // The screen moved and its authority changed. Its CONTENT did not: project
-  // identity, the execution/task list, the AI analysis entry, PM assignment, and
-  // prior analyses are all still here, reading the same tables.
-  assert.match(canonicalHome, /<ProjectTaskList projectId=\{project\.id\} canCreateTask=\{canCreateTask\} \/>/);
-  assert.match(canonicalHome, /<ProjectPMAssignment projectId=\{project\.id\} \/>/);
-  assert.match(canonicalHome, /action="\/api\/analyze-ai" method="post"/);
-  assert.match(canonicalHome, /name="extractedScopeText"/);
-  assert.match(canonicalHome, /\/upload\?projectId=/);
-  assert.match(canonicalHome, /\.from\("onboarding_analyses"\)/);
-  assert.match(canonicalHome, /Previous analyses/);
-  assert.match(canonicalHome, /Status: \{project\.status\}/);
-  assert.match(canonicalHome, /Methodology: \$\{project\.methodology\}/);
-  assert.match(canonicalHome, /<ProjectTabNav workspaceId=\{workspaceId\} projectId=\{project\.id\} active="overview" \/>/);
-  // The capability layer still runs, on the AUTHORIZED workspace.
-  assert.match(canonicalHome, /evaluateCapabilityAccess\(\{ workspaceId, projectId, permission: "read" \}\)/);
+  // The screen moved (to `/overview`, CHAT-SHELL-01) and its authority changed.
+  // Its CONTENT did not: project identity, the execution/task list, the AI
+  // analysis entry, PM assignment, and prior analyses are all still there,
+  // reading the same tables.
+  assert.match(projectDetails, /<ProjectTaskList projectId=\{project\.id\} canCreateTask=\{canCreateTask\} \/>/);
+  assert.match(projectDetails, /<ProjectPMAssignment projectId=\{project\.id\} \/>/);
+  assert.match(projectDetails, /action="\/api\/analyze-ai" method="post"/);
+  assert.match(projectDetails, /name="extractedScopeText"/);
+  assert.match(projectDetails, /\/upload\?projectId=/);
+  assert.match(projectDetails, /\.from\("onboarding_analyses"\)/);
+  assert.match(projectDetails, /Previous analyses/);
+  assert.match(projectDetails, /Status: \{project\.status\}/);
+  assert.match(projectDetails, /Methodology: \$\{project\.methodology\}/);
+  assert.match(projectDetails, /<ProjectTabNav workspaceId=\{workspaceId\} projectId=\{project\.id\} active="overview" \/>/);
+  // The capability layer still runs, on the AUTHORIZED workspace, on both pages.
+  for (const page of [canonicalHome, projectDetails]) {
+    assert.match(page, /evaluateCapabilityAccess\(\{ workspaceId, projectId, permission: "read" \}\)/);
+  }
   // It reads exactly the tables the shipped screen read, plus `workspaces` for
   // the breadcrumb label the Workspace ancestor needs.
-  const tables = new Set([...canonicalHome.matchAll(/\.from\("([a-z_]+)"\)/g)].map((m) => m[1]));
+  const tables = new Set([...projectDetails.matchAll(/\.from\("([a-z_]+)"\)/g)].map((m) => m[1]));
   assert.deepEqual([...tables].sort(), ["onboarding_analyses", "pmos", "projects", "workspaces"]);
+  // The root (the conversation) reads only identity and ancestry itself, and keeps
+  // execution one click away: the Tasks tool mounts the same task list with the
+  // same verdict-derived gate.
+  const rootTables = new Set([...canonicalHome.matchAll(/\.from\("([a-z_]+)"\)/g)].map((m) => m[1]));
+  assert.deepEqual([...rootTables].sort(), ["pmos", "projects", "workspaces"]);
+  assert.match(canonicalHome, /canCreateTask=\{canCreateTask\}/);
+  assert.match(conversationView, /<ProjectTaskList projectId=\{project\.id\} canCreateTask=\{canCreateTask\} \/>/);
 });
 
 test("14b. Home is not turned into a Command Center", () => {
-  // IA Principle 5 (One Entity One Home) only holds if Home and Command Center
-  // stay different screens. None of the Command Centers' semantics may leak in.
-  const code = withoutComments(canonicalHome);
+  // IA Principle 5 (One Entity One Home) only holds if the project's screens and
+  // the Command Centers stay different screens. The details screen imports none
+  // of their semantics.
+  const code = withoutComments(projectDetails);
   for (const forbidden of [
     /CommandCenterClient/,
     /command-center-rollup/,
@@ -578,28 +607,43 @@ test("14b. Home is not turned into a Command Center", () => {
   ]) {
     assert.doesNotMatch(code, forbidden, `Project Home must not import Command Center semantics (${forbidden})`);
   }
-  // And it does not open a privileged boundary of its own.
-  assert.doesNotMatch(code, /createSupabaseServiceRoleClient|createPrivilegedSupabaseClient/);
+  // CHAT-SHELL-01's root is the conversation. The Project Command Center's tools
+  // sit BESIDE it (the inspector), but the root does not become a Command Center
+  // screen: it runs none of the projection's zone reads and mounts no Command
+  // Center client. It only LINKS to the two Command Center screens.
+  const root = withoutComments(canonicalHome);
+  for (const forbidden of [/CommandCenterClient/, /command-center-rollup/, /pmo-command-center-paths/, /pmoCommandCenterPath/, /project-command-center-projection/, /runProjectScopedQuery/]) {
+    assert.doesNotMatch(root, forbidden, `the conversation root must not become a Command Center screen (${forbidden})`);
+  }
+  // And neither page opens a privileged boundary of its own.
+  for (const page of [canonicalHome, projectDetails]) {
+    assert.doesNotMatch(withoutComments(page), /createSupabaseServiceRoleClient|createPrivilegedSupabaseClient/);
+  }
 });
 
 test("14c. every read on canonical Home is scoped by the authorized ids", () => {
-  const body = canonicalHome.slice(canonicalHome.indexOf("const { workspaceId, projectId } = access;"));
-  assert.ok(body.length > 0, "the authorized ids must be destructured from the verdict");
-  assert.doesNotMatch(body, /requestedWorkspaceId/, "no query may use the routed claim");
-  assert.doesNotMatch(body, /requestedProjectId/);
-  assert.match(canonicalHome, /\.eq\("id", projectId\)\s*\n\s*\.eq\("workspace_id", workspaceId\)/);
+  for (const page of [canonicalHome, projectDetails]) {
+    const body = page.slice(page.indexOf("const { workspaceId, projectId } = access;"));
+    assert.ok(body.length > 0 && page.includes("const { workspaceId, projectId } = access;"), "the authorized ids must be destructured from the verdict");
+    assert.doesNotMatch(body, /requestedWorkspaceId/, "no query may use the routed claim");
+    assert.doesNotMatch(body, /requestedProjectId/);
+    // The identity read is scoped by BOTH authorized ids (in either order).
+    const identity = body.slice(body.indexOf('.from("projects")'), body.indexOf('.maybeSingle', body.indexOf('.from("projects")')));
+    assert.match(identity, /\.eq\("id", projectId\)/);
+    assert.match(identity, /\.eq\("workspace_id", workspaceId\)/);
+  }
 });
 
 // ─── Breadcrumb and parentage ────────────────────────────────────────────
 
 test("15. an assigned PMO's breadcrumb uses the canonical Workspace and PMO paths", () => {
-  assert.match(canonicalHome, /href=\{workspaceHomePath\(workspaceId\)\}/);
-  assert.match(canonicalHome, /href=\{pmoHomePath\(workspaceId, pmo\.id\)\}/);
+  assert.match(projectDetails, /href=\{workspaceHomePath\(workspaceId\)\}/);
+  assert.match(projectDetails, /href=\{pmoHomePath\(workspaceId, pmo\.id\)\}/);
   // Built by the family helpers, never re-typed as literals.
-  assert.doesNotMatch(withoutComments(canonicalHome), /href="\/workspaces\//);
+  assert.doesNotMatch(withoutComments(projectDetails), /href="\/workspaces\//);
   // And no longer led by the generic PMO chooser, which was only ever there
   // because Workspace Home did not exist before PR #608.
-  assert.doesNotMatch(canonicalHome, /PMOS_NAV_HREF/, "the trail leads with the Workspace, not the /pmos chooser");
+  assert.doesNotMatch(projectDetails, /PMOS_NAV_HREF/, "the trail leads with the Workspace, not the /pmos chooser");
   // Both helpers produce real, recognized routes.
   assert.ok(workspaceHomePath(WS).length > 0);
   assert.equal(pmoHomePath(WS, PMO), `/workspaces/${WS}/pmos/${PMO}`);
@@ -611,7 +655,7 @@ test("15b. the PMO ancestor is only claimed when the PMO answers in THIS workspa
   // this project's workspace, and a breadcrumb is not the place to discover
   // cross-tenant data. Scoped by both, so a PMO that does not answer here yields
   // no node rather than a link into a workspace this route never authorized.
-  const lookup = canonicalHome.slice(canonicalHome.indexOf('.from("pmos")'));
+  const lookup = projectDetails.slice(projectDetails.indexOf('.from("pmos")'));
   assert.match(lookup, /\.eq\("id", project\.pmo_id\)/);
   assert.match(lookup, /\.eq\("workspace_id", workspaceId\)/);
 });
@@ -619,13 +663,29 @@ test("15b. the PMO ancestor is only claimed when the PMO answers in THIS workspa
 test("16. a direct Project has no fabricated PMO ancestor", () => {
   // `projects.pmo_id` is NULLABLE, so the PMO lookup is conditional and the crumb
   // is conditional on its result. Nothing invents a middle node.
-  assert.match(canonicalHome, /project\.pmo_id\s*\n?\s*\?\s*await supabase/);
-  assert.match(canonicalHome, /: \{ data: null \}/);
-  assert.match(canonicalHome, /\{pmo \? \(/, "the PMO crumb must be conditional on a real PMO");
-  assert.doesNotMatch(canonicalHome, /pmo\?\.name \?\?/, "no placeholder PMO name");
-  assert.doesNotMatch(canonicalHome, /ensureDefaultPmo/, "a PMO is never conjured to fill a breadcrumb");
+  assert.match(projectDetails, /project\.pmo_id\s*\n?\s*\?\s*await supabase/);
+  assert.match(projectDetails, /: \{ data: null \}/);
+  assert.match(projectDetails, /\{pmo \? \(/, "the PMO crumb must be conditional on a real PMO");
+  assert.doesNotMatch(projectDetails, /pmo\?\.name \?\?/, "no placeholder PMO name");
+  assert.doesNotMatch(projectDetails, /ensureDefaultPmo/, "a PMO is never conjured to fill a breadcrumb");
   // And the route itself is identical with or without a PMO.
   assert.equal(projectHomePath(WS, PROJECT), CANONICAL_HOME);
+});
+
+test("16c. the conversation root's header tells the same truth about ancestry", () => {
+  // CHAT-SHELL-01's root draws a compact header, not the details screen's trail,
+  // and holds it to the same rules: built by the family helpers, the PMO read
+  // scoped by the AUTHORIZED workspace, conditional on a real `pmo_id`, carried
+  // through `resolveProjectPmoAncestry` so a failed read is never shown as "no PMO".
+  assert.match(canonicalHome, /workspace: workspaceHomePath\(workspaceId\)/);
+  assert.match(canonicalHome, /pmo: ancestry\.pmo \? pmoHomePath\(workspaceId, ancestry\.pmo\.id\) : null/);
+  const lookup = canonicalHome.slice(canonicalHome.indexOf('.from("pmos")'));
+  assert.match(lookup, /\.eq\("id", project\.pmo_id\)/);
+  assert.match(lookup, /\.eq\("workspace_id", workspaceId\)/);
+  assert.match(canonicalHome, /project\.pmo_id\s*\n?\s*\?\s*supabase/);
+  assert.match(canonicalHome, /resolveProjectPmoAncestry\(/);
+  assert.doesNotMatch(withoutComments(canonicalHome), /href="\/workspaces\//);
+  assert.doesNotMatch(canonicalHome, /ensureDefaultPmo/);
 });
 
 test("16b. a project assigned to a PMO keeps the WORKSPACE as its route parent", () => {
@@ -811,12 +871,16 @@ test("23. PMO Home's project cards link to canonical Project Home", () => {
 });
 
 test("24. ProjectTabNav's Overview link is canonical", () => {
-  assert.match(tabNav, /\{ label: "Overview", href: projectHomePath\(workspaceId, projectId\), key: "overview" \}/);
+  // CHAT-SHELL-01: the strip opens with the project's conversation (the family
+  // root), and Overview follows the details screen to `/overview`. Both built by
+  // the family helpers.
+  assert.match(tabNav, /\{ label: "Project Brain", href: projectHomePath\(workspaceId, projectId\), key: "conversation" \}/);
+  assert.match(tabNav, /\{ label: "Overview", href: projectOverviewPath\(workspaceId, projectId\), key: "overview" \}/);
   assert.doesNotMatch(tabNav, /label: "Overview", href: `\/projects\//);
   // It takes the project's authoritative workspace, and every call site supplies
   // one it actually read.
   assert.match(tabNav, /workspaceId: string;/);
-  assert.match(canonicalHome, /<ProjectTabNav workspaceId=\{workspaceId\}/);
+  assert.match(projectDetails, /<ProjectTabNav workspaceId=\{workspaceId\}/);
   assert.match(projectSettings, /<ProjectTabNav workspaceId=\{project\.workspace_id\}/);
   // PB-CHAT-01: the legacy chat path renders nothing of its own any more — no tab strip.
   assert.doesNotMatch(projectChat, /<ProjectTabNav/);
@@ -861,13 +925,14 @@ test("25. the other Project tabs are NOT falsely canonicalized", () => {
 });
 
 test("25b. Project Chat is a compatibility redirect; Settings and Follow-up are not migrated", () => {
-  // PB-CHAT-01 unified the project conversation into Project Brain, which lives in the
-  // canonical Project Command Center. The legacy chat path survives only as a redirect
-  // there — through the ONE route builder, with the workspace read from the project row.
+  // PB-CHAT-01 unified the project conversation into Project Brain; CHAT-SHELL-01 made
+  // it the canonical project route itself. The legacy chat path survives only as a
+  // redirect there — through the ONE route builder, with the workspace read from the
+  // project row.
   assert.ok(read("src/app/(protected)/projects/[id]/chat/page.tsx").length > 0);
   assert.ok(read("src/app/(protected)/projects/[id]/settings/page.tsx").length > 0);
   assert.doesNotMatch(projectChat, /<ContextChatPanel/, "no second project chat UI");
-  assert.match(projectChat, /redirect\(projectCommandCenterPath\(project\.workspace_id, project\.id\)\)/);
+  assert.match(projectChat, /redirect\(projectHomePath\(project\.workspace_id, project\.id\)\)/);
   assert.match(projectChat, /\.select\("id, workspace_id"\)/);
   assert.match(projectChat, /notFound\(\)/, "an unreadable project stays a 404, not an existence oracle");
   // §2's ratified Project family still contains no `settings` or `follow-up` member, so
@@ -1203,10 +1268,12 @@ test("self-review: no Project surface can be reached without the routed resolver
   // Canonical Home is the only page in the family, and it authorizes before it
   // reads. If a second page is ever added here without this call, the assertion on
   // the directory listing below is what notices.
-  assert.match(canonicalHome, /const access = await resolveRoutedProject\(/);
-  const authorizeIdx = canonicalHome.indexOf("const access = await resolveRoutedProject(");
-  const firstReadIdx = canonicalHome.indexOf('.from("');
-  assert.ok(authorizeIdx > 0 && authorizeIdx < firstReadIdx, "authorization must precede every read");
-  // `requireAuthUser` still runs first of all.
-  assert.ok(canonicalHome.indexOf("await requireAuthUser()") < authorizeIdx);
+  for (const page of [canonicalHome, projectDetails]) {
+    assert.match(page, /const access = await resolveRoutedProject\(/);
+    const authorizeIdx = page.indexOf("const access = await resolveRoutedProject(");
+    const firstReadIdx = page.indexOf('.from("');
+    assert.ok(authorizeIdx > 0 && authorizeIdx < firstReadIdx, "authorization must precede every read");
+    // `requireAuthUser` still runs first of all.
+    assert.ok(page.indexOf("await requireAuthUser()") < authorizeIdx);
+  }
 });

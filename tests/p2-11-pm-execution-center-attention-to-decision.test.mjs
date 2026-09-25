@@ -378,9 +378,14 @@ test("P2-11 L: a load failure is not silently treated as 'still loading'", () =>
   // The W2 review then widened it: attention is fed by TWO reads, and EITHER failing is an
   // attention failure — a still-pending suggestion read is not a reason to report zero.
   assert.match(layout, /const attentionErrorMessage = attention\.failed \? "We couldn't load project attention\." : null;/);
-  assert.match(layout, /attentionErrorMessage=\{attentionErrorMessage\}/);
+  assert.match(layout, /errorMessage=\{attentionErrorMessage\}/);
   assert.match(layout, /const raidLoading = Boolean\(selectedProject\?\.id\) && raidActions === undefined && !raidError;/);
-  assert.match(layout, /const needsYouCount = attention\.complete \? needsYouItems\.length : null;/);
+  // CHAT-SHELL-01: the screen-level count fed the removed top bar. The queue itself
+  // states a count only for a complete answer — loading, failed and partial all withhold it.
+  const queue = readFileSync("src/modules/workspace/presentation/command-center/needs-you-queue.tsx", "utf8");
+  assert.match(queue, /\{!loading && !errorMessage && !incomplete && items\.length > 0 && \(/);
+  assert.match(layout, /loading=\{attention\.loading\}/);
+  assert.match(layout, /incomplete=\{attention\.partial\}/);
 });
 
 // ── M. Accessibility ─────────────────────────────────────────────────────────
@@ -455,11 +460,18 @@ test("P2-11 M: the attention queue is reachable on a small screen without openin
   // overlay, and reaching it on a phone meant opening a drawer first. It is now a section of
   // the main document at every width, so the reachability this test protects is stronger,
   // not weaker: nothing has to be opened, and the queue is mounted exactly once.
-  const canvas = layout.slice(layout.indexOf("<CommandCenterCanvas"));
-  assert.match(canvas, /needsYouItems=\{needsYouItems\}/);
-  assert.equal((layout.match(/MobileOverlay open=\{rightOpen\}/g) ?? []).length, 0);
-  // Project navigation may still be an overlay, and it is still dismissible by keyboard.
-  assert.match(layout, /aria-label="Close panel"/);
+  // CHAT-SHELL-01: on a phone the CONVERSATION consumes the viewport, and the queue is
+  // one tap away — the header's Tools button opens the inspector on Needs You. It is
+  // still mounted exactly once (one inspector element at every width, no mobile copy),
+  // and the sheet it opens in is dismissible by keyboard.
+  assert.equal((layout.match(/<NeedsYouQueue/g) ?? []).length, 1);
+  assert.match(layout, /items=\{needsYouItems\}/);
+  const view = readFileSync("src/components/pmfreak/conversation-shell/project-conversation-view.tsx", "utf8");
+  assert.match(view, /md:hidden[\s\S]{0,40}>\s*Tools\s*</);
+  assert.match(view, /switchTool\(lastOperationalTool \?\? "attention"\)/);
+  const inspector = readFileSync("src/components/pmfreak/conversation-shell/operational-inspector.tsx", "utf8");
+  assert.match(inspector, /aria-label="Close project tool"/);
+  assert.match(inspector, /event\.key === "Escape"/);
 });
 
 // ── N. Refresh durability + fixture policy ───────────────────────────────────

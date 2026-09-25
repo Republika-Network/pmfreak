@@ -12,6 +12,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+// CHAT-SHELL-01 F1: to the Command Center of the workspace the server ACTUALLY created the
+// project in (`result.workspaceId`) — the bare `/command-center` resolved the preferred-workspace
+// cookie and so could name a different workspace than the project's.
+const PROJECT_CREATED_PUSH = "router.push(\n      workspaceCommandCenterPath(result.workspaceId, {\n        projectId: result.projectId,";
+
 const ROOT = process.cwd();
 
 const saveProject = readFileSync(join(ROOT, "src/lib/projects/save-project-onboarding.ts"), "utf8");
@@ -100,13 +105,13 @@ test("wizard handleActivate gates navigation on status=success", () => {
   assert.match(wizard, /result\.status !== "success"/, "must check status before proceeding");
 
   const failureGuardIdx = wizard.indexOf('result.status !== "success"');
-  const redirectIdx = wizard.indexOf("router.push(`/command-center?projectId=${result.projectId}");
+  const redirectIdx = wizard.indexOf(PROJECT_CREATED_PUSH);
   assert.ok(failureGuardIdx > 0, "failure guard must exist");
   assert.ok(redirectIdx > failureGuardIdx, "redirect must come after the failure guard");
 });
 
 test("wizard has exactly one redirect to the command center after persistence", () => {
-  const allPushes = [...wizard.matchAll(/router\.push\(`\/command-center\?projectId=\$\{result\.projectId\}/g)];
+  const allPushes = [...wizard.matchAll(/router\.push\(\s*workspaceCommandCenterPath\(result\.workspaceId, \{\s*projectId: result\.projectId,/g)];
   assert.equal(allPushes.length, 1, "redirect to the command center must appear exactly once");
 });
 
@@ -185,7 +190,7 @@ test("wizard sets activating=false and returns early on failure", () => {
 test("wizard does NOT call router.push before persistence check", () => {
   // router.push to canonical command center project ID must not appear before the status check
   const persistCheckIdx = wizard.indexOf('result.status !== "success"');
-  const firstProjectPushIdx = wizard.indexOf("router.push(`/command-center?projectId=${result.projectId}");
+  const firstProjectPushIdx = wizard.indexOf(PROJECT_CREATED_PUSH);
   assert.ok(firstProjectPushIdx > persistCheckIdx, "router.push must not appear before persistence check");
 });
 

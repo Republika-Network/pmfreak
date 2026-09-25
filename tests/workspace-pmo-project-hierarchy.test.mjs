@@ -2,6 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
+// CHAT-SHELL-01 F1: to the Command Center of the workspace the server ACTUALLY created the
+// project in (`result.workspaceId`) — the bare `/command-center` resolved the preferred-workspace
+// cookie and so could name a different workspace than the project's.
+const PROJECT_CREATED_PUSH = "router.push(\n      workspaceCommandCenterPath(result.workspaceId, {\n        projectId: result.projectId,";
+
 // ─── Load source files ────────────────────────────────────────────────────────
 
 const migration = fs.readFileSync("supabase/migrations/20260828000001_workspace_pmo_project_hierarchy.sql", "utf8");
@@ -229,7 +234,7 @@ test("new routes are registered in the route access policy", () => {
 test("project creation lands in the command center scoped to the new project", () => {
   assert.ok(projectsAction.includes("redirect(`/command-center?projectId=${project.id}"));
   const wizard = fs.readFileSync("src/components/pmfreak/projects/create-project-wizard.tsx", "utf8");
-  assert.ok(wizard.includes("router.push(`/command-center?projectId=${result.projectId}"));
+  assert.ok(wizard.includes(PROJECT_CREATED_PUSH), "the wizard lands in the new project's own workspace Command Center");
 });
 
 test("project tab strip: the conversation lives in the Project Command Center, not a Chat tab (PB-CHAT-01)", () => {

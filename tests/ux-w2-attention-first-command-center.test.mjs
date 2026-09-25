@@ -17,11 +17,22 @@
  *
  * W2 is a RECOMPOSITION. No canonical semantics, no new intelligence, no migration — the
  * last section of this file is the guard for that.
+ *
+ * CHAT-SHELL-01 — WHAT THIS FILE NOW PINS
+ * ---------------------------------------
+ * CHAT-SHELL-01 deliberately reversed W2's top-level claim. The project's primary
+ * surface is now its Project Brain conversation, in the centre of the product shell;
+ * the Command Center's sections are the TOOLS of the inspector beside it, and the
+ * nested canvas, its top bar, its inner project sidebar and the collapsible Project
+ * Brain panel are gone. Everything W2 established ABOUT those sections still holds and
+ * is still asserted here against real renders — their honesty rules, their empty and
+ * failed states, attention leading them — and the composition tests now pin the new
+ * contract: conversation first, attention the first tool, nothing nested.
  */
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { SIGNAL_TYPES } from "../src/lib/operational-flow/types.ts";
 import { SIGNAL_CHANGE_LABELS, deriveWhatChanged } from "../src/modules/workspace/presentation/command-center/change-read-model.ts";
@@ -31,7 +42,8 @@ import { getPrimaryNavigation } from "../src/lib/workspace/navigation-hierarchy.
 
 const read = (p) => readFileSync(p, "utf8");
 const layout = read("src/modules/workspace/screens/command-center/command-center-layout.tsx");
-const canvasSrc = read("src/modules/workspace/presentation/command-center/command-center-canvas.tsx");
+const toolsSrc = read("src/components/pmfreak/conversation-shell/operational-tools.ts");
+const viewSrc = read("src/components/pmfreak/conversation-shell/project-conversation-view.tsx");
 const executionQueueSrc = read("src/modules/workspace/presentation/command-center/execution-queue.tsx");
 const chainReadModel = read("src/modules/workspace/presentation/command-center/execution-read-model.ts");
 
@@ -48,60 +60,49 @@ const harness = JSON.parse(
 const text = (markup) => markup.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 
 /**
- * The frozen hierarchy. Order is the requirement; styling is not.
- * Project context/health is the header, asserted separately because it is not a section.
+ * The inspector's tool order for the four Command Center sections. Attention leads.
+ * (Tasks, Schedule, Evidence and Project are tools too; they are not W2 sections.)
  */
 const ATTENTION_FIRST_ORDER = [
   "cc-section-needs-you",
   "cc-section-what-changed",
   "cc-section-in-progress",
   "cc-section-monitoring",
-  "cc-section-project-brain",
 ];
 
-// ───────────────────────── 1-2. the primary surface is attention ─────────────────────────
+// ───────────────────── 1-2. the primary surface (CHAT-SHELL-01) ─────────────────────
 
-test("W2: Needs You is the first section of the Command Center's main canvas", () => {
-  // The real screen, mounted the way the route mounts it.
-  assert.equal(harness.screen.mainHasCanvas, true, "the attention canvas must be inside <main>");
-  assert.equal(harness.screen.mainOrder[0], "cc-section-needs-you", "attention must open the main region");
-  assert.equal(harness.screen.primarySurface, "NEEDS_YOU");
-  // Project context/health precedes it; it is the header, not a competing section.
-  assert.equal(harness.screen.headerBeforeCanvasBody, true);
+test("CHAT-SHELL-01: Project Brain is the project's primary surface, and Needs You leads the tools beside it", () => {
+  const { closed } = harness.conversation;
+  // The conversation is the centre: rendered once, in its full-surface layout, with its
+  // composer in the centre region — not a panel in a canvas.
+  assert.equal(closed.conversationInstances, 1);
+  assert.equal(closed.conversationLayout, "surface");
+  assert.equal(closed.composerInCenter, true);
+  assert.equal(closed.composerInstances, 1);
+  // No Command Center section competes for the centre.
+  assert.deepEqual(closed.sectionsInCenter, []);
+  // The tools sit beside it, attention first.
+  assert.deepEqual(closed.railTools.slice(0, 3), ["attention", "activity", "execution"]);
+  assert.equal(closed.inspectorHidden, true, "no tool steals the screen until asked for");
 });
 
-test("W2 + PB-CHAT-01: Project Brain follows the attention sections and is open by default", () => {
-  assert.equal(harness.screen.chatRole, "PROJECT_BRAIN");
-  // Attention still opens the canvas; the conversation never displaces it.
-  assert.equal(harness.screen.mainOrder.at(-1), "cc-section-project-brain");
-  // PB-CHAT-01 made the conversation first-class: the SCREEN opens it by default.
-  assert.match(layout, /const \[chatOpen, setChatOpen\] = useState\(true\);/);
-  // The panel still supports collapsing, and a collapsed region is `hidden` — out of the
-  // layout, the tab order and the accessibility tree — while staying MOUNTED (see the
-  // draft-lifecycle tests below).
-  const collapsed = harness.canvas.projectBrain;
-  const collapsedRegion = /<div id="[^"]*"([^>]*)data-testid="cc-project-brain-region"/.exec(collapsed);
-  assert.ok(collapsedRegion, "the conversation region must be present in the collapsed panel");
-  assert.match(collapsedRegion[1], /\bhidden\b/, "the collapsed conversation region must be hidden");
-  assert.match(text(collapsed), /Ask Project Brain about this project/);
-  // Expanded: the same region, not hidden, with the real Project Brain conversation in it.
-  const expanded = harness.chatExpanded.projectBrain;
-  const expandedRegion = /<div id="[^"]*"([^>]*)data-testid="cc-project-brain-region"/.exec(expanded);
-  assert.ok(expandedRegion, "the conversation region must be present when expanded");
-  assert.doesNotMatch(expandedRegion[1], /\bhidden\b/, "the expanded conversation region must not be hidden");
-  assert.match(expanded, /<textarea\b/);
-  assert.match(expanded, /data-testid="project-brain-conversation"/);
-  assert.match(expanded, /project-brain-disclosure/);
-  // The deterministic-rules disclosure belonged to the retired feed and must not survive.
-  assert.doesNotMatch(expanded, /chat-determinism-disclosure|deterministic rules/);
-  // The collapsed control says how much the persisted thread holds.
-  assert.match(text(collapsed), /2 messages/);
+test("CHAT-SHELL-01: nothing of the nested Command Center application survives around the conversation", () => {
+  for (const state of [harness.conversation.closed, harness.conversation.withAttention]) {
+    assert.equal(state.hasCanvas, false, "no attention canvas");
+    assert.equal(state.hasProjectBrainPanel, false, "no collapsible Project Brain panel");
+    assert.equal(state.hasInnerProjectList, false, "no inner project sidebar — the shell's tree is the one selector");
+    assert.equal(state.hasOwnShell, false, "no second application shell");
+  }
+  for (const removed of ["command-center-canvas", "project-sidebar", "project-top-bar", "project-brain-panel"]) {
+    assert.equal(existsSync(`src/modules/workspace/presentation/command-center/${removed}.tsx`), false, `${removed} is gone`);
+  }
 });
 
 // ───────────────────────── 3. what changed, from existing signals ────────────────────────
 
 test("W2: What Changed renders the project's real signal rows", () => {
-  const rendered = text(harness.canvas.whatChanged);
+  const rendered = text(harness.tools.whatChanged);
   const changes = harness.readModels.changes;
   assert.ok(changes.length > 0, "the fixture carries real signals");
   for (const change of changes) {
@@ -111,7 +112,7 @@ test("W2: What Changed renders the project's real signal rows", () => {
 });
 
 test("W2: What Changed speaks PM language, never the canonical signal type or row id", () => {
-  const rendered = text(harness.canvas.whatChanged);
+  const rendered = text(harness.tools.whatChanged);
   for (const signalType of SIGNAL_TYPES) {
     assert.ok(!rendered.includes(signalType), `raw canonical type "${signalType}" must not be shown to a PM`);
   }
@@ -133,7 +134,7 @@ test("W2: changes are deterministically ordered and each row is shown once", () 
   assert.deepEqual(harness.readModels.changesFromReversedInput, ids);
   // The fixture delivers one canonical row twice; it is one change.
   assert.equal(new Set(ids).size, ids.length);
-  assert.equal((harness.canvas.whatChanged.match(/cc-change-item/g) ?? []).length, ids.length);
+  assert.equal((harness.tools.whatChanged.match(/cc-change-item/g) ?? []).length, ids.length);
 });
 
 test("W2: a signal with no persisted timestamp is shown without one, never with an invented one", () => {
@@ -150,7 +151,7 @@ test("W2: a signal with no persisted timestamp is shown without one, never with 
 // ───────────────────────── 4. in progress, from execution chains ─────────────────────────
 
 test("W2: In Progress renders the governed chains that follow a recorded Decision", () => {
-  const rendered = text(harness.canvas.inProgress);
+  const rendered = text(harness.tools.inProgress);
   const chains = harness.readModels.chainIds;
   assert.ok(chains.length > 0, "the fixture carries a decided chain");
   for (const chain of chains) {
@@ -165,9 +166,9 @@ test("W2: In Progress renders the governed chains that follow a recorded Decisio
 
 test("W2: PMFreak Monitoring is the same state the specialist agents already derive", () => {
   const monitoring = harness.readModels.monitoring;
-  const rendered = text(harness.canvas.monitoring);
+  const rendered = text(harness.tools.monitoring);
   assert.equal(
-    (harness.canvas.monitoring.match(/cc-monitoring-area/g) ?? []).length,
+    (harness.tools.monitoring.match(/cc-monitoring-area/g) ?? []).length,
     monitoring.areas.length,
     "every monitored family is stated",
   );
@@ -182,7 +183,7 @@ test("W2: PMFreak Monitoring is the same state the specialist agents already der
 test("W2: monitoring counts reconcile with the existing agent derivation, row for row", () => {
   // Proof that this is a second projection of state that already existed, not a new
   // intelligence: the count behind every coverage line is the count the specialist carries.
-  const agentText = text(harness.canvas.monitoring);
+  const agentText = text(harness.tools.monitoring);
   for (const area of harness.readModels.monitoring.areas) {
     assert.ok(agentText.includes(area.statusLabel), `"${area.statusLabel}" must be readable`);
   }
@@ -193,7 +194,7 @@ test("W2: monitoring counts reconcile with the existing agent derivation, row fo
 });
 
 test("W2: the specialist agents are not the default experience, and are not deleted", () => {
-  const monitoringMarkup = harness.canvas.monitoring;
+  const monitoringMarkup = harness.tools.monitoring;
   const detailStart = monitoringMarkup.indexOf('data-testid="cc-monitoring-detail"');
   assert.ok(detailStart > 0, "the specialist roster must still exist, behind a disclosure");
   // Collapsed: `<details>` without `open`.
@@ -204,50 +205,57 @@ test("W2: the specialist agents are not the default experience, and are not dele
     const first = monitoringMarkup.indexOf(name);
     assert.ok(first > detailStart, `"${name}" must not appear before the collapsed disclosure`);
   }
-  // And no agent name reaches the rest of the canvas at all.
-  const beforeMonitoring = harness.canvas.populated.slice(0, harness.canvas.populated.indexOf('data-testid="cc-section-monitoring"'));
+  // And no agent name reaches any other tool at all.
+  const beforeMonitoring = harness.tools.populated.slice(0, harness.tools.populated.indexOf('data-testid="cc-section-monitoring"'));
   for (const name of harness.readModels.agentNames) {
-    assert.ok(!beforeMonitoring.includes(name), `"${name}" must not be part of the primary canvas`);
+    assert.ok(!beforeMonitoring.includes(name), `"${name}" must not be part of the attention tools`);
   }
 });
 
-// ───────────────────────── 7-8. desktop and mobile order ─────────────────────────────────
+// ───────────────────────── 7-8. desktop and mobile ────────────────────────────────────
 
 test("W2: the desktop Command Center is attention-first", () => {
-  assert.deepEqual(harness.screen.mainOrder, ATTENTION_FIRST_ORDER);
-  assert.deepEqual(harness.canvas.populatedOrder, ATTENTION_FIRST_ORDER);
-  // The two-column desktop cockpit is CSS placement over this one tree, not a second tree.
-  assert.match(canvasSrc, /xl:col-start-1 xl:row-start-1/);
-  assert.match(canvasSrc, /xl:col-start-2 xl:row-start-1/);
+  // CHAT-SHELL-01: the sections are ordered tools; attention leads them.
+  assert.deepEqual(harness.tools.populatedOrder, ATTENTION_FIRST_ORDER);
+  const order = [...toolsSrc.matchAll(/key: "([a-z]+)", label:/g)].map((m) => m[1]);
+  assert.deepEqual(order.slice(0, 3), ["attention", "activity", "execution"]);
+  assert.ok(order.indexOf("monitoring") > order.indexOf("execution"));
+  // Opening a tool puts it beside the conversation, which stays first in the document.
+  const open = harness.conversation.withAttention;
+  assert.equal(open.inspectorHidden, false);
+  assert.equal(open.inspectorTool, "attention");
+  assert.equal(open.operationsTool, "attention");
+  assert.deepEqual(open.railPressed, ["attention"]);
+  assert.equal(open.centerBeforeInspector, true);
 });
 
 test("W2: the mobile Command Center is the same order, and no attention content sits behind an overlay", () => {
-  // One tree: the mobile order IS the document order, so a phone cannot end up with a
-  // different priority than a desktop.
-  assert.deepEqual(harness.screen.order, ATTENTION_FIRST_ORDER);
-  // Each attention section is mounted exactly once — nothing is duplicated into a drawer.
-  assert.equal(harness.screen.canvasCount, 1);
-  assert.equal(harness.screen.needsYouCount, 1);
-  // The right-hand overlay that used to hold Needs You / After Your Decision / the agent
-  // dock is gone; project navigation may still be an overlay, attention may not.
-  assert.doesNotMatch(layout, /MobileOverlay open=\{rightOpen\}/);
-  assert.match(layout, /MobileOverlay open=\{leftOpen\}/);
+  // CHAT-SHELL-01 changes the second half deliberately: on a phone the CONVERSATION
+  // consumes the viewport and the tools open in a sheet — one tap, from the header's
+  // Tools button, which opens Needs You by default. What is kept: ONE inspector element
+  // at every width (inline on a wide screen, a sheet below), so nothing is duplicated
+  // into a mobile copy with its own props, and every section is mounted once.
+  assert.match(viewSrc, /md:hidden[\s\S]{0,40}>\s*Tools\s*</);
+  assert.match(viewSrc, /switchTool\(lastOperationalTool \?\? "attention"\)/);
+  const inspector = read("src/components/pmfreak/conversation-shell/operational-inspector.tsx");
+  assert.equal((inspector.match(/<aside/g) ?? []).length, 1);
+  assert.match(inspector, /xl:static/);
+  for (const component of ["<NeedsYouQueue", "<WhatChangedPanel", "<ExecutionQueue", "<MonitoringPanel"]) {
+    assert.equal((layout.match(new RegExp(component, "g")) ?? []).length, 1, `${component} is mounted once`);
+  }
+  // Below `md` the rail gives way to an in-sheet tool switcher, so every tool stays reachable.
+  assert.match(inspector, /aria-label="Switch project tool"/);
 });
 
 // ───────────────────────── project header hierarchy ──────────────────────────────────────
 
 test("W2: the header leads with the project's own name, its health and what is waiting", () => {
-  const header = text(harness.canvas.header);
-  assert.match(header, /^ERP Transformation/, "the human name comes first");
-  assert.match(header, /1 needs your attention/);
-  assert.match(header, /Updated 8 minutes ago/);
-  assert.match(header, /Health: At Risk/);
-  // The generated code is preserved for the surfaces that need it, below the name.
-  assert.ok(header.includes("ERP-9F3A2"), "the identifier must not be deleted");
-  assert.ok(
-    header.indexOf("ERP Transformation") < header.indexOf("ERP-9F3A2"),
-    "the generated project code must not outrank the project name",
-  );
+  // CHAT-SHELL-01: the conversation header is orientation, not analytics — ancestry, the
+  // project's own name and its status. The attention count and freshness moved into the
+  // tools that own them (Needs You states its own count; Evidence states freshness).
+  const header = harness.conversation.closed.header;
+  assert.match(header, /^Republika \/ Delivery PMO ERP Transformation active/);
+  assert.doesNotMatch(header, /needs your attention|Health:|Updated /);
 });
 
 // ───────────────────────── 9-11. honest states ───────────────────────────────────────────
@@ -258,7 +266,7 @@ test("W2: an empty attention queue says so plainly, with real monitoring context
   assert.match(empty, /Nothing currently requires your decision or review\./);
   // The context beneath it is the real monitored families, not a reassurance.
   assert.match(empty, /PMFreak is still monitoring risks, schedule, scope, budget, stakeholders/);
-  assert.deepEqual(harness.emptyAttention.order, ATTENTION_FIRST_ORDER, "the hierarchy does not change when clear");
+  assert.deepEqual(harness.emptyAttention.order, ATTENTION_FIRST_ORDER, "the tool order does not change when clear");
 });
 
 test("W2: no signals means no changes, and no invented ones", () => {
@@ -274,7 +282,7 @@ test("W2: a project with no evidence yet says monitoring has not started, rather
 });
 
 test("W2: a failed read is never rendered as a successful empty", () => {
-  const { needsYou, whatChanged, monitoring, header } = harness.readFailed;
+  const { needsYou, whatChanged, monitoring, headingCount } = harness.readFailed;
   for (const [name, body] of Object.entries({ needsYou, whatChanged, monitoring })) {
     assert.match(body, /We couldn&#x27;t load project attention\./, `${name} must state the failure`);
     assert.match(body, /Try again/, `${name} must offer a retry`);
@@ -286,9 +294,8 @@ test("W2: a failed read is never rendered as a successful empty", () => {
   // Nor may the roster be shown as universally "Clear" on the strength of a payload that
   // never arrived.
   assert.doesNotMatch(monitoring, /Risk Agent/);
-  // And the header states no attention count at all rather than answering "0".
-  assert.ok(!/needs? your attention/.test(header), "a failed read must not produce a count");
-  assert.ok(!/Nothing needs your attention/.test(header));
+  // And the queue states no attention count at all rather than answering "0".
+  assert.equal(headingCount, null, "a failed read must not produce a count");
 });
 
 // ───────────────────────── 12-14. nothing else moved ─────────────────────────────────────
@@ -299,11 +306,15 @@ test("W2: no internal certification vocabulary reached the new customer surfaces
   // This is the W2-specific slice: the surfaces this workstream introduced.
   const PROHIBITED = ["AOC-E", "P2-06", "P2-09", "DEMO / FIXTURE"];
   const NEW_SURFACES = [
-    "src/modules/workspace/presentation/command-center/command-center-canvas.tsx",
     "src/modules/workspace/presentation/command-center/what-changed-panel.tsx",
     "src/modules/workspace/presentation/command-center/monitoring-panel.tsx",
-    "src/modules/workspace/presentation/command-center/project-brain-panel.tsx",
     "src/modules/workspace/presentation/command-center/change-read-model.ts",
+    // CHAT-SHELL-01's surfaces are held to the same rule.
+    "src/components/pmfreak/conversation-shell/operational-tools.ts",
+    "src/components/pmfreak/conversation-shell/operational-rail.tsx",
+    "src/components/pmfreak/conversation-shell/operational-inspector.tsx",
+    "src/components/pmfreak/conversation-shell/project-conversation-view.tsx",
+    "src/components/pmfreak/conversation-shell/context-tree.tsx",
   ];
   for (const file of NEW_SURFACES) {
     const rendered = read(file).replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
@@ -312,7 +323,7 @@ test("W2: no internal certification vocabulary reached the new customer surfaces
     }
   }
   // And the rendered Command Center itself carries none of it.
-  const rendered = text(harness.canvas.populated);
+  const rendered = text(harness.tools.populated);
   for (const term of PROHIBITED) assert.ok(!rendered.includes(term), `"${term}" must not be rendered`);
 });
 
@@ -352,7 +363,10 @@ test("W2: the new sections add no request of their own", () => {
     "src/modules/workspace/presentation/command-center/change-read-model.ts",
     "src/modules/workspace/presentation/command-center/what-changed-panel.tsx",
     "src/modules/workspace/presentation/command-center/monitoring-panel.tsx",
-    "src/modules/workspace/presentation/command-center/command-center-canvas.tsx",
+    // CHAT-SHELL-01: the rail and inspector only choose which tool is visible.
+    "src/components/pmfreak/conversation-shell/operational-rail.tsx",
+    "src/components/pmfreak/conversation-shell/operational-inspector.tsx",
+    "src/components/pmfreak/conversation-shell/operational-tools.ts",
   ]) {
     const src = read(file);
     assert.doesNotMatch(src, /\bfetch\(/, `${file} must not issue a request`);
@@ -540,39 +554,37 @@ test("W2-P1-02: completeness requires every attention source, not the first one"
 });
 
 test("W2-P1-02 (A): zero governed items with suggestions still loading is not 'You're clear'", () => {
-  const { completeness, needsYou, header } = harness.attentionCompleteness.raidLoading;
+  const { completeness, needsYou, headingCount } = harness.attentionCompleteness.raidLoading;
   assert.equal(completeness.complete, false);
   assert.doesNotMatch(needsYou, /You&#x27;re clear\./);
   assert.match(needsYou, /Checking what needs your attention/);
   // No definitive count while an attention source is unresolved.
-  assert.ok(!/needs? your attention/.test(text(header)));
-  assert.ok(!/Nothing needs your attention/.test(text(header)));
+  assert.equal(headingCount, null);
 });
 
 test("W2-P1-02 (B): a failed suggestion read is a visible failure, not an empty success", () => {
-  const { completeness, needsYou, header } = harness.attentionCompleteness.raidFailed;
+  const { completeness, needsYou, headingCount } = harness.attentionCompleteness.raidFailed;
   assert.equal(completeness.failed, true);
   assert.match(needsYou, /We couldn&#x27;t load project attention\./);
   assert.match(needsYou, /Try again/);
   assert.doesNotMatch(needsYou, /You&#x27;re clear\./);
-  assert.ok(!/needs? your attention/.test(text(header)));
+  assert.equal(headingCount, null);
 });
 
 test("W2-P1-02 (C): known governed items stay visible while suggestions are still loading", () => {
-  const { needsYou, header } = harness.attentionCompleteness.governedKnownRaidLoading;
+  const { needsYou, headingCount } = harness.attentionCompleteness.governedKnownRaidLoading;
   // Hiding real attention would be its own dishonesty.
   assert.match(needsYou, /Agree a replan for the delayed milestone/);
-  // ...but the list says it is not the whole answer, and the header states no count.
+  // ...but the list says it is not the whole answer, and states no count.
   assert.match(needsYou, /Still checking suggested actions\./);
   assert.match(needsYou, /data-testid="cc-attention-incomplete"/);
-  assert.ok(!/needs? your attention/.test(text(header)));
+  assert.equal(headingCount, null);
 });
 
 test("W2-P1-02 (D): only when both sources resolve may the product say 'You're clear'", () => {
-  const { completeness, needsYou, header } = harness.attentionCompleteness.bothComplete;
+  const { completeness, needsYou } = harness.attentionCompleteness.bothComplete;
   assert.equal(completeness.complete, true);
   assert.match(needsYou, /You&#x27;re clear\./);
-  assert.match(text(header), /Nothing needs your attention/);
 });
 
 test("W2-P1-02: the screen binds completeness to both reads, and merges neither model", () => {
@@ -586,7 +598,6 @@ test("W2-P1-02: the screen binds completeness to both reads, and merges neither 
   // definitive count or a clear state; an optional/absent field is partial, never complete.
   assert.match(layout, /const governedAttentionPartial = flowData !== undefined && flowData\.governedAttentionComplete !== true;/);
   assert.match(layout, /\{ label: "suggested actions", loading: raidLoading, failed: Boolean\(raidError\) \}/);
-  assert.match(layout, /const needsYouCount = attention\.complete \? needsYouItems\.length : null;/);
   assert.match(layout, /const attentionErrorMessage = attention\.failed \? "We couldn't load project attention\." : null;/);
   // The two collections stay distinct business objects with distinct write paths.
   assert.deepEqual(harness.attentionCompleteness.raidItemsAreStillTheirOwnKind, ["raid_suggestion"]);
@@ -600,9 +611,10 @@ test("W2-P1-02: a suggestion failure does not make the activity sections claim t
   // What changed / In Progress / Monitoring read only the operational flow, so they must
   // not inherit an attention-only failure.
   assert.match(layout, /const activityErrorMessage = flowError \? "We couldn't load project attention\." : null;/);
-  assert.match(layout, /activityErrorMessage=\{activityErrorMessage\}/);
-  assert.match(layout, /activityLoading=\{flowLoading\}/);
-  assert.match(layout, /attentionLoading=\{attention\.loading\}/);
+  // CHAT-SHELL-01: bound directly on the tools that read them.
+  assert.match(layout, /<WhatChangedPanel items=\{changes\} loading=\{flowLoading\} errorMessage=\{activityErrorMessage\}/);
+  assert.match(layout, /errorMessage=\{activityErrorMessage\}\s*\n\s*onRetry=\{retryAll\}\s*\n\s*onAddContext/);
+  assert.match(layout, /loading=\{attention\.loading\}/);
 });
 
 // ───────── W2-P1-03: header freshness reads real activity ────────────────────
@@ -690,68 +702,53 @@ test("W2-P1-03: the summary's fetch time is not reported as project activity", (
 });
 
 
-// ───────── Codex P2: collapsing Project Brain must not discard an unsent draft ─
+// ───────── Codex P2 (carried into CHAT-SHELL-01): an unsent draft survives ─────────
 //
-// The draft is the Project Brain conversation's own local state, and React keeps local state exactly as long
-// as the same element type stays at the same position across renders. So the property that
-// decides whether a draft survives a collapse is whether the child is RENDERED IN BOTH
-// STATES, IN THE SAME PLACE. `{open ? children : null}` answered no, and typing, collapsing
-// and reopening returned an empty composer.
-//
-// These assertions read real markup from both states rather than the source text. See the
-// note in the completion report on what a full six-step interaction test would cost here.
+// W2's Codex finding was that collapsing the Project Brain PANEL unmounted the
+// conversation and threw the draft away. CHAT-SHELL-01 removed the panel: the
+// conversation is never collapsed, and the thing that opens and closes is the tool
+// inspector beside it. The property still has to hold for THAT interaction — a draft is
+// the conversation's local state, and it survives exactly as long as the conversation
+// stays the same element in the same place. These read real markup from both states.
 
 test("W2-CODEX: the conversation is rendered in both states, so collapsing cannot unmount it", () => {
-  const { collapsed, expanded } = harness.askPanel;
-  for (const [state, shape] of Object.entries({ collapsed, expanded })) {
-    assert.equal(shape.regionPresent, true, `${state}: the conversation region must be rendered`);
-    assert.equal(shape.composerRendered, true, `${state}: the composer must be rendered`);
-    assert.equal(shape.composerInsideRegion, true, `${state}: the composer must sit inside the region`);
-    assert.equal(shape.disclosureRendered, true, `${state}: the real Project Brain conversation must be the child`);
+  const { closed, withAttention } = harness.conversation;
+  for (const [state, shape] of Object.entries({ closed, withAttention })) {
+    assert.equal(shape.conversationInstances, 1, `${state}: the conversation must be rendered`);
+    assert.equal(shape.composerInCenter, true, `${state}: the composer must sit in the centre`);
   }
-  // Identical position inside the region in both states: React therefore reconciles it as
-  // the same instance and keeps its state, rather than mounting a fresh empty one.
-  assert.equal(collapsed.composerOffsetInRegion, expanded.composerOffsetInRegion);
-  assert.ok(collapsed.composerOffsetInRegion > 0);
+  // The conversation is byte-for-byte identical whether a tool is open or not: the
+  // inspector is a SIBLING, so React reconciles the conversation as the same instance.
+  // (Only the header's Tools button differs — it reports the inspector's state.)
+  assert.ok(closed.conversation.length > 0);
+  assert.equal(closed.conversation, withAttention.conversation);
 });
 
 test("W2-CODEX: a collapsed conversation is hidden, not merely invisible", () => {
-  // `hidden` gives the region `display: none`, which takes it out of the layout, the tab
-  // order and the accessibility tree. A transparent or off-screen composer would keep the
-  // draft and still leave a keyboard user tabbing into a control nobody can see.
-  assert.equal(harness.askPanel.collapsed.regionHidden, true);
-  assert.equal(harness.askPanel.expanded.regionHidden, false);
-  // And the wrapper carries no display utility, which would override the attribute.
-  const panelSrc = read("src/modules/workspace/presentation/command-center/project-brain-panel.tsx");
-  const region = /hidden=\{!open\}[\s\S]{0,320}?className="([^"]*)"/.exec(panelSrc);
-  assert.ok(region, "the region must set hidden from the open flag");
-  assert.doesNotMatch(region[1], /\b(block|flex|grid|inline|inline-block|table|contents)\b/, "a display utility would defeat `hidden`");
-  // The conditional that destroyed the draft is gone from the CODE. It is still named in
-  // the file's comment, which is where the reason for this shape belongs.
-  const panelCode = panelSrc.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
-  assert.doesNotMatch(panelCode, /\{\s*open\s*\?\s*children\s*:\s*null\s*\}/);
-  assert.match(panelCode, /\{children\}/);
+  // Now it is the closed INSPECTOR that must be hidden rather than transparent — out of
+  // the layout, the tab order and the accessibility tree — and the conversation that is
+  // never hidden at all.
+  assert.equal(harness.conversation.closed.inspectorHidden, true);
+  assert.equal(harness.conversation.withAttention.inspectorHidden, false);
+  assert.doesNotMatch(harness.conversation.closed.center, /\shidden\b/);
+  const inspectorSrc = read("src/components/pmfreak/conversation-shell/operational-inspector.tsx");
+  assert.match(inspectorSrc, /hidden=\{!open\}/);
 });
 
 test("W2-CODEX: there is exactly one conversation instance, in both states", () => {
-  // Keeping it mounted must not become "mount a second one".
-  assert.equal(harness.askPanel.collapsed.composerInstances, 1);
-  assert.equal(harness.askPanel.expanded.composerInstances, 1);
-  // And the whole Command Center still mounts the panel once.
-  assert.equal((harness.canvas.populated.match(/data-testid="cc-section-project-brain"/g) ?? []).length, 1);
-  assert.equal((harness.screen.order.filter((id) => id === "cc-section-project-brain")).length, 1);
+  assert.equal(harness.conversation.closed.composerInstances, 1);
+  assert.equal(harness.conversation.withAttention.composerInstances, 1);
+  // Opening a tool mounts the tool, never a second conversation.
+  assert.equal(harness.conversation.withAttention.conversationInstances, 1);
 });
 
 test("W2-CODEX: collapsing is presentation only — it sends nothing and owns no message state", () => {
-  // The panel has no submit path and no message state of its own: it cannot send on
-  // collapse, and it cannot drop a transcript, because it holds neither.
-  const panelSrc = read("src/modules/workspace/presentation/command-center/project-brain-panel.tsx");
-  assert.doesNotMatch(panelSrc, /onSendMessage|useState|fetch\(/);
-  // PB-CHAT-01: the transcript is persisted server-side; the screen only holds the count the
-  // conversation reports, so collapsing cannot drop a message.
-  assert.match(layout, /const \[chatMessageCount, setChatMessageCount\] = useState\(0\);/);
-  assert.match(layout, /onTranscriptSizeChange=\{setChatMessageCount\}/);
-  assert.match(layout, /chatMessageCount=\{chatMessageCount\}/);
+  // Choosing, switching or closing a tool is local presentational state — no request,
+  // no router navigation, no message state — so it cannot send or drop a turn.
+  const toolHandlers = viewSrc.slice(viewSrc.indexOf("const selectTool"), viewSrc.indexOf("const operationalTool"));
+  assert.doesNotMatch(toolHandlers, /fetch\(|router\.|useRouter|messages/);
+  // It may drop the `?tool=` hint from the address bar, in place, without navigating.
+  assert.match(viewSrc, /window\.history\.replaceState\(/);
 });
 
 // ───────── Codex P2: the future-activity ceiling is the SERVER's clock ────────
@@ -865,8 +862,8 @@ test("W2-CODEX: the specialist roster inherits the same scope, and stays collaps
   const body = harness.monitoringWindow.panelText;
   assert.ok(!/\bClear\b/.test(windowedMonitoringText(body)));
   assert.match(body, /recent signal/);
-  assert.match(harness.canvas.monitoring, /data-testid="cc-monitoring-detail"/);
-  assert.match(harness.canvas.monitoring, /View monitors/);
+  assert.match(harness.tools.monitoring, /data-testid="cc-monitoring-detail"/);
+  assert.match(harness.tools.monitoring, /View monitors/);
 });
 
 test("W2-CODEX: no server-side aggregate was added to close the window gap", () => {

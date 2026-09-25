@@ -61,10 +61,10 @@ function ChainRow({
         data-testid={testId}
         data-journey-phase={journey.phase}
         data-journey-closure={journey.closure}
-        className="relative rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5 transition focus-within:border-sky-500/40 hover:border-white/20 hover:bg-white/[0.05]"
+        className="relative rounded-xl border border-slate-200 bg-white px-3 py-2.5 transition focus-within:border-sky-500/40 hover:border-slate-300 hover:bg-slate-50"
       >
         <div className="flex items-start justify-between gap-2">
-          <h3 className="min-w-0 text-sm text-zinc-200">
+          <h3 className="min-w-0 text-sm text-slate-800">
             <button
               type="button"
               data-testid={`${testId}-open`}
@@ -79,35 +79,35 @@ function ChainRow({
 
         {/* Why this work exists — the Decision's own rationale, never a restatement. */}
         {journey.why && (
-          <p className="mt-1.5 line-clamp-2 text-[11px] text-zinc-400" data-testid="cc-journey-why">
-            <span className="text-zinc-500">Why </span>
+          <p className="mt-1.5 line-clamp-2 text-[11px] text-slate-600" data-testid="cc-journey-why">
+            <span className="text-slate-500">Why </span>
             {journey.why}
           </p>
         )}
 
         {/* What is happening, from persisted state. */}
-        <p className="mt-1 text-[11px] text-zinc-400" data-testid="cc-journey-state">
+        <p className="mt-1 text-[11px] text-slate-600" data-testid="cc-journey-state">
           {journey.state}
         </p>
 
         {/* Owner only when a canonical actor is persisted. Never a fabricated name. */}
         {journey.owner && (
-          <p className="mt-1 text-[11px] text-zinc-500" data-testid="cc-journey-owner">
+          <p className="mt-1 text-[11px] text-slate-500" data-testid="cc-journey-owner">
             {journey.owner.isYou ? "Owned by you" : "Owned by another workspace member"}
           </p>
         )}
 
         {/* The next real step. Absent when nothing is pending. */}
         {journey.next && (
-          <p className="mt-1 text-[11px] text-zinc-300" data-testid="cc-journey-next">
-            <span className="text-zinc-500">Next </span>
+          <p className="mt-1 text-[11px] text-slate-700" data-testid="cc-journey-next">
+            <span className="text-slate-500">Next </span>
             {journey.next}
           </p>
         )}
 
         {/* Known facts stay visible; completion is not claimed over a gap. */}
         {journey.partialReason && (
-          <p className="mt-1 text-[11px] text-amber-300/80" data-testid="cc-journey-partial">
+          <p className="mt-1 text-[11px] text-amber-800/80" data-testid="cc-journey-partial">
             {journey.partialReason}
           </p>
         )}
@@ -143,24 +143,24 @@ export function ExecutionQueue({
 }) {
   const { inProgress, notProgressing, closed } = projectChainProgress(chains);
   const showEmpty = !loading && chains.length === 0;
-  // `CommandCenterLayout` mounts this component twice — desktop sidebar and the mobile
-  // overlay, which is never unmounted — so a document-global id would appear twice and
-  // `aria-labelledby` would resolve to whichever came first, naming the visible section
-  // after a hidden heading. Each instance names its own heading.
+  // A host may mount this component more than once (the Command Center once did, for
+  // its desktop sidebar and mobile overlay), so a document-global id could appear twice
+  // and `aria-labelledby` would resolve to whichever came first. Each instance names
+  // its own heading.
   const headingId = useId();
   return (
     <section aria-labelledby={headingId} data-testid="cc-section-in-progress">
       <div className="flex items-center justify-between gap-2 px-1">
-        <h2 id={headingId} className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
+        <h2 id={headingId} className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
           In Progress
         </h2>
         {/* The count is the count of the heading's own claim, not of the section. */}
-        {!loading && !incomplete && inProgress.length > 0 && <span className="shrink-0 text-[11px] text-zinc-500">{inProgress.length}</span>}
+        {!loading && !incomplete && inProgress.length > 0 && <span className="shrink-0 text-[11px] text-slate-500">{inProgress.length}</span>}
       </div>
       {/* The section is named for what the PM sees — work under way — while the sentence
           below keeps the canonical meaning intact: this is what follows a recorded
           Decision, and nothing appears here that a human did not decide. */}
-      <p className="mt-1 px-1 text-[11px] text-zinc-500">What is happening after your decisions.</p>
+      <p className="mt-1 px-1 text-[11px] text-slate-500">What is happening after your decisions.</p>
 
       <div role="status" aria-live="polite">
         {loading && chains.length === 0 && <SectionLoadingState label="Checking what you have decided…" />}
@@ -179,7 +179,7 @@ export function ExecutionQueue({
 
       {/* Known items ARE shown; what is withheld is the claim that they are all of them. */}
       {!loading && !showEmpty && incomplete && incompleteNote && (
-        <p className="mt-2 px-1 text-[11px] text-amber-300/80" data-testid="cc-in-progress-incomplete">
+        <p className="mt-2 px-1 text-[11px] text-amber-800/80" data-testid="cc-in-progress-incomplete">
           {incompleteNote}
         </p>
       )}
@@ -197,10 +197,10 @@ export function ExecutionQueue({
           this row is how they reach it. */}
       {!loading && notProgressing.length > 0 && (
         <div className="mt-3" data-testid="cc-not-progressing-group">
-          <p className="px-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
+          <p className="px-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
             Not progressing
           </p>
-          <p className="mt-1 px-1 text-[11px] text-zinc-500">
+          <p className="mt-1 px-1 text-[11px] text-slate-500">
             Decided, but nothing is advancing on its own. Each row says why.
           </p>
           <ul className="mt-2 space-y-1.5">
@@ -214,8 +214,8 @@ export function ExecutionQueue({
       {/* Terminal chains. Preserved and reachable — a PM must still be able to open a
           rejected Decision or an achieved Outcome — but never presented as live work. */}
       {!loading && closed.length > 0 && (
-        <details className="mt-3 rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2" data-testid="cc-closed-chains">
-          <summary className="cursor-pointer text-[11px] font-medium text-zinc-500 transition hover:text-zinc-300">
+        <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2" data-testid="cc-closed-chains">
+          <summary className="cursor-pointer text-[11px] font-medium text-slate-500 transition hover:text-slate-700">
             Closed ({closed.length})
           </summary>
           <ul className="mt-2 space-y-1.5">

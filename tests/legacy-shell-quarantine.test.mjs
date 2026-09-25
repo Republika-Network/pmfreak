@@ -77,8 +77,11 @@ test("command-center page renders CommandCenterEmptyState when there are no proj
 
 // ─── 6. Runtime shell markers prove which shell actually rendered ───────────
 test("light command-center feature layout carries the pmfreak-light-command-center marker", () => {
-  assert.match(commandCenterLayout, /data-shell="pmfreak-light-command-center"/);
   assert.match(commandCenterEmptyState, /data-shell="pmfreak-light-command-center"/);
+  // CHAT-SHELL-01: the Command Center's operational composition is no longer an
+  // application shell of its own nested inside the product shell — it renders one
+  // tool inside the conversation shell's inspector, so it must declare NO shell.
+  assert.doesNotMatch(commandCenterLayout, /data-shell=/);
 });
 
 // ─── 7. Single unified authenticated shell — no per-route allowlist ─────────
