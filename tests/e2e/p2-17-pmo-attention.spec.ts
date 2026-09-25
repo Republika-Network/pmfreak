@@ -238,7 +238,11 @@ test.describe.serial("P2-17 PMO attention — authenticated PMO browser scenario
 
     await openAttention(page, a);
     await attention(page).getByTestId("pmo-attention-project").filter({ hasText: `Atlas A ${suffix}` }).getByRole("link", { name: "View supporting detail" }).first().click();
-    await page.waitForURL((url) => url.pathname === `/workspaces/${a.workspaceId}/command-center` && url.searchParams.get("projectId") === a.projects.atlas);
+    // CHAT-SHELL-01: the Workspace Command Center hands a resolved project off to its
+    // conversation, with the Needs You tool open — where the exposure's Finding is queued.
+    await page.waitForURL((url) => url.pathname === `/workspaces/${a.workspaceId}/projects/${a.projects.atlas}` && url.searchParams.get("tool") === "attention");
+    await expect(page.getByTestId("cc-section-needs-you")).toContainText('milestone "Go-live" projected 4 day(s) past target', { timeout: 45_000 });
+    await page.getByRole("navigation", { name: "Project tools" }).getByRole("button", { name: /Schedule/ }).click();
     const panel = page.getByTestId("schedule-exposure-panel");
     await expect(panel).toBeVisible({ timeout: 45_000 });
     await expect(panel.getByTestId("schedule-exposure-item").first()).toContainText('milestone "Go-live" projected 4 day(s) past target', { timeout: 45_000 });

@@ -130,7 +130,10 @@ test("P2-16 UI: fixture data can never be mistaken for live", () => {
 });
 
 test("P2-16 UI: the panel is mounted on the PM Command Center and refreshes the canonical flow after recording", () => {
+  // CHAT-SHELL-01: mounted as the project conversation's Schedule tool, by the same
+  // operations component that owns the canonical flow it refreshes.
   const layout = readFileSync("src/modules/workspace/screens/command-center/command-center-layout.tsx", "utf8");
+  assert.match(layout, /tool === "schedule"/);
   assert.match(layout, /<ScheduleExposurePanel\s+key=\{selectedProject\.id\}\s+workspaceId=\{workspaceId\}\s+projectId=\{selectedProject\.id\}\s+onRecorded=\{\(\) => void mutateFlow\(\)\}/);
   const panel = readFileSync("src/components/pmfreak/schedule-exposure/schedule-exposure-panel.tsx", "utf8");
   assert.match(panel, /fetch\(`\/api\/critical-path\/schedule-exposure\?\$\{params\.toString\(\)\}`, \{ cache: "no-store" \}\)/);

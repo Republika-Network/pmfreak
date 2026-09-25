@@ -53,19 +53,19 @@ function Choice({
 }) {
   return (
     <div className="mt-2">
-      <label htmlFor={id} className="text-[11px] font-medium text-zinc-400">{label}</label>
+      <label htmlFor={id} className="text-[11px] font-medium text-slate-600">{label}</label>
       <select
         id={id}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="mt-1 w-full rounded-lg border border-white/10 bg-white/[0.04] p-2 text-xs text-zinc-200 focus:border-sky-500/40 focus:outline-none"
+        className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-800 focus:border-sky-500/40 focus:outline-none"
       >
         <option value="">Choose…</option>
         {options.map((option) => (
           <option key={option} value={option}>{option.replaceAll("_", " ")}</option>
         ))}
       </select>
-      {hint && <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">{hint}</p>}
+      {hint && <p className="mt-1 text-[11px] leading-relaxed text-slate-500">{hint}</p>}
     </div>
   );
 }
@@ -91,15 +91,15 @@ function StageRow({
 }) {
   const stateLabel = stage.state === "complete" ? "Complete" : stage.state === "present" ? "Recorded" : "Not started";
   return (
-    <li className="border-t border-white/10 pt-3">
+    <li className="border-t border-slate-200 pt-3">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h4 className="text-xs font-semibold text-zinc-200">{stage.label}</h4>
+        <h4 className="text-xs font-semibold text-slate-800">{stage.label}</h4>
         {/* State is conveyed as text, never by colour alone. */}
-        <span className="text-[11px] text-zinc-400">{stateLabel}</span>
+        <span className="text-[11px] text-slate-600">{stateLabel}</span>
       </div>
-      <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">{stage.effect}</p>
+      <p className="mt-1 text-[11px] leading-relaxed text-slate-500">{stage.effect}</p>
       {stage.blockedReason && (
-        <p className="mt-1.5 rounded-lg border border-white/10 bg-white/[0.02] px-2.5 py-1.5 text-[11px] leading-relaxed text-zinc-400">
+        <p className="mt-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11px] leading-relaxed text-slate-600">
           {stage.blockedReason}
         </p>
       )}
@@ -199,39 +199,39 @@ function BranchSection({
   const commands = branch.offeredCommands;
 
   return (
-    <li className="border-t border-white/10 pt-3" data-branch-id={branch.id}>
+    <li className="border-t border-slate-200 pt-3" data-branch-id={branch.id}>
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h4 id={branchHeadingId} className="text-xs font-semibold text-zinc-200">
+        <h4 id={branchHeadingId} className="text-xs font-semibold text-slate-800">
           {total > 1 ? `Material action ${position} of ${total}` : "Governed material action"}
         </h4>
-        <span className="text-[11px] text-zinc-400">{labelize(branch.action.governanceState)}</span>
+        <span className="text-[11px] text-slate-600">{labelize(branch.action.governanceState)}</span>
       </div>
-      <dl className="mt-2 grid gap-1 text-[11px] text-zinc-400">
-        <div className="flex gap-2"><dt className="text-zinc-500">Action</dt><dd className="font-mono">{branch.action.actionId}</dd></div>
-        <div className="flex gap-2"><dt className="text-zinc-500">Governance</dt><dd>{labelize(branch.action.governanceState)}</dd></div>
-        <div className="flex gap-2"><dt className="text-zinc-500">Executable</dt><dd>{branch.action.canExecute ? "yes" : "no — authorization is not execution"}</dd></div>
+      <dl className="mt-2 grid gap-1 text-[11px] text-slate-600">
+        <div className="flex gap-2"><dt className="text-slate-500">Action</dt><dd className="font-mono">{branch.action.actionId}</dd></div>
+        <div className="flex gap-2"><dt className="text-slate-500">Governance</dt><dd>{labelize(branch.action.governanceState)}</dd></div>
+        <div className="flex gap-2"><dt className="text-slate-500">Executable</dt><dd>{branch.action.canExecute ? "yes" : "no — authorization is not execution"}</dd></div>
         <div className="flex gap-2">
-          <dt className="text-zinc-500">Authorization</dt>
+          <dt className="text-slate-500">Authorization</dt>
           <dd>{authorizationLabel(branch.action)}</dd>
         </div>
       </dl>
-      <p className="mt-2 rounded-lg border border-white/10 bg-white/[0.02] px-2.5 py-1.5 text-[11px] leading-relaxed text-zinc-300">
+      <p className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11px] leading-relaxed text-slate-700">
         {branch.boundary.statement}
       </p>
 
       <ol className="mt-2 space-y-3" aria-labelledby={branchHeadingId}>
         <StageRow stage={taskStage}>
           {branch.task ? (
-            <dl className="mt-2 grid gap-1 text-[11px] text-zinc-400">
-              <div className="flex gap-2"><dt className="text-zinc-500">Task</dt><dd className="font-mono">{branch.task.taskId}</dd></div>
-              <div className="flex gap-2"><dt className="text-zinc-500">Status</dt><dd>{labelize(branch.task.status)}</dd></div>
+            <dl className="mt-2 grid gap-1 text-[11px] text-slate-600">
+              <div className="flex gap-2"><dt className="text-slate-500">Task</dt><dd className="font-mono">{branch.task.taskId}</dd></div>
+              <div className="flex gap-2"><dt className="text-slate-500">Status</dt><dd>{labelize(branch.task.status)}</dd></div>
             </dl>
           ) : taskStage.actionable ? (
             <button
               type="button"
               disabled={busy}
               onClick={() => void run("task", { kind: "task", actionId: branch.action.actionId })}
-              className="mt-2 w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-left text-xs font-medium text-zinc-200 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
+              className="mt-2 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs font-medium text-slate-800 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {pending === "task" ? "Creating canonical task…" : "Create canonical internal task"}
             </button>
@@ -240,10 +240,10 @@ function BranchSection({
 
         <StageRow stage={executionStage}>
           {branch.executions.length > 0 && (
-            <dl className="mt-2 grid gap-1 text-[11px] text-zinc-400">
-              <div className="flex gap-2"><dt className="text-zinc-500">Execution</dt><dd className="font-mono">{branch.latestExecution?.executionId}</dd></div>
-              <div className="flex gap-2"><dt className="text-zinc-500">State</dt><dd>{labelize(branch.latestExecution?.status ?? null)}</dd></div>
-              <div className="flex gap-2"><dt className="text-zinc-500">Attempts</dt><dd>{branch.latestExecution?.attemptCount ?? "—"}</dd></div>
+            <dl className="mt-2 grid gap-1 text-[11px] text-slate-600">
+              <div className="flex gap-2"><dt className="text-slate-500">Execution</dt><dd className="font-mono">{branch.latestExecution?.executionId}</dd></div>
+              <div className="flex gap-2"><dt className="text-slate-500">State</dt><dd>{labelize(branch.latestExecution?.status ?? null)}</dd></div>
+              <div className="flex gap-2"><dt className="text-slate-500">Attempts</dt><dd>{branch.latestExecution?.attemptCount ?? "—"}</dd></div>
             </dl>
           )}
           {executionStage.actionable && branch.task && (
@@ -254,7 +254,7 @@ function BranchSection({
                   type="button"
                   disabled={busy}
                   onClick={() => void run("execution", { kind: "execution", taskId: branch.task!.taskId, command })}
-                  className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-medium text-zinc-200 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
+                  className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-800 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {pending === "execution" ? "Recording…" : COMMAND_LABEL[command] ?? `Record ${command}`}
                 </button>
@@ -265,14 +265,14 @@ function BranchSection({
 
         <StageRow stage={outcomeStage}>
           {branch.outcome ? (
-            <dl className="mt-2 grid gap-1 text-[11px] text-zinc-400">
-              <div className="flex gap-2"><dt className="text-zinc-500">Outcome</dt><dd className="font-mono">{branch.outcome.outcomeId}</dd></div>
-              <div className="flex gap-2"><dt className="text-zinc-500">Expected</dt><dd>{branch.outcome.expectedResult ?? "—"}</dd></div>
-              <div className="flex gap-2"><dt className="text-zinc-500">State</dt><dd>{labelize(branch.outcome.state)}</dd></div>
+            <dl className="mt-2 grid gap-1 text-[11px] text-slate-600">
+              <div className="flex gap-2"><dt className="text-slate-500">Outcome</dt><dd className="font-mono">{branch.outcome.outcomeId}</dd></div>
+              <div className="flex gap-2"><dt className="text-slate-500">Expected</dt><dd>{branch.outcome.expectedResult ?? "—"}</dd></div>
+              <div className="flex gap-2"><dt className="text-slate-500">State</dt><dd>{labelize(branch.outcome.state)}</dd></div>
             </dl>
           ) : outcomeStage.actionable && branch.task ? (
             <div className="mt-2">
-              <label htmlFor={expectedId} className="text-[11px] font-medium text-zinc-400">
+              <label htmlFor={expectedId} className="text-[11px] font-medium text-slate-600">
                 What is this work expected to achieve? (required)
               </label>
               <textarea
@@ -281,7 +281,7 @@ function BranchSection({
                 value={expectedResult}
                 onChange={(event) => setExpectedResult(event.target.value)}
                 placeholder="The outcome you expect, in business terms"
-                className="mt-1 w-full rounded-lg border border-white/10 bg-white/[0.04] p-2 text-xs text-zinc-200 placeholder:text-zinc-600 focus:border-sky-500/40 focus:outline-none"
+                className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-sky-500/40 focus:outline-none"
               />
               <button
                 type="button"
@@ -294,12 +294,12 @@ function BranchSection({
                     correlationId,
                   })
                 }
-                className="mt-2 w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-left text-xs font-medium text-zinc-200 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
+                className="mt-2 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs font-medium text-slate-800 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {pending === "outcome" ? "Defining expected outcome…" : "Define expected outcome"}
               </button>
               {expectedResult.trim().length === 0 && (
-                <p className="mt-1 text-[11px] text-zinc-500">Describe the expected outcome to continue.</p>
+                <p className="mt-1 text-[11px] text-slate-500">Describe the expected outcome to continue.</p>
               )}
             </div>
           ) : null}
@@ -309,8 +309,8 @@ function BranchSection({
           {branch.observations.length > 0 && (
             <ul className="mt-2 space-y-2">
               {branch.observations.map((observation) => (
-                <li key={observation.observationId} className="rounded-lg border border-white/10 bg-white/[0.02] px-2.5 py-2 text-[11px] text-zinc-400">
-                  <p className="text-zinc-300">{labelize(observation.observationState)}</p>
+                <li key={observation.observationId} className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-[11px] text-slate-600">
+                  <p className="text-slate-700">{labelize(observation.observationState)}</p>
                   <p className="mt-0.5">{observation.summary ?? "—"}</p>
                   <p className="mt-0.5">
                     Evidence: {observation.evidenceReferenceIds.length > 0 ? observation.evidenceReferenceIds.join(", ") : "none recorded"}
@@ -322,22 +322,22 @@ function BranchSection({
           )}
           {observationStage.actionable && branch.outcome && (
             <div className="mt-2">
-              <label htmlFor={stateId} className="text-[11px] font-medium text-zinc-400">What does the evidence say?</label>
+              <label htmlFor={stateId} className="text-[11px] font-medium text-slate-600">What does the evidence say?</label>
               <select
                 id={stateId}
                 value={observationState}
                 onChange={(event) => setObservationState(event.target.value)}
-                className="mt-1 w-full rounded-lg border border-white/10 bg-white/[0.04] p-2 text-xs text-zinc-200 focus:border-sky-500/40 focus:outline-none"
+                className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-800 focus:border-sky-500/40 focus:outline-none"
               >
                 {OBSERVATION_STATES.map((option) => (
                   <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
               </select>
-              <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">
+              <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
                 {OBSERVATION_STATES.find((option) => option.value === observationState)?.hint}
               </p>
 
-              <label htmlFor={summaryId} className="mt-2 block text-[11px] font-medium text-zinc-400">
+              <label htmlFor={summaryId} className="mt-2 block text-[11px] font-medium text-slate-600">
                 What was observed? (required)
               </label>
               <textarea
@@ -346,19 +346,19 @@ function BranchSection({
                 value={observationSummary}
                 onChange={(event) => setObservationSummary(event.target.value)}
                 placeholder="What the evidence actually shows"
-                className="mt-1 w-full rounded-lg border border-white/10 bg-white/[0.04] p-2 text-xs text-zinc-200 placeholder:text-zinc-600 focus:border-sky-500/40 focus:outline-none"
+                className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-sky-500/40 focus:outline-none"
               />
 
               {evidenceOptions.length > 0 ? (
                 <>
-                  <label htmlFor={`${summaryId}-evidence`} className="mt-2 block text-[11px] font-medium text-zinc-400">
+                  <label htmlFor={`${summaryId}-evidence`} className="mt-2 block text-[11px] font-medium text-slate-600">
                     Supporting evidence (required)
                   </label>
                   <select
                     id={`${summaryId}-evidence`}
                     value={selectedEvidence}
                     onChange={(event) => setEvidenceId(event.target.value)}
-                    className="mt-1 w-full rounded-lg border border-white/10 bg-white/[0.04] p-2 text-xs text-zinc-200 focus:border-sky-500/40 focus:outline-none"
+                    className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-800 focus:border-sky-500/40 focus:outline-none"
                   >
                     {evidenceOptions.map((option) => (
                       <option key={option.id} value={option.id}>{option.title}</option>
@@ -366,7 +366,7 @@ function BranchSection({
                   </select>
                 </>
               ) : (
-                <p className="mt-2 text-[11px] leading-relaxed text-zinc-400">
+                <p className="mt-2 text-[11px] leading-relaxed text-slate-600">
                   No live, provenance-bearing evidence is available for this project yet, so an
                   observation cannot be recorded. Demo or fixture evidence cannot promote an outcome.
                 </p>
@@ -374,7 +374,7 @@ function BranchSection({
 
               {/* Epistemic state is stated by the observer, never assumed to be certain. */}
               <div className="mt-2">
-                <label htmlFor={`${qualityId}-confidence`} className="text-[11px] font-medium text-zinc-400">
+                <label htmlFor={`${qualityId}-confidence`} className="text-[11px] font-medium text-slate-600">
                   How confident is this observation? 0 to 1 (required)
                 </label>
                 <input
@@ -386,7 +386,7 @@ function BranchSection({
                   value={confidence}
                   onChange={(event) => setConfidence(event.target.value)}
                   placeholder="e.g. 0.6"
-                  className="mt-1 w-full rounded-lg border border-white/10 bg-white/[0.04] p-2 text-xs text-zinc-200 placeholder:text-zinc-600 focus:border-sky-500/40 focus:outline-none"
+                  className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-sky-500/40 focus:outline-none"
                 />
               </div>
               <Choice
@@ -412,12 +412,12 @@ function BranchSection({
                     correlationId,
                   })
                 }
-                className="mt-2 w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-left text-xs font-medium text-zinc-200 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
+                className="mt-2 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs font-medium text-slate-800 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {pending === "observation" ? "Recording observation…" : "Record evidence-backed observation"}
               </button>
               {!observationComplete && (
-                <p className="mt-1 text-[11px] text-zinc-500">
+                <p className="mt-1 text-[11px] text-slate-500">
                   An observation needs a summary, supporting evidence, a confidence value and a missing-data state.
                 </p>
               )}
@@ -428,30 +428,30 @@ function BranchSection({
         <StageRow stage={reviewStage}>
           {branch.lineage && (
             <details className="mt-2">
-              <summary className="cursor-pointer text-[11px] font-medium text-zinc-400">
+              <summary className="cursor-pointer text-[11px] font-medium text-slate-600">
                 Complete lineage ({branch.lineage.steps.length} steps · {labelize(branch.lineage.lineageStatus)})
               </summary>
               <ul className="mt-2 space-y-1.5">
                 {branch.lineage.steps.map((step, index) => (
-                  <li key={`${step.kind}-${step.id ?? index}`} className="text-[11px] leading-relaxed text-zinc-400">
-                    <span className="text-zinc-300">{labelize(step.kind)}</span>
+                  <li key={`${step.kind}-${step.id ?? index}`} className="text-[11px] leading-relaxed text-slate-600">
+                    <span className="text-slate-700">{labelize(step.kind)}</span>
                     {" · "}
                     {step.id ? <span className="font-mono">{step.id}</span> : <span>{step.gapReason ?? "not present"}</span>}
                   </li>
                 ))}
               </ul>
               {branch.lineage.gaps.length > 0 && (
-                <p className="mt-2 text-[11px] leading-relaxed text-zinc-400">
+                <p className="mt-2 text-[11px] leading-relaxed text-slate-600">
                   Gaps: {branch.lineage.gaps.join("; ")}
                 </p>
               )}
               {branch.lineage.disputes.length > 0 && (
-                <p className="mt-1 text-[11px] leading-relaxed text-zinc-400">
+                <p className="mt-1 text-[11px] leading-relaxed text-slate-600">
                   Disputes: {branch.lineage.disputes.join("; ")}
                 </p>
               )}
               {branch.lineage.hasCorrelationOnly && (
-                <p className="mt-1 text-[11px] leading-relaxed text-zinc-400">
+                <p className="mt-1 text-[11px] leading-relaxed text-slate-600">
                   Some links are correlation only, so this chain does not establish causation.
                 </p>
               )}
@@ -464,7 +464,7 @@ function BranchSection({
         {pending ? `Recording ${pending.replaceAll("_", " ")}.` : ""}
       </p>
       {error && (
-        <p role="alert" className="mt-3 rounded-lg border border-rose-500/25 bg-rose-500/[0.08] px-3 py-2 text-xs text-rose-200">
+        <p role="alert" className="mt-3 rounded-lg border border-rose-500/25 bg-rose-500/[0.08] px-3 py-2 text-xs text-rose-900">
           {error}
         </p>
       )}
@@ -528,20 +528,20 @@ export function ExecutionChainPanel({
   }
 
   return (
-    <section aria-labelledby={headingId} className="mt-5 border-t border-white/10 pt-4">
-      <h3 id={headingId} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+    <section aria-labelledby={headingId} className="mt-5 border-t border-slate-200 pt-4">
+      <h3 id={headingId} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
         After your decision
       </h3>
-      <p className="mt-1.5 text-[11px] leading-relaxed text-zinc-500">
+      <p className="mt-1.5 text-[11px] leading-relaxed text-slate-500">
         Recording a decision does not act. Each step below is a separate governed operation you choose to take.
       </p>
 
       {refreshFailedAfterWrite && (
-        <p role="status" className="mt-3 rounded-lg border border-amber-500/25 bg-amber-500/[0.08] px-3 py-2 text-[11px] leading-relaxed text-amber-200">
+        <p role="status" className="mt-3 rounded-lg border border-amber-500/25 bg-amber-500/[0.08] px-3 py-2 text-[11px] leading-relaxed text-amber-900">
           Your last governed operation was saved. We could not refresh this view afterwards,
           so what you see below may be out of date — it does not mean the operation failed.{" "}
           {onRetryRefresh && (
-            <button type="button" onClick={onRetryRefresh} className="underline underline-offset-2 hover:text-amber-100">
+            <button type="button" onClick={onRetryRefresh} className="underline underline-offset-2 hover:text-amber-900">
               Refresh now
             </button>
           )}
@@ -549,7 +549,7 @@ export function ExecutionChainPanel({
       )}
 
       {/* The P2-12 invariant, stated from persisted state rather than implied by layout. */}
-      <p className="mt-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] leading-relaxed text-zinc-300">
+      <p className="mt-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] leading-relaxed text-slate-700">
         {chain.boundary.statement}
       </p>
 
@@ -557,14 +557,14 @@ export function ExecutionChainPanel({
         <StageRow stage={proposalStage}>
           {proposalStage.actionable ? (
             <div className="mt-2">
-              <p className="text-[11px] leading-relaxed text-zinc-500">
+              <p className="text-[11px] leading-relaxed text-slate-500">
                 Governance classifies this action from what you state below, so describe the action you
                 actually intend — these values are not assumed for you.
                 {replacement
                   ? " This records a new, separately evaluated authorization; the earlier action stays on the record exactly as it is."
                   : ""}
               </p>
-              <label htmlFor={`${actionFormId}-type`} className="mt-2 block text-[11px] font-medium text-zinc-400">
+              <label htmlFor={`${actionFormId}-type`} className="mt-2 block text-[11px] font-medium text-slate-600">
                 What kind of action is this? (required)
               </label>
               <input
@@ -572,9 +572,9 @@ export function ExecutionChainPanel({
                 value={actionType}
                 onChange={(event) => setActionType(event.target.value)}
                 placeholder="e.g. supplier contract amendment"
-                className="mt-1 w-full rounded-lg border border-white/10 bg-white/[0.04] p-2 text-xs text-zinc-200 placeholder:text-zinc-600 focus:border-sky-500/40 focus:outline-none"
+                className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-sky-500/40 focus:outline-none"
               />
-              <label htmlFor={`${actionFormId}-effect`} className="mt-2 block text-[11px] font-medium text-zinc-400">
+              <label htmlFor={`${actionFormId}-effect`} className="mt-2 block text-[11px] font-medium text-slate-600">
                 What would it change? (required)
               </label>
               <textarea
@@ -583,7 +583,7 @@ export function ExecutionChainPanel({
                 value={intendedEffect}
                 onChange={(event) => setIntendedEffect(event.target.value)}
                 placeholder="The intended effect of acting"
-                className="mt-1 w-full rounded-lg border border-white/10 bg-white/[0.04] p-2 text-xs text-zinc-200 placeholder:text-zinc-600 focus:border-sky-500/40 focus:outline-none"
+                className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-sky-500/40 focus:outline-none"
               />
               <Choice id={`${actionFormId}-class`} label="Action class (required)" value={actionClass} options={MATERIAL_ACTION_CLASSES} onChange={setActionClass} />
               <Choice id={`${actionFormId}-risk`} label="Risk (required)" value={risk} options={MATERIAL_ACTION_RISKS} onChange={setRisk} />
@@ -593,7 +593,7 @@ export function ExecutionChainPanel({
                 type="button"
                 disabled={pending || !actionDraftComplete}
                 onClick={() => void proposeAction()}
-                className="mt-2 w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-left text-xs font-medium text-zinc-200 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
+                className="mt-2 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs font-medium text-slate-800 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {pending
                   ? "Requesting governed action…"
@@ -602,7 +602,7 @@ export function ExecutionChainPanel({
                     : "Request governed material action"}
               </button>
               {!actionDraftComplete && (
-                <p className="mt-1 text-[11px] text-zinc-500">
+                <p className="mt-1 text-[11px] text-slate-500">
                   Describe the action and classify it to continue. Governance depends on these answers.
                 </p>
               )}
@@ -626,7 +626,7 @@ export function ExecutionChainPanel({
         {pending ? "Recording material action." : ""}
       </p>
       {error && (
-        <p role="alert" className="mt-3 rounded-lg border border-rose-500/25 bg-rose-500/[0.08] px-3 py-2 text-xs text-rose-200">
+        <p role="alert" className="mt-3 rounded-lg border border-rose-500/25 bg-rose-500/[0.08] px-3 py-2 text-xs text-rose-900">
           {error}
         </p>
       )}

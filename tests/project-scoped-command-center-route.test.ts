@@ -103,7 +103,9 @@ const paths = readFileSync("src/lib/projects/project-command-center-paths.ts", "
 const projection = readFileSync("src/lib/projects/project-command-center-projection.ts", "utf8");
 const familyPaths = readFileSync("src/lib/projects/project-paths.ts", "utf8");
 const tabNav = readFileSync("src/components/pmfreak/projects/project-tab-nav.tsx", "utf8");
-const projectHome = readFileSync("src/app/(protected)/workspaces/[workspaceId]/projects/[projectId]/page.tsx", "utf8");
+// CHAT-SHELL-01: Project Home's screen moved, unchanged, from the family root to
+// `/overview`; the root is now the project's conversation.
+const projectHome = readFileSync("src/app/(protected)/workspaces/[workspaceId]/projects/[projectId]/overview/page.tsx", "utf8");
 const legacyProjectRoute = readFileSync("src/app/(protected)/projects/[id]/page.tsx", "utf8");
 const bareCommandCenter = readFileSync("src/app/(protected)/command-center/page.tsx", "utf8");
 const legacyPmoCommandCenter = readFileSync("src/app/(protected)/pmo-command-center/page.tsx", "utf8");
@@ -163,7 +165,7 @@ test("the canonical path is the entity-qualified route named by the route map", 
 
 test("it is built from the family table, not from a hand-typed literal", () => {
   assert.equal(projectCommandCenterPath(WS, PROJECT), projectSurfacePath(WS, PROJECT, "command-center"));
-  assert.deepEqual([...PROJECT_SURFACES], ["home", "command-center"]);
+  assert.deepEqual([...PROJECT_SURFACES], ["home", "overview", "command-center"]);
   // One family, one pattern. A second regex could disagree with this one about
   // which paths are Project routes.
   assert.equal(familyPaths.match(/^const CANONICAL_PROJECT_ROUTE_PATTERN/gm)?.length, 1);
@@ -1084,8 +1086,9 @@ test("the Project tab strip gains exactly one canonical entry, built by the help
     tabNav,
     /\{ label: "Project Command Center", href: projectCommandCenterPath\(workspaceId, projectId\), key: "command-center" \}/,
   );
-  // PB-CHAT-01 removed the Chat tab: the conversation is Project Brain inside this Command Center.
-  assert.match(tabNav, /active: "overview" \| "command-center" \| "settings"/);
+  // PB-CHAT-01 removed the Chat tab; CHAT-SHELL-01 made the conversation the family
+  // root, which the strip's first tab ("Project Brain") returns to.
+  assert.match(tabNav, /active: "conversation" \| "overview" \| "command-center" \| "settings"/);
   // One entry, not two, and no hand-typed path anywhere in the strip.
   assert.equal(tabNav.match(/projectCommandCenterPath\(/g)?.length, 1);
   assert.doesNotMatch(withoutComments(tabNav), /["'`]\/workspaces\/[^"'`]*\/projects\//);
@@ -2260,7 +2263,10 @@ test("no fabricated per-record route was introduced to host the panel", () => {
     assert.equal(withoutComments(projection).includes(fake), false);
     assert.equal(withoutComments(evidencePanel).includes(fake), false);
   }
-  assert.deepEqual([...PROJECT_SURFACES], ["home", "command-center"], "the Project route family did not grow");
+  // The family grew by exactly one member, and not for this panel: CHAT-SHELL-01
+  // moved Project Home's details screen to `/overview` when the root became the
+  // conversation.
+  assert.deepEqual([...PROJECT_SURFACES], ["home", "overview", "command-center"], "no per-record surface was added");
   for (const unbuilt of ["risks", "issues", "dependencies", "documents", "raid"]) {
     assert.equal(existsSync(`src/app/(protected)/${unbuilt}/page.tsx`), false);
     assert.equal(

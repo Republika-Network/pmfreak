@@ -248,11 +248,18 @@ test("KnowledgeGapsPanel takes structured gaps as a prop instead of a hardcoded 
 const commandCenterClientSrc = readFileSync("src/modules/workspace/screens/command-center/command-center-client.tsx", "utf8");
 
 test("the regular Command Center view retains a persistent way back into the Project Brain view", () => {
-  const dashboardBranchIdx = commandCenterClientSrc.indexOf("<CommandCenterLayout");
-  const reopenCallIdx = commandCenterClientSrc.indexOf("setShowIntelligenceInbox(true)");
-  assert.ok(dashboardBranchIdx > 0, "regular dashboard branch must exist");
-  assert.ok(reopenCallIdx > 0, "a control that reopens the Project Brain view must exist");
-  assert.ok(reopenCallIdx < dashboardBranchIdx, "the reopen control must render before/around the dashboard, not only in the first-run branch");
+  // CHAT-SHELL-01: the "regular" view is now the project conversation. Its Project
+  // tool links back to the guided inbox through `view=inbox`, which the Command
+  // Center route honours — so the guided view is never reachable only on first run.
+  const conversationPage = readFileSync("src/app/(protected)/workspaces/[workspaceId]/projects/[projectId]/page.tsx", "utf8");
+  const conversationView = readFileSync("src/components/pmfreak/conversation-shell/project-conversation-view.tsx", "utf8");
+  const commandCenterPage = readFileSync("src/app/(protected)/workspaces/[workspaceId]/command-center/page.tsx", "utf8");
+  assert.match(conversationPage, /guidedSetup: workspaceCommandCenterPath\(workspaceId, \{ projectId: project\.id, view: "inbox" \}\)/);
+  assert.match(conversationView, /href: links\.guidedSetup/);
+  assert.match(commandCenterPage, /params\.view === "inbox"/);
+  // And the guided view's own exit lands in the conversation, not in a second app.
+  assert.match(commandCenterClientSrc, /router\.push\(projectHomePath\(workspaceId, projectId\)\)/);
+  assert.doesNotMatch(commandCenterClientSrc, /<CommandCenterLayout/);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

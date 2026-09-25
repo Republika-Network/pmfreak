@@ -850,7 +850,8 @@ test("W3-P1-05: a complete answer still states its count", () => {
   assert.equal(complete.governedAttentionComplete, true);
   assert.equal(complete.incompleteNote, null);
   const heading = complete.queueMarkup.slice(0, complete.queueMarkup.indexOf("cc-attention-group-"));
-  assert.match(heading, /<span class="shrink-0 text-\[11px\] text-zinc-500">35<\/span>/);
+  // (CHAT-SHELL-01 moved the queue onto the shell's light palette; the count is the same.)
+  assert.match(heading, /<span class="shrink-0 text-\[11px\] text-slate-500">35<\/span>/);
 });
 
 test("W3-P1-05: the attention root is a separate, bounded, exact query — the history window is untouched", () => {

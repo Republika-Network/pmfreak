@@ -1,84 +1,79 @@
-import Link from "next/link";
 import { requireAuthUser } from "@/lib/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { evaluateCapabilityAccess } from "@/lib/security/capability-flow";
 import { resolveRoutedProject } from "@/lib/projects/routed-project";
 import { ProjectArchivedNotice, ProjectNotAvailable } from "@/components/pmfreak/projects/project-route-states";
-import { ProjectPMAssignment } from "@/components/pmfreak/ProjectPMAssignment";
-import { ProjectTaskList } from "@/components/pmfreak/tasks/project-task-list";
-import { ProjectTabNav } from "@/components/pmfreak/projects/project-tab-nav";
-import { workspaceHomePath } from "@/lib/workspaces/workspace-paths";
+import { ProjectConversationView } from "@/components/pmfreak/conversation-shell/project-conversation-view";
+import { parseProjectTool } from "@/components/pmfreak/conversation-shell/operational-tools";
+import { projectBriefIndicators } from "@/components/pmfreak/conversation-shell/project-brief-indicators";
+import { projectHomePath, projectOverviewPath } from "@/lib/projects/project-paths";
+import { projectCommandCenterPath, resolveProjectPmoAncestry } from "@/lib/projects/project-command-center-paths";
 import { pmoHomePath } from "@/lib/pmos/pmo-paths";
+import { workspaceCommandCenterPath, workspaceHomePath } from "@/lib/workspaces/workspace-paths";
+import { loadLatestOperationalGovernanceBrief } from "@/lib/projects/first-insight";
+import type { ProjectStatus } from "@/lib/db/database-contract";
 
 export const dynamic = "force-dynamic";
 
-type Props = { params: Promise<{ workspaceId: string; projectId: string }> };
+type Props = {
+  params: Promise<{ workspaceId: string; projectId: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+};
+
+type ProjectIdentityRow = {
+  id: string;
+  workspace_id: string;
+  pmo_id: string | null;
+  name: string;
+  status: ProjectStatus;
+  icon: string | null;
+  color: string | null;
+};
 
 /**
- * Project Home — the canonical, entity-qualified route.
+ * The project, as a conversation — the canonical project route (CHAT-SHELL-01).
  *
- * The screen is the one that shipped at `/projects/[id]`: project identity, its
- * execution/task list, the AI analysis entry point, PM assignment, and prior
- * analyses. What changed is WHO DECIDES which project it is about, and WHICH
- * WORKSPACE its role checks read. The screen itself is not redesigned, and it is
- * deliberately not the Project Command Center — that screen now exists at
- * `/workspaces/[workspaceId]/projects/[projectId]/command-center`, reachable from
- * the tab strip below. IA Principle 5 (One Entity One Home) is only worth
- * anything if Home and Command Center stay different screens, and IA §15 rule 6
- * makes them siblings reachable from each other directly, never nested: Home owns
- * the project's identity and its execution CRUD, the Command Center composes a
- * read-only projection over the same project. Nothing moved off this page.
+ * `/workspaces/[workspaceId]/projects/[projectId]` is where every project link
+ * lands: the context tree, breadcrumbs, `/projects/<id>` and `/projects/<id>/chat`
+ * redirects, and the Workspace Command Center's hand-off. It renders the
+ * project's ONE persisted Project Brain conversation as the primary surface of
+ * the shell, with the Command Center's operational tools beside it.
  *
- * WHY THE PROJECT ID IS AUTHORIZED AND THE WORKSPACE ID IS ONLY A CLAIM
- * --------------------------------------------------------------------
- * Both segments are untrusted input and they are not equal in authority. The
- * routed `projectId` says WHICH project is requested; `projects.workspace_id` —
- * read from the project row itself — says which workspace owns it. The routed
- * `workspaceId` is neither: it is an assertion about that ancestry, and
- * `resolveRoutedProject` refuses when it disagrees rather than correcting the
- * URL. Correcting would render a project under a workspace id that does not own
- * it, and would let a caller learn a project's real workspace by watching the
- * address change.
+ * The screen that used to live here (identity, execution CRUD, PM assignment,
+ * analyses) moved unchanged to `/overview`; the four-zone read-only projection
+ * stays at `/command-center`. Neither embeds the conversation any more — there
+ * is exactly one place a project's conversation is rendered, and it is here.
  *
- * WHAT THIS REPLACES — TWO DEFECTS, NOT ONE
- * ----------------------------------------
- * 1. `resolveCanonicalProject(project.workspace_id, id)`. It listed the
- *    workspace's fifty most recent projects and, when the requested id was not
- *    among them, redirected to the FIRST one. On an explicit entity route that is
- *    not recovery, it is substitution — project A becoming project B — and it
- *    fired for real on any workspace holding more than fifty projects, where a
- *    perfectly valid id simply fell off the end of the list. There is no fallback
- *    on this path at all.
+ * AUTHORITY — identical to the screen this replaces
+ * -------------------------------------------------
+ * Both segments are untrusted. `resolveRoutedProject` authorizes the routed
+ * `projectId` against real membership and refuses an ancestry claim that
+ * disagrees with `projects.workspace_id` — with no fallback of any kind, and one
+ * indistinguishable refusal for absent, deleted, unauthorized and mismatched
+ * ids, so the route is not an existence oracle. `evaluateCapabilityAccess` then
+ * applies policy (`project.read`) to the AUTHORIZED pair. Every read below is
+ * scoped by the authoritative workspace AND the exact project, through the
+ * caller's own RLS session.
  *
- * 2. `resolvePreferredWorkspace(user.id)` decided `canCreateTask`. That is the
- *    COOKIE, and this page is about a project in whatever workspace actually owns
- *    it. When the two differed the page authorized one workspace and gated its
- *    controls against another: a PM in the project's workspace could be shown a
- *    viewer's screen, and a viewer there a PM's, purely because of where they had
- *    last been. The role now comes from the same verdict that established the
- *    parent, so the two cannot disagree.
+ * The conversation itself is a client island that loads and posts only through
+ * `/api/projects/[id]/brain/turns`, which derives the workspace from the project
+ * row and re-authorizes (`project_brain.converse`) on every call. This page
+ * passes it an id, never data, and grants it nothing.
  *
- * `resolveRoutedProject`'s three outcomes are load-bearing:
- *
- *   granted  — authorized, project and workspace both active (or `completed`,
- *              which is a normal mutable state, not archival).
- *   archived — authorized, but the project and/or its workspace is archived. NOT
- *              an access failure: §7 requires last-known data to stay visible
- *              with the state explained. No control changes — the archived-project
- *              task refusal already lives in `POST /api/execution-tasks`.
- *   denied   — absent, deleted, unauthorized, or an ancestry mismatch. One
- *              indistinguishable reply, so the route cannot be used to probe
- *              which project ids exist (§7).
+ * `?tool=` may ask for an operational tool to start open. It is parsed against
+ * a closed list — anything else opens nothing — and it only decides which panel
+ * is visible, never what is read or who may read it.
  */
-export default async function ProjectHomePage({ params }: Props) {
+export default async function ProjectConversationPage({ params, searchParams }: Props) {
   const user = await requireAuthUser();
   const { workspaceId: requestedWorkspaceId, projectId: requestedProjectId } = await params;
 
   const access = await resolveRoutedProject(user.id, requestedWorkspaceId, requestedProjectId);
   if (access.access === "denied") {
+    // Only what the caller already supplied — a refusal emits no derived facts.
     console.error(
       JSON.stringify({
-        event: "project_home.project_not_accessible",
+        event: "project_conversation.project_not_accessible",
         userId: user.id,
         requestedWorkspaceId,
         requestedProjectId,
@@ -87,150 +82,108 @@ export default async function ProjectHomePage({ params }: Props) {
     return <ProjectNotAvailable />;
   }
 
-  // From here the workspace is the AUTHORITATIVE one derived from
-  // `projects.workspace_id`, never the routed segment — which by now has been
-  // proven equal to it anyway. Every read below is scoped by it AND by the exact
-  // project id.
   const { workspaceId, projectId } = access;
-
-  // The capability layer still runs, unchanged, on the authorized workspace. The
-  // routed resolver decides ROUTE IDENTITY; this decides policy, and both must
-  // hold. Passing `access.workspaceId` rather than the segment is what keeps the
-  // two asking about the same tenant.
   await evaluateCapabilityAccess({ workspaceId, projectId, permission: "read" });
 
   const supabase = await createSupabaseServerClient();
-
-  const { data: project } = await supabase
+  const { data: project, error: projectError } = await supabase
     .from("projects")
-    .select("id, workspace_id, pmo_id, name, description, status, methodology, icon, color")
-    .eq("id", projectId)
+    .select("id, workspace_id, pmo_id, name, status, icon, color")
     .eq("workspace_id", workspaceId)
-    .maybeSingle();
+    .eq("id", projectId)
+    .maybeSingle<ProjectIdentityRow>();
 
-  // Authorized a moment ago but unreadable now: deleted in between, or hidden by
-  // RLS. Same refusal, same wording — there is nothing safe to say beyond it.
-  if (!project) return <ProjectNotAvailable />;
-
-  // The breadcrumb's Workspace label. `07-route…` §2's layout chain for this
-  // route is "Authenticated Shell → Workspace → Project", so the trail leads
-  // with the workspace — not with the generic `/pmos` chooser the legacy screen
-  // led with, which was only ever there because no Workspace Home existed to
-  // point at before PR #608.
-  const { data: workspace } = await supabase
-    .from("workspaces")
-    .select("id, name")
-    .eq("id", workspaceId)
-    .maybeSingle<{ id: string; name: string }>();
-
-  // PMO ancestry, when there is any. `projects.pmo_id` is NULLABLE, so a direct
-  // project has no PMO node and none is fabricated for it — a middle crumb
-  // invented for an unassigned project would assert a governance structure the
-  // project is not in.
-  //
-  // Scoped by the AUTHORIZED workspace as well as the id: the FK on `pmo_id`
-  // constrains it to a real PMO but not to a PMO in this project's workspace, and
-  // a breadcrumb is not the place to discover cross-tenant data. A PMO that does
-  // not answer inside this workspace simply yields no ancestry node, rather than a
-  // link into a workspace this route never authorized.
-  const { data: pmo } = project.pmo_id
-    ? await supabase
-        .from("pmos")
-        .select("id, name, icon")
-        .eq("id", project.pmo_id)
-        .eq("workspace_id", workspaceId)
-        .maybeSingle<{ id: string; name: string; icon: string | null }>()
-    : { data: null };
-
-  // Real membership role in the PROJECT'S workspace drives whether the task CTAs
-  // render — a viewer sees who can add work instead of a dead-end button. Server
-  // actions, `requireProjectAccess` and RLS remain the authoritative enforcement;
-  // this only decides what is worth offering.
-  const canCreateTask = access.role !== null && access.role !== "viewer";
-
-  const { data: analyses } = await supabase
-    .from("onboarding_analyses")
-    .select("id, analysis, created_at")
-    .eq("project_id", projectId)
-    .order("created_at", { ascending: false })
-    .limit(10);
-
-  return (
-    <main className="rounded-3xl border border-slate-200 bg-white p-8 shadow-2xl backdrop-blur-xl md:p-10 space-y-6">
-      <div>
-        {/* Workspace → [PMO when assigned] → Project. The trail tells the truth
-            about ANCESTRY, which can include a PMO; the ROUTE is still
-            Workspace → Project, because `workspace_id` is the mandatory FK and
-            `pmo_id` is not (`03-canonical-information-architecture.md` §5.7). */}
-        <p className="text-xs uppercase tracking-[0.2em] text-cyan-800">
-          <Link href={workspaceHomePath(workspaceId)} className="hover:text-cyan-900">
-            {workspace?.name ?? "Workspace"}
-          </Link>
-          {pmo ? (
-            <>
-              {" / "}
-              <Link href={pmoHomePath(workspaceId, pmo.id)} className="hover:text-cyan-900">
-                {pmo.icon ? `${pmo.icon} ` : ""}
-                {pmo.name}
-              </Link>
-            </>
-          ) : null}
-          {" / "}
-          {project.name}
-        </p>
-        <h1 className="mt-2 text-3xl font-semibold tracking-tight">
-          {project.icon ? <span className="mr-2">{project.icon}</span> : null}
-          {project.name}
-        </h1>
-        <p className="mt-2 text-sm text-slate-700">{project.description ?? "No description provided."}</p>
-        <p className="mt-2 text-xs uppercase tracking-wide text-slate-600">
-          Status: {project.status}
-          {project.methodology ? ` · Methodology: ${project.methodology}` : ""}
-        </p>
-        <div className="mt-4">
-          <ProjectTabNav workspaceId={workspaceId} projectId={project.id} active="overview" />
+  if (projectError) {
+    console.error(
+      JSON.stringify({ event: "project_conversation.project_unavailable", workspaceId, projectId, reason: projectError.message }),
+    );
+    return (
+      <div className="mx-auto max-w-2xl px-4 py-10">
+        <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-6">
+          <p className="text-sm font-semibold text-amber-900">We couldn&apos;t load this project</p>
+          <p className="mt-1 text-xs text-amber-700/80">
+            This is a temporary problem reading your workspace, not a permissions issue. Nothing has been changed or
+            lost. Please try again in a moment.
+          </p>
+          <a
+            href={projectHomePath(workspaceId, projectId)}
+            className="mt-3 inline-block rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+          >
+            Try again
+          </a>
         </div>
       </div>
+    );
+  }
 
-      {access.access === "archived" ? <ProjectArchivedNotice archived={access.archived} /> : null}
+  // Authorized a moment ago but unreadable now: same refusal, same wording.
+  if (!project) return <ProjectNotAvailable />;
 
-      <section className="space-y-3">
-        <h2 className="text-lg font-semibold text-slate-900">Execution</h2>
-        <ProjectTaskList projectId={project.id} canCreateTask={canCreateTask} />
-      </section>
+  // Ancestry and header facts, in parallel. The PMO read is scoped by the
+  // AUTHORIZED workspace as well as the id — `pmo_id`'s FK does not constrain it
+  // to this workspace, and a header is not the place to discover cross-tenant
+  // data. Its error is carried, never rendered as "no PMO".
+  const [workspaceRead, pmoRead, brief] = await Promise.all([
+    supabase.from("workspaces").select("id, name").eq("id", workspaceId).maybeSingle<{ id: string; name: string }>(),
+    project.pmo_id
+      ? supabase
+          .from("pmos")
+          .select("id, name")
+          .eq("id", project.pmo_id)
+          .eq("workspace_id", workspaceId)
+          .maybeSingle<{ id: string; name: string }>()
+      : Promise.resolve({ data: null, error: null }),
+    loadLatestOperationalGovernanceBrief(project.id, supabase).catch(() => null),
+  ]);
 
-      <section className="rounded-2xl border border-slate-200 bg-slate-50 p-5 space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold">Run PMFreak AI</h2>
-          <Link
-            href={`/upload?projectId=${encodeURIComponent(project.id)}`}
-            className="rounded-xl border border-cyan-300/50 px-4 py-2 text-sm font-semibold text-cyan-900 hover:bg-cyan-500/10"
-          >
-            Upload documents for this project
-          </Link>
-        </div>
-        <form action="/api/analyze-ai" method="post" className="mt-3 space-y-3">
-          <input type="hidden" name="projectId" value={project.id} />
-          <input name="projectName" defaultValue={project.name} required className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
-          <textarea name="extractedScopeText" required placeholder="Paste scope text to analyze" rows={6} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm" />
-          <button type="submit" className="rounded-xl border border-cyan-300/50 px-4 py-2 text-sm font-semibold">Analyze</button>
-        </form>
-      </section>
+  const ancestry = resolveProjectPmoAncestry({
+    pmoId: project.pmo_id,
+    row: pmoRead.data,
+    error: pmoRead.error ? { message: pmoRead.error.message } : null,
+  });
+  if (ancestry.state === "unavailable") {
+    console.error(
+      JSON.stringify({ event: "project_conversation.pmo_ancestry_unavailable", workspaceId, projectId, reason: pmoRead.error?.message }),
+    );
+  }
 
-      <ProjectPMAssignment projectId={project.id} />
+  // The role in the PROJECT'S workspace decides whether task controls are offered.
+  // Server actions, `requireProjectAccess` and RLS remain the enforcement.
+  const canCreateTask = access.role !== null && access.role !== "viewer";
+  const initialTool = parseProjectTool((await searchParams).tool);
 
-      <section>
-        <h2 className="text-lg font-semibold">Previous analyses</h2>
-        <ul className="mt-3 space-y-3">
-          {(analyses ?? []).length === 0 ? <li className="text-sm text-slate-700">No analyses yet for this project.</li> : null}
-          {(analyses ?? []).map((row) => (
-            <li key={row.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-xs text-slate-600">{new Date(row.created_at).toLocaleString()}</p>
-              <p className="mt-2 whitespace-pre-wrap text-sm text-slate-800">{row.analysis}</p>
-            </li>
-          ))}
-        </ul>
-      </section>
-    </main>
+  const notice =
+    access.access === "archived" || ancestry.state === "unavailable" ? (
+      <div className="space-y-2">
+        {access.access === "archived" ? <ProjectArchivedNotice archived={access.archived} /> : null}
+        {ancestry.state === "unavailable" ? (
+          <p className="text-[11px] text-amber-800">PMO ancestry is temporarily unavailable.</p>
+        ) : null}
+      </div>
+    ) : null;
+
+  return (
+    <ProjectConversationView
+      key={project.id}
+      workspaceId={workspaceId}
+      project={{ id: project.id, name: project.name, status: project.status, icon: project.icon, color: project.color }}
+      workspaceName={workspaceRead.data?.name ?? "Workspace"}
+      pmoName={ancestry.pmo?.name ?? null}
+      initialTool={initialTool}
+      hasBrief={brief !== null}
+      indicators={projectBriefIndicators(brief)}
+      canCreateTask={canCreateTask}
+      notice={notice}
+      links={{
+        workspace: workspaceHomePath(workspaceId),
+        pmo: ancestry.pmo ? pmoHomePath(workspaceId, ancestry.pmo.id) : null,
+        overview: projectOverviewPath(workspaceId, project.id),
+        operationalOverview: projectCommandCenterPath(workspaceId, project.id),
+        guidedSetup: workspaceCommandCenterPath(workspaceId, { projectId: project.id, view: "inbox" }),
+        documents: `/upload?projectId=${encodeURIComponent(project.id)}`,
+        evidence: `/evidence?projectId=${encodeURIComponent(project.id)}`,
+        settings: `/projects/${encodeURIComponent(project.id)}/settings`,
+      }}
+    />
   );
 }

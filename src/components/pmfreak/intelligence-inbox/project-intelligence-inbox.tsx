@@ -405,7 +405,7 @@ export function ProjectIntelligenceInbox({
             onClick={onEnterCommandCenter}
             className="rounded-xl border border-cyan-200/60 bg-cyan-400/[0.08] px-5 py-2.5 text-sm font-semibold text-cyan-900 transition hover:bg-cyan-400/[0.16]"
           >
-            Enter Command Center →
+            Continue to Project Brain →
           </button>
         )}
       </div>

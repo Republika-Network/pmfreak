@@ -128,13 +128,13 @@ export function VaultIntakePanel({ workspaceId, projectId, onClose, onIntakeComp
   };
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 shadow-[0_2px_20px_rgba(0,0,0,0.2)]">
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_2px_20px_rgba(0,0,0,0.2)]">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="text-sm font-semibold text-zinc-100">Add project notes</p>
-          <p className="mt-0.5 text-xs text-zinc-500">Capture and Evidence derivation remain separate transitions; intelligence will not run.</p>
+          <p className="text-sm font-semibold text-slate-900">Add project notes</p>
+          <p className="mt-0.5 text-xs text-slate-500">Capture and Evidence derivation remain separate transitions; intelligence will not run.</p>
         </div>
-        <button type="button" onClick={onClose} aria-label="Close" className="rounded-lg p-1 text-zinc-500 hover:bg-white/5"><CloseIcon className="h-4 w-4" /></button>
+        <button type="button" onClick={onClose} aria-label="Close" className="rounded-lg p-1 text-slate-500 hover:bg-slate-100"><CloseIcon className="h-4 w-4" /></button>
       </div>
 
       <label className="sr-only" htmlFor={inputId}>Project notes</label>
@@ -144,41 +144,41 @@ export function VaultIntakePanel({ workspaceId, projectId, onClose, onIntakeComp
         onChange={(e) => setContent(e.target.value)}
         rows={5}
         placeholder="The supplier said delivery may slip to next Friday…"
-        className="mt-3 w-full rounded-xl border border-white/10 bg-white/[0.02] p-3 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-500 focus:border-sky-500/40 focus:ring-2 focus:ring-sky-500/10"
+        className="mt-3 w-full rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-sky-500/40 focus:ring-2 focus:ring-sky-500/10"
       />
 
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
-        <label className="text-[11px] text-zinc-400">
+        <label className="text-[11px] text-slate-600">
           Assertion type
-          <select value={assertionType} onChange={(e) => setAssertionType(e.target.value as (typeof ASSERTION_TYPES)[number])} className="mt-1 w-full rounded-lg border border-white/10 bg-zinc-900 p-2 text-xs text-zinc-100">
+          <select value={assertionType} onChange={(e) => setAssertionType(e.target.value as (typeof ASSERTION_TYPES)[number])} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-900">
             <option value="" disabled>Select…</option>
             {ASSERTION_TYPES.map((value) => <option key={value} value={value}>{labelize(value)}</option>)}
           </select>
         </label>
-        <label className="text-[11px] text-zinc-400">
+        <label className="text-[11px] text-slate-600">
           Classification
-          <select value={classification} onChange={(e) => setClassification(e.target.value)} className="mt-1 w-full rounded-lg border border-white/10 bg-zinc-900 p-2 text-xs text-zinc-100">
+          <select value={classification} onChange={(e) => setClassification(e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-900">
             <option value="" disabled>Select…</option>
             {CLASSIFICATIONS.map((value) => <option key={value} value={value}>{labelize(value)}</option>)}
           </select>
         </label>
-        <label className="text-[11px] text-zinc-400">
+        <label className="text-[11px] text-slate-600">
           Missing data
-          <select value={missingDataState} onChange={(e) => setMissingDataState(e.target.value as (typeof MISSING_DATA_STATES)[number])} className="mt-1 w-full rounded-lg border border-white/10 bg-zinc-900 p-2 text-xs text-zinc-100">
+          <select value={missingDataState} onChange={(e) => setMissingDataState(e.target.value as (typeof MISSING_DATA_STATES)[number])} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-900">
             <option value="" disabled>Select…</option>
             {MISSING_DATA_STATES.map((value) => <option key={value} value={value}>{labelize(value)}</option>)}
           </select>
         </label>
-        <label className="text-[11px] text-zinc-400">
+        <label className="text-[11px] text-slate-600">
           Confidence (0–1)
-          <input type="number" min="0" max="1" step="0.01" placeholder="Enter a value" value={confidenceScore} onChange={(e) => setConfidenceScore(e.target.value)} className="mt-1 w-full rounded-lg border border-white/10 bg-zinc-900 p-2 text-xs text-zinc-100" />
+          <input type="number" min="0" max="1" step="0.01" placeholder="Enter a value" value={confidenceScore} onChange={(e) => setConfidenceScore(e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-900" />
         </label>
       </div>
 
-      {error && <p role="alert" className="mt-2 text-xs text-rose-400">{error}</p>}
+      {error && <p role="alert" className="mt-2 text-xs text-rose-700">{error}</p>}
       <div className="mt-3 flex items-center justify-end gap-2">
-        <button type="button" onClick={onClose} className="rounded-lg border border-white/10 px-3 py-1.5 text-xs font-medium text-zinc-300 transition hover:bg-white/5">Cancel</button>
-        <button type="button" onClick={submit} disabled={busy || !canSubmit} className="rounded-lg border border-sky-500/25 bg-sky-500/10 px-3 py-1.5 text-xs font-medium text-sky-300 transition hover:bg-sky-500/15 disabled:cursor-not-allowed disabled:opacity-50">
+        <button type="button" onClick={onClose} className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-100">Cancel</button>
+        <button type="button" onClick={submit} disabled={busy || !canSubmit} className="rounded-lg border border-sky-500/25 bg-sky-500/10 px-3 py-1.5 text-xs font-medium text-sky-800 transition hover:bg-sky-500/15 disabled:cursor-not-allowed disabled:opacity-50">
           {busy ? "Capturing and deriving…" : "Capture and derive Evidence"}
         </button>
       </div>

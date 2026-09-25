@@ -660,11 +660,15 @@ test("P2-12 J1: the continuation is reachable from the Command Center at every b
   // overlay — because the rail did not exist on a phone. It is now one section of the main
   // attention canvas, laid out into the right column on a wide screen by CSS rather than by
   // a second DOM. Mounted once, reachable everywhere, and never behind an overlay.
-  assert.equal((layout.match(/<ExecutionQueue/g) ?? []).length, 0, "the screen composes the canvas, not the queue directly");
-  const canvas = readFileSync("src/modules/workspace/presentation/command-center/command-center-canvas.tsx", "utf8");
-  assert.equal((canvas.match(/<ExecutionQueue/g) ?? []).length, 1);
-  assert.match(layout, /<CommandCenterCanvas/);
+  // CHAT-SHELL-01: it is the "In progress" tool of the project conversation's
+  // inspector — mounted once, in ONE inspector element that is inline beside the
+  // conversation on a wide screen and a sheet below that, reached from the rail or the
+  // header's Tools button at every width.
+  assert.equal((layout.match(/<ExecutionQueue/g) ?? []).length, 1);
+  assert.match(layout, /tool === "execution"/);
   assert.match(layout, /chains=\{executionChains\}/);
+  const tools = readFileSync("src/components/pmfreak/conversation-shell/operational-tools.ts", "utf8");
+  assert.match(tools, /key: "execution", label: "In progress"/);
 });
 
 test("P2-12 J2: the queue reports real stage progress and an honest empty state", () => {
@@ -1262,7 +1266,8 @@ test("P2-12 N4: opening one drawer clears the others", () => {
     assert.equal(direct, 0, `${setter} must only be called inside selectDrawer`);
   }
   // (PB-CHAT-01 removed the chat-source `handleSourceClick` along with the deterministic feed.)
-  for (const handler of ["handleNeedsYouSelect", "handleChainSelect", "handleAgentSelect", "handleTopBarSourceClick", "closeDrawer"]) {
+  // CHAT-SHELL-01 renamed the top bar's source handler: the sources now live in the Evidence tool.
+  for (const handler of ["handleNeedsYouSelect", "handleChainSelect", "handleAgentSelect", "handleRepositorySourceClick", "closeDrawer"]) {
     assert.match(layout, new RegExp(`${handler}[\\s\\S]{0,260}selectDrawer\\(`), `${handler} must route through selectDrawer`);
   }
 });
