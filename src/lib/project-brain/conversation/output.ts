@@ -12,6 +12,11 @@
 // The model can never introduce a source: a citation is only ever a lookup into
 // the server-built alias table, so an invented id, another project's id or a
 // malformed reference simply resolves to nothing and is dropped.
+//
+// PB-REASON-01 adds a fake-precision check in the same pass: a reference-shaped
+// token (milestone code, PR number, branch name, percentage, ISO date) that
+// appears nowhere in what this turn supplied is counted, and a statement carrying
+// one cannot stay evidence-backed — it is shown as an assumption.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { PROJECT_BRAIN_CONSTITUTION_VERSION } from "../constitution";
@@ -101,6 +106,11 @@ export type CitationReport = {
   downgradedStatements: number;
   /** Statements dropped because they were empty or beyond the statement limit. */
   droppedStatements: number;
+  /**
+   * Distinct reference-shaped tokens (milestone code, PR number, branch, percentage,
+   * ISO date) in the reply or statements that nothing this turn supplied contains.
+   */
+  unsupportedReferences: number;
 };
 
 export type GroundedStatement = ProjectBrainStatement & { downgradedFrom?: EpistemicType };
@@ -123,6 +133,49 @@ function clip(text: string, max: number): string {
 }
 
 /**
+ * Shapes of precise project references a model is prone to invent. Deliberately
+ * narrow: a false positive only adds the "could not be fully linked" notice and
+ * lowers a claim to an assumption — the conservative direction.
+ */
+const REFERENCE_PATTERNS: RegExp[] = [
+  /\b[A-Z][A-Z0-9]{1,9}(?:-[A-Z][A-Z0-9]{0,9})*-\d{1,5}\b/g, // MPP-04, PB-EXEC-01, JIRA-123
+  /(?<![\w&])#\d{1,6}\b/g, // PR / issue numbers
+  /\b(?:feat|feature|fix|bugfix|hotfix|chore|release)\/[\w.\/-]*\w/gi, // branch names
+  /\b\d{1,3}(?:\.\d+)?\s?%/g, // percentages
+  /\b\d{4}-\d{2}-\d{2}\b/g, // ISO dates
+];
+
+const normalizeReference = (value: string) => value.toLowerCase().replace(/\s+/g, " ").replace(/ %/g, "%");
+
+export function extractReferences(text: string): string[] {
+  const found = new Set<string>();
+  for (const pattern of REFERENCE_PATTERNS) {
+    for (const match of text.matchAll(pattern)) found.add(normalizeReference(match[0]));
+  }
+  return [...found];
+}
+
+/**
+ * Every reference this turn supplied: the records, their dates, today's date, the
+ * question and what the USER said earlier. Prior assistant turns are excluded, so a
+ * reference the model invented once cannot become "supplied" on the next turn.
+ * Compared as exact tokens, so MPP-1 is not vouched for by MPP-10.
+ */
+function suppliedReferences(context: ProjectBrainContext, question: string, generatedAt: string): Set<string> {
+  return new Set(
+    extractReferences(
+      [
+        context.projectName,
+        generatedAt.slice(0, 10),
+        question,
+        ...context.sources.flatMap((s) => [s.label, s.content, s.reference.recordedAt.slice(0, 10)]),
+        ...context.history.filter((m) => m.role === "user").map((m) => m.content),
+      ].join("\n"),
+    ),
+  );
+}
+
+/**
  * Pure. Resolves citations, applies deterministic downgrades, and returns
  * statements that satisfy the constitution — or null when even the normalized
  * response fails `validateResponse` (caller must degrade, never persist it).
@@ -132,11 +185,21 @@ export function groundProjectBrainOutput(input: {
   context: ProjectBrainContext;
   statementIdPrefix: string;
   generatedAt: string;
+  /** The user's question this turn — a reference the user typed is not invented. */
+  question?: string;
 }): { ok: true; value: GroundedOutput } | { ok: false; failures: GuardrailFailure[] } {
   const { output, context, generatedAt } = input;
   const scope: ProjectContextScope = context.scope;
   const byAlias = new Map<string, ProjectBrainContextSource>(context.sources.map((s) => [s.alias, s]));
-  const citations: CitationReport = { rejectedCitations: 0, downgradedStatements: 0, droppedStatements: 0 };
+  const citations: CitationReport = { rejectedCitations: 0, downgradedStatements: 0, droppedStatements: 0, unsupportedReferences: 0 };
+  const supplied = suppliedReferences(context, input.question ?? "", generatedAt);
+  const unsupported = new Set<string>();
+  const unsupportedIn = (text: string): boolean => {
+    const missing = extractReferences(text).filter((ref) => !supplied.has(ref));
+    for (const ref of missing) unsupported.add(ref);
+    return missing.length > 0;
+  };
+  unsupportedIn(output.reply);
 
   const resolve = (id: string): ProjectBrainContextSource | null => {
     const source = byAlias.get(id.trim().toUpperCase());
@@ -173,8 +236,11 @@ export function groundProjectBrainOutput(input: {
     const hasPrimary = sources.some((s) => s.isPrimary);
 
     // A project claim with no valid supporting source is not evidence-backed,
-    // whatever the model called it: it is shown as an unverified assumption.
-    if (EVIDENCE_DERIVED.has(type) && sources.length === 0) {
+    // whatever the model called it: it is shown as an unverified assumption. The
+    // same holds for a claim naming a reference nothing this turn supplied — a
+    // cited record cannot vouch for a milestone code or PR number it never contains.
+    const inventsReference = unsupportedIn(text);
+    if ((EVIDENCE_DERIVED.has(type) && sources.length === 0) || (inventsReference && (EVIDENCE_DERIVED.has(type) || type === "RECOMMENDATION"))) {
       type = "ASSUMPTION";
       confidence = "low";
     }
@@ -228,6 +294,7 @@ export function groundProjectBrainOutput(input: {
     statements,
     knowledgeGaps: [],
   };
+  citations.unsupportedReferences = unsupported.size;
   const validation = validateResponse(response);
   if (!validation.ok) return { ok: false, failures: validation.failures };
 

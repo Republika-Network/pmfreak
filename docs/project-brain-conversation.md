@@ -171,13 +171,71 @@ citation was rejected or a statement was downgraded or dropped.
   (≈ 9.1k characters ÷ 3 characters per token × 1.2 margin ≈ 3,660), pinned by tests. A
   provider stop at the ceiling (`finish_reason: length`) is logged as
   `project_brain.output_truncated` (identifiers only) and the turn degrades.
+- Each `<source>` carries `type`, `kind` (plan / state / assessment — see *Operational
+  reasoning*), `trust` and `recorded_at`; `<project_context>` carries `as_of` (server date).
 - **Citations** are short per-turn aliases (`S1`…). The server resolves them against its own
   table; invented, foreign or malformed ids resolve to nothing and are stripped. Evidence-type
   claims without a valid source become `ASSUMPTION`; a FACT without a primary source becomes
   `INFERENCE`; high confidence without a primary source becomes medium. The result must pass
   the Sprint 0 `validateResponse` guardrails or the turn degrades.
+- **Invented references** (PB-REASON-01): in the same grounding pass, reference-shaped tokens
+  in the reply or statements — milestone codes (`MPP-04`), PR numbers (`#412`), branch names
+  (`feat/…`), percentages, ISO dates — are checked against everything the turn supplied
+  (source labels and content, recorded dates, today's date, the question, recent history).
+  Unmatched tokens are counted in `citations.unsupportedReferences` (which raises the grounding
+  notice), and an evidence-type or RECOMMENDATION statement naming one becomes a low-confidence
+  `ASSUMPTION`. A false positive only adds caution; it never upgrades anything.
 - Persisted metadata: `projectBrain { mode, statements, sources, citations, context summary,
   provider, model }`. Never the prompt, keys, raw provider payload or reasoning.
+
+## Operational reasoning (PB-REASON-01)
+
+Project Brain answers the user's **intent**, not a summary of its records. It is the same
+single inference call per turn, the same strict `{ reply, statements }` contract and the same
+grounding; there is no classifier call, no intent field and no schema, auth or persistence
+change. What changed is what the model is told and what it can see:
+
+- **Intent first.** The system prompt has the model decide silently what is being asked —
+  next step / next milestone / what to do today / prioritization, status, blockers, decision
+  support, another project question, or off-topic — and shape the answer for it. The category
+  is never shown to the user.
+- **Next-target reasoning.** For "what next?"-type questions: establish the current position
+  from state records → separate completed / active / unresolved → earliest material unresolved
+  item → executable now or blocked → ONE concrete next target and why → if the records cannot
+  identify it, the exact missing fact. Suggested ordering where evidence supports it: blocked
+  prerequisite → unresolved decision → correctness/safety gap → incomplete committed milestone
+  → verification gap → execution → polish. Project evidence always overrides it.
+- **Plan vs current state.** Every source carries a server-derived `kind`
+  (`SOURCE_KIND_BY_FAMILY` in `context-types.ts`): `plan` (setup answers — intentions, target
+  dates, contractual milestones), `state` (project, milestone, task, decision, outcome,
+  evidence records) or `assessment` (risks, issues, signals, recommendations, proposed actions,
+  discovery). `<project_context as_of="…">` gives today's date from the server clock. The
+  model is told a plan is not a position, a target date does not choose the next task, a plan
+  step the state records have moved past is done or superseded, completion that cannot be
+  verified is reported as unverified, and matching work to a planned milestone by name is an
+  inference, never a FACT.
+- **Answer shape.** Lead with the answer; brief reasoning; only material blockers or gaps. No
+  mission/architecture recap, record inventory or opening disclaimer. A blocker must be
+  recorded as blocking (open issue, impediment, decision needed, unmet dependency) — a todo
+  task or a risk is not one; with none, the answer says "No blocker is confirmed in the
+  project records". Missing information becomes an actionable gap: the precise fact to
+  establish, not "not enough information".
+- **No fake precision.** The model is told never to invent milestone numbers, branches, PR
+  numbers, percentages, owners, deadlines, test or deployment state, blockers or dependencies,
+  and the invented-reference check above enforces the reference-shaped part deterministically.
+- **Boundaries unchanged.** Conversation history is still what was *said*, never a citable
+  source. A recommended next target is a `RECOMMENDATION` (requires human approval) and the
+  missing fact an `OPEN_QUESTION`. The conversation stays read-only.
+- **Future execution boundary.** PB-REASON-01 answers *what* should happen next and *why*,
+  and the prompt forbids implementation steps (branches, files, commands) unless asked for and
+  supported by the records. Packaging a next target for an execution agent is a separate,
+  not-yet-built increment; it would consume this reasoning, not replace it.
+
+Verification: `tests/pb-reason-01-intent-first-reasoning.test.ts` (deterministic behaviour on
+the shared fixtures in `tests/fixtures/pb-reason-01-projects.ts`) and
+`scripts/pb-reason-01/eval-real-provider.ts` (manual real-provider evaluation of the same
+fixtures through the real turn service; prints answers for human grading, exits cleanly with
+`NOT_AVAILABLE` when no provider key is configured).
 
 ## Degraded mode
 
