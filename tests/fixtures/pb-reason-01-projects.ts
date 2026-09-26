@@ -17,6 +17,14 @@ export const FOREIGN_PROJECT = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 export const USER = "99999999-9999-4999-8999-999999999999";
 export const scope = { workspaceId: WS, projectId: PROJECT };
 
+/**
+ * The canonical evaluation clock. Every fixture's dates (completed milestones,
+ * October–December targets) are written relative to it, so both the deterministic
+ * suite and the real-provider evaluation must reason "as of" this instant — never
+ * the wall clock, or the same fixture turns into an overdue-work scenario later.
+ */
+export const FIXTURE_NOW = new Date("2026-09-26T12:00:00.000Z");
+
 type Row = Record<string, unknown>;
 let counter = 0;
 const id = (prefix: string) => `${prefix}${String(++counter).padStart(7, "0")}-0000-4000-8000-000000000000`;

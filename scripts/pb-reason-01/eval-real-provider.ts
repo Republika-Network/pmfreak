@@ -9,20 +9,34 @@
  * tests/fixtures/pb-reason-01-projects.ts. Only the runInference wrapper
  * (workspace quota / usage accounting, which need a database) is bypassed.
  *
- * Reads OPENAI_API_KEY (and DEFAULT_AI_MODEL) from the environment or .env.local;
- * never prints them. Without a key it exits 0 with REAL_PROVIDER_CERTIFICATION =
- * NOT_AVAILABLE. Answers are printed for MANUAL evaluation against the
- * PB-REASON-01 criteria — the script grades nothing itself.
+ * Reads OPENAI_API_KEY and DEFAULT_AI_MODEL, each independently, from the
+ * environment or else .env.local (an exported variable always wins); never prints
+ * the key. Every case runs "as of" FIXTURE_NOW, the same clock as the deterministic
+ * suite, and the output records that as_of date and the model that answered.
+ *
+ * Certification outcome (last line; the exit code follows it):
+ *   NOT_AVAILABLE  no provider key is configured                       exit 0
+ *   RUN            ≥ 1 case selected and EVERY selected case returned a
+ *                  generative answer from the provider                  exit 0
+ *   INCOMPLETE     PB_EVAL_ONLY selected no valid case, or named an
+ *                  unknown case id                                      exit 2
+ *   FAILED         any selected case was not a generative provider answer
+ *                  (auth failure, timeout, quota/rate limit, invalid or
+ *                  degraded output, or a thrown error)                  exit 1
+ * Answers are printed for MANUAL evaluation against the PB-REASON-01 criteria —
+ * the script does not grade answer quality; it only certifies that real
+ * generative answers exist to grade.
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { ContextConversationRow, ContextMessageRow } from "../../src/lib/db/database-contract";
-import type { InferenceRequest, InferenceResponse } from "../../src/lib/ai/inference/types";
+import { InferenceError, type InferenceRequest, type InferenceResponse } from "../../src/lib/ai/inference/types";
 import { assembleProjectBrainContext, type ProjectBrainRawContext } from "../../src/lib/project-brain/conversation/context-builder";
 import { runProjectBrainTurn, type ProjectBrainTurnStore } from "../../src/lib/project-brain/conversation/turn-service";
 import { toProjectBrainMessageView } from "../../src/lib/project-brain/conversation/transcript-view";
 import {
   blockerProject,
+  FIXTURE_NOW,
   injectionProject,
   knownNextProject,
   noBlockerProject,
@@ -35,11 +49,21 @@ import {
   WS,
 } from "../../tests/fixtures/pb-reason-01-projects";
 
-function loadEnv() {
-  if (process.env.OPENAI_API_KEY || !existsSync(".env.local")) return;
-  for (const line of readFileSync(".env.local", "utf8").split("\n")) {
-    const match = line.match(/^\s*(OPENAI_API_KEY|DEFAULT_AI_MODEL)\s*=\s*(.*)\s*$/);
-    if (match && !process.env[match[1]]) process.env[match[1]] = match[2].replace(/^["']|["']$/g, "");
+const EVAL_ENV_KEYS = ["OPENAI_API_KEY", "DEFAULT_AI_MODEL"] as const;
+
+/**
+ * Pure: fills each supported variable that `env` does not already set from the
+ * `.env.local` text. Variables are handled independently — an exported key does not
+ * stop DEFAULT_AI_MODEL from loading — and an exported value always wins.
+ */
+export function loadEvalEnv(env: Record<string, string | undefined>, envFileText: string | null): void {
+  if (envFileText === null) return;
+  for (const line of envFileText.split(/\r?\n/)) {
+    const match = line.match(/^\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/);
+    if (!match || !(EVAL_ENV_KEYS as readonly string[]).includes(match[1])) continue;
+    if (env[match[1]]) continue;
+    const value = match[2].replace(/^["']|["']$/g, "");
+    if (value) env[match[1]] = value;
   }
 }
 
@@ -63,7 +87,7 @@ export const EVAL_CASES: Array<{ id: string; fixture: () => ProjectBrainRawConte
 function memoryStore(): ProjectBrainTurnStore & { rows: ContextMessageRow[] } {
   const rows: ContextMessageRow[] = [];
   let seq = 0;
-  const now = new Date().toISOString();
+  const now = FIXTURE_NOW.toISOString();
   const conversation: ContextConversationRow = {
     id: "eval", workspace_id: WS, context_type: "project", pmo_id: null, project_id: PROJECT, title: "eval",
     status: "active", created_by_user_id: USER, created_at: now, updated_at: now,
@@ -71,7 +95,7 @@ function memoryStore(): ProjectBrainTurnStore & { rows: ContextMessageRow[] } {
   const insert = (extra: Partial<ContextMessageRow>) => {
     const row = {
       id: `m${++seq}`, conversation_id: "eval", workspace_id: WS, role: "user", content: "", metadata: null, created_by_user_id: USER,
-      created_at: new Date().toISOString(), message_seq: seq, client_message_id: null, reply_to_message_id: null, brain_mode: null, ...extra,
+      created_at: FIXTURE_NOW.toISOString(), message_seq: seq, client_message_id: null, reply_to_message_id: null, brain_mode: null, ...extra,
     } as ContextMessageRow;
     rows.push(row);
     return row;
@@ -95,15 +119,22 @@ export async function runEvalCase(
   const store = memoryStore();
   let usage: InferenceResponse["usage"];
   let model = "";
+  let providerError: string | null = null;
   const result = await runProjectBrainTurn(
     {
-      scope, userId: USER, generativeEntitled: true, store, now: () => new Date(),
+      scope, userId: USER, generativeEntitled: true, store, now: () => FIXTURE_NOW,
       loadContext: async (history) => assembleProjectBrainContext({ ...c.fixture(), history }),
       infer: async (request) => {
-        const response = await infer(request);
-        usage = response.usage;
-        model = response.model;
-        return response;
+        try {
+          const response = await infer(request);
+          usage = response.usage;
+          model = response.model;
+          return response;
+        } catch (error) {
+          // The failure CLASS only (auth_error, timeout, rate_limited, …) — never a message that could echo a credential.
+          providerError = error instanceof InferenceError ? error.errorClass : "provider_error";
+          throw error;
+        }
       },
     },
     { clientMessageId: crypto.randomUUID(), text: c.question },
@@ -114,7 +145,10 @@ export async function runEvalCase(
     id: c.id,
     question: c.question,
     expect: c.expect,
+    asOf: FIXTURE_NOW.toISOString(),
     mode: view?.brain?.mode ?? null,
+    degradedReason: view?.brain?.reason ?? null,
+    providerError,
     model,
     usage,
     reply: view?.content ?? null,
@@ -125,32 +159,82 @@ export async function runEvalCase(
   };
 }
 
-async function main() {
-  loadEnv();
+export type EvalCaseResult = Awaited<ReturnType<typeof runEvalCase>>;
+export type Certification =
+  | { status: "RUN"; reasons: [] }
+  | { status: "INCOMPLETE" | "FAILED"; reasons: string[] };
+
+/** PB_EVAL_ONLY → the selected cases, plus any ids that match no case. */
+export function selectEvalCases(only: string | undefined) {
+  if (only === undefined) return { cases: EVAL_CASES, unknown: [] as string[] };
+  const ids = only.split(",").map((id) => id.trim()).filter(Boolean);
+  return {
+    cases: EVAL_CASES.filter((c) => ids.includes(c.id)),
+    unknown: ids.filter((id) => !EVAL_CASES.some((c) => c.id === id)),
+  };
+}
+
+/**
+ * Pure: RUN only when at least one case was selected, every requested id exists,
+ * and EVERY selected case produced a generative answer from the provider. A
+ * degraded reply (auth failure, timeout, quota, invalid output) or a thrown error
+ * is a FAILED certification, never RUN.
+ */
+export function certifyEvaluation(selection: { cases: readonly unknown[]; unknown: string[] }, results: Array<Pick<EvalCaseResult, "id" | "mode" | "degradedReason" | "providerError" | "model"> | { id: string; thrown: string }>): Certification {
+  if (selection.unknown.length > 0) return { status: "INCOMPLETE", reasons: [`unknown case id(s) in PB_EVAL_ONLY: ${selection.unknown.join(", ")}`] };
+  if (selection.cases.length === 0) return { status: "INCOMPLETE", reasons: ["no evaluation case selected"] };
+  const reasons: string[] = [];
+  for (const r of results) {
+    if ("thrown" in r) reasons.push(`${r.id}: evaluation threw (${r.thrown})`);
+    else if (r.mode !== "generative") reasons.push(`${r.id}: not a generative answer (mode ${r.mode ?? "none"}, reason ${r.degradedReason ?? "unknown"}${r.providerError ? `, provider ${r.providerError}` : ""})`);
+    else if (!r.model) reasons.push(`${r.id}: generative answer without a provider model`);
+  }
+  if (results.length < selection.cases.length) reasons.push(`only ${results.length} of ${selection.cases.length} selected cases produced a result`);
+  return reasons.length > 0 ? { status: "FAILED", reasons } : { status: "RUN", reasons: [] };
+}
+
+async function main(): Promise<number> {
+  loadEvalEnv(process.env, existsSync(".env.local") ? readFileSync(".env.local", "utf8") : null);
   if (!process.env.OPENAI_API_KEY) {
-    console.log("REAL_PROVIDER_CERTIFICATION = NOT_AVAILABLE (no OPENAI_API_KEY)");
-    return;
+    console.log("REAL_PROVIDER_CERTIFICATION = NOT_AVAILABLE (no OPENAI_API_KEY configured)");
+    return 0;
   }
+  const selection = selectEvalCases(process.env.PB_EVAL_ONLY);
+  const configuredModel = process.env.DEFAULT_AI_MODEL ?? "(provider default)";
+  console.log(`as_of=${FIXTURE_NOW.toISOString()} configured_model=${configuredModel} cases=${selection.cases.length}`);
   const { openAIProvider } = await import("../../src/lib/ai/providers/openai-provider");
-  const results = [];
-  const only = process.env.PB_EVAL_ONLY?.split(",");
-  for (const c of EVAL_CASES.filter((entry) => !only || only.includes(entry.id))) {
-    const r = await runEvalCase(c, (request) => openAIProvider.complete(request));
-    results.push(r);
-    console.log(`\n━━ ${r.id} — ${r.question}  [${r.mode}, ${r.model}, in=${r.usage?.inputTokens} out=${r.usage?.outputTokens}]`);
-    console.log(`expect: ${r.expect}`);
-    console.log(r.reply);
-    for (const s of r.statements) console.log(`  · ${s}`);
-    console.log(`  citations=${JSON.stringify(r.citations)} groundingAdjusted=${r.groundingAdjusted}`);
+  const results: Parameters<typeof certifyEvaluation>[1] = [];
+  if (selection.unknown.length === 0) {
+    for (const c of selection.cases) {
+      try {
+        const r = await runEvalCase(c, (request) => openAIProvider.complete(request));
+        results.push(r);
+        console.log(`\n━━ ${r.id} — ${r.question}  [${r.mode}${r.degradedReason ? `:${r.degradedReason}` : ""}, model=${r.model || "none"}, as_of=${r.asOf.slice(0, 10)}, in=${r.usage?.inputTokens} out=${r.usage?.outputTokens}]`);
+        console.log(`expect: ${r.expect}`);
+        console.log(r.reply);
+        for (const s of r.statements) console.log(`  · ${s}`);
+        console.log(`  citations=${JSON.stringify(r.citations)} groundingAdjusted=${r.groundingAdjusted}`);
+      } catch (error) {
+        results.push({ id: c.id, thrown: error instanceof InferenceError ? error.errorClass : error instanceof Error ? error.name : "unknown" });
+      }
+    }
   }
+  const certification = certifyEvaluation(selection, results);
+  const models = [...new Set(results.flatMap((r) => ("model" in r && r.model ? [r.model] : [])))];
   const out = process.argv[2];
-  if (out) writeFileSync(out, JSON.stringify(results, null, 2));
-  console.log("\nREAL_PROVIDER_CERTIFICATION = RUN");
+  if (out) writeFileSync(out, JSON.stringify({ asOf: FIXTURE_NOW.toISOString(), configuredModel, models, certification, results }, null, 2));
+  console.log(`\nmodels=${models.join(", ") || "none"} as_of=${FIXTURE_NOW.toISOString()}`);
+  for (const reason of certification.reasons) console.log(`  ✗ ${reason}`);
+  console.log(`REAL_PROVIDER_CERTIFICATION = ${certification.status}`);
+  return certification.status === "RUN" ? 0 : certification.status === "INCOMPLETE" ? 2 : 1;
 }
 
 if (process.argv[1]?.endsWith("eval-real-provider.ts")) {
-  main().catch((error) => {
-    console.error(error instanceof Error ? error.message : "eval failed");
-    process.exit(1);
-  });
+  main().then(
+    (code) => process.exit(code),
+    (error) => {
+      console.error(`REAL_PROVIDER_CERTIFICATION = FAILED (${error instanceof Error ? error.name : "unknown error"})`);
+      process.exit(1);
+    },
+  );
 }

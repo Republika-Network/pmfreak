@@ -24,7 +24,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import type { ContextConversationRow, ContextMessageRow } from "../src/lib/db/database-contract";
-import type { InferenceRequest, InferenceResponse } from "../src/lib/ai/inference/types";
+import { InferenceError, type InferenceRequest, type InferenceResponse } from "../src/lib/ai/inference/types";
 import { assembleProjectBrainContext, loadProjectBrainContext, type ProjectBrainRawContext } from "../src/lib/project-brain/conversation/context-builder";
 import { PROJECT_BRAIN_SOURCE_FAMILIES, SOURCE_KIND_BY_FAMILY, type ProjectBrainContext } from "../src/lib/project-brain/conversation/context-types";
 import { extractReferences, groundProjectBrainOutput, type RawModelOutput, type RawModelStatement } from "../src/lib/project-brain/conversation/output";
@@ -33,6 +33,7 @@ import { runProjectBrainTurn, type ProjectBrainTurnDeps, type ProjectBrainTurnSt
 import { toProjectBrainMessageView } from "../src/lib/project-brain/conversation/transcript-view";
 import {
   blockerProject,
+  FIXTURE_NOW,
   FOREIGN_PROJECT,
   INJECTION_TEXT,
   injectionProject,
@@ -47,7 +48,7 @@ import {
   WS,
 } from "./fixtures/pb-reason-01-projects";
 
-const NOW = new Date("2026-09-26T12:00:00.000Z");
+const NOW = FIXTURE_NOW;
 
 // ─── Harness ────────────────────────────────────────────────────────────────
 
@@ -519,4 +520,152 @@ test("J: the PB-REASON-01 change adds no write, memory or second-provider path",
   }
   const turn = readFileSync("src/lib/project-brain/conversation/turn-service.ts", "utf8");
   assert.equal((turn.match(/deps\.infer\(/g) ?? []).length, 1, "the turn service still has exactly one inference call site");
+});
+
+// ═══ Review remediation (PR #628: F1–F5) ════════════════════════════════════
+
+const groundWith = (context: ProjectBrainContext, output: RawModelOutput, question = "What next?") =>
+  groundProjectBrainOutput({ context, generatedAt: NOW.toISOString(), statementIdPrefix: "t", question, output });
+
+test("F1: lowercase and mixed-case invented identifiers are detected and downgraded exactly like uppercase ones", () => {
+  const context = assembleProjectBrainContext(knownNextProject());
+  const m3 = alias(context, (l) => l.includes("MPP-03"));
+  assert.deepEqual(new Set(extractReferences("mpp-07 Mpp-07 MPP-07 pb-exec-01 Pb-Exec-01")), new Set(["mpp-07", "pb-exec-01"]));
+  for (const code of ["MPP-07", "mpp-07", "Mpp-07", "pb-exec-01"]) {
+    const grounded = groundWith(context, {
+      reply: `Next is ${code}.`,
+      statements: [
+        stmt({ text: `${code} is the next milestone.`, epistemicType: "FACT", confidence: "high", sourceIds: [m3] }),
+        stmt({ text: `Start ${code} next.`, epistemicType: "RECOMMENDATION", sourceIds: [m3] }),
+      ],
+    });
+    assert.ok(grounded.ok);
+    assert.equal(grounded.value.citations.unsupportedReferences, 1, `${code} is one invented reference`);
+    assert.deepEqual(grounded.value.statements.map((s) => s.epistemicType), ["ASSUMPTION", "ASSUMPTION"], `${code} downgrades like uppercase`);
+  }
+});
+
+test("F1: a supplied reference stays supported whatever case the records or the answer use", () => {
+  const raw = knownNextProject();
+  raw.summary!.tasks!.push({ id: "f8888888-0000-4000-8000-000000000000", workspace_id: WS, project_id: PROJECT, title: "Close out pb-exec-01 spike", status: "done", updated_at: "2026-09-20T00:00:00.000Z" });
+  const context = assembleProjectBrainContext(raw);
+  const task = alias(context, (l) => l.includes("pb-exec-01"));
+  const m3 = alias(context, (l) => l.includes("MPP-03"));
+  const grounded = groundWith(context, {
+    reply: "PB-EXEC-01 is closed; mpp-03 is next.",
+    statements: [
+      stmt({ text: "The PB-EXEC-01 spike is done.", epistemicType: "FACT", confidence: "high", sourceIds: [task] }),
+      stmt({ text: "mpp-03 is not started.", epistemicType: "FACT", confidence: "high", sourceIds: [m3] }),
+    ],
+  });
+  assert.ok(grounded.ok);
+  assert.equal(grounded.value.citations.unsupportedReferences, 0);
+  assert.deepEqual(grounded.value.statements.map((s) => s.epistemicType), ["FACT", "FACT"]);
+});
+
+test("F2: a general answer with a percentage or a date and no project claims is conversational-only, with no grounding warning", async () => {
+  for (const [question, reply] of [
+    ["What percentage is one half?", "50%"],
+    ["When did the Berlin Wall fall?", "It fell on 1989-11-09, so about 36 years ago; COVID-19 came much later."],
+  ]) {
+    const grounded = groundWith(assembleProjectBrainContext(knownNextProject()), { reply, statements: [] }, question);
+    assert.ok(grounded.ok);
+    assert.equal(grounded.value.citations.unsupportedReferences, 0, `"${reply}" is ordinary knowledge, not an invented project fact`);
+
+    const { deps, store } = turnDeps(knownNextProject(), () => ({ reply, statements: [] }));
+    await ask(deps, question);
+    const view = toProjectBrainMessageView(store.rows.find((r) => r.role === "assistant")!)!;
+    assert.equal(view.brain!.conversationalOnly, true);
+    assert.equal(view.brain!.groundingAdjusted, false, "no misleading project-grounding warning");
+  }
+});
+
+test("F2: the fake-precision guard still protects project claims — an invented 70% or mpp-07 in a statement is flagged", () => {
+  const context = assembleProjectBrainContext(knownNextProject());
+  const m3 = alias(context, (l) => l.includes("MPP-03"));
+  const percent = groundWith(context, { reply: "We are about 70% done.", statements: [stmt({ text: "The project is 70% complete.", epistemicType: "FACT", confidence: "high", sourceIds: [m3] })] }, "Where are we?");
+  assert.ok(percent.ok);
+  assert.equal(percent.value.citations.unsupportedReferences, 1);
+  assert.equal(percent.value.statements[0].epistemicType, "ASSUMPTION");
+  const code = groundWith(context, { reply: "Next is mpp-07.", statements: [stmt({ text: "mpp-07 is next.", epistemicType: "INFERENCE", sourceIds: [m3], inferenceBasis: "order" })] });
+  assert.ok(code.ok);
+  assert.equal(code.value.citations.unsupportedReferences, 1);
+  assert.equal(code.value.statements[0].epistemicType, "ASSUMPTION");
+});
+
+test("F2: an operational answer without statements still cannot slip an invented project code, PR or branch past the guard", () => {
+  const context = assembleProjectBrainContext(knownNextProject());
+  for (const reply of ["The next milestone is mpp-07.", "Merge PR #412 next.", "Continue on feat/mpp-payouts."]) {
+    const grounded = groundWith(context, { reply, statements: [] });
+    assert.ok(grounded.ok);
+    assert.equal(grounded.value.citations.unsupportedReferences, 1, `"${reply}" names a project-shaped reference nothing supplied`);
+  }
+});
+
+test("F3: the evaluation clock is the fixture clock, and the eval reports the as_of it used", async () => {
+  const { runEvalCase, EVAL_CASES } = await import("../scripts/pb-reason-01/eval-real-provider");
+  assert.equal(FIXTURE_NOW.toISOString(), "2026-09-26T12:00:00.000Z");
+  const source = readFileSync("scripts/pb-reason-01/eval-real-provider.ts", "utf8");
+  assert.doesNotMatch(source.replace(/\/\*[\s\S]*?\*\//g, ""), /new Date\(\)/, "no wall-clock time drives fixture semantics");
+  let prompt = "";
+  const result = await runEvalCase(EVAL_CASES[0], async (request) => {
+    prompt = request.messages[1].content;
+    return respond({ reply: "ok", statements: [] });
+  });
+  assert.match(prompt, /as_of="2026-09-26"/);
+  assert.equal(result.asOf, "2026-09-26T12:00:00.000Z");
+});
+
+test("F4: certification is RUN only when ≥1 case ran and every case is a real generative answer", async () => {
+  const { certifyEvaluation, selectEvalCases, runEvalCase, EVAL_CASES } = await import("../scripts/pb-reason-01/eval-real-provider");
+  const ok = { id: "A-what-next", mode: "generative" as const, degradedReason: null, providerError: null, model: "gpt-4.1-mini-2025-04-14" };
+
+  assert.deepEqual(certifyEvaluation(selectEvalCases(undefined), EVAL_CASES.map((c) => ({ ...ok, id: c.id }))), { status: "RUN", reasons: [] });
+
+  const none = selectEvalCases("A-wat-next");
+  assert.equal(none.cases.length, 0);
+  assert.equal(certifyEvaluation(none, []).status, "INCOMPLETE", "a misspelled PB_EVAL_ONLY never certifies");
+  assert.equal(certifyEvaluation(selectEvalCases(" , "), []).status, "INCOMPLETE", "an empty selection never certifies");
+  assert.equal(certifyEvaluation(selectEvalCases("A-what-next,nope"), [ok]).status, "INCOMPLETE");
+
+  // Drive the REAL turn service with each failure the provider can produce.
+  const failures: Array<[string, () => Promise<InferenceResponse>]> = [
+    ["auth_error", async () => { throw new InferenceError("401 from provider", "auth_error", "openai"); }],
+    ["timeout", async () => { throw new InferenceError("timed out", "timeout", "openai"); }],
+    ["rate_limited", async () => { throw new InferenceError("429", "rate_limited", "openai"); }],
+    ["invalid output", async () => ({ provider: "openai", model: "gpt-4.1-mini", content: "not json" })],
+  ];
+  for (const [label, infer] of failures) {
+    const result = await runEvalCase(EVAL_CASES[0], infer);
+    assert.equal(result.mode, "degraded", `${label} degrades inside the turn service`);
+    const certification = certifyEvaluation(selectEvalCases("A-what-next"), [result]);
+    assert.equal(certification.status, "FAILED", `${label} must not certify as RUN`);
+    assert.match(certification.reasons[0], /not a generative answer/);
+    assert.doesNotMatch(certification.reasons.join(" "), /sk-|401 from provider/, "reasons carry failure classes, never provider messages");
+  }
+  assert.equal(certifyEvaluation(selectEvalCases("A-what-next"), [{ id: "A-what-next", thrown: "TypeError" }]).status, "FAILED");
+  assert.equal(certifyEvaluation(selectEvalCases("A-what-next,A-next-milestone"), [ok]).status, "FAILED", "a missing result is not a pass");
+});
+
+test("F5: an exported OPENAI_API_KEY does not stop DEFAULT_AI_MODEL loading from .env.local; exported values win", async () => {
+  const { loadEvalEnv } = await import("../scripts/pb-reason-01/eval-real-provider");
+  const file = ["# local", "OPENAI_API_KEY=sk-from-file", 'DEFAULT_AI_MODEL="gpt-from-file"', "OTHER_SECRET=nope"].join("\n");
+
+  const exportedKey: Record<string, string | undefined> = { OPENAI_API_KEY: "sk-exported" };
+  loadEvalEnv(exportedKey, file);
+  assert.equal(exportedKey.OPENAI_API_KEY, "sk-exported", "an exported key keeps precedence");
+  assert.equal(exportedKey.DEFAULT_AI_MODEL, "gpt-from-file", "the model still loads from .env.local");
+  assert.equal(exportedKey.OTHER_SECRET, undefined, "only supported variables are loaded");
+
+  const exportedBoth: Record<string, string | undefined> = { OPENAI_API_KEY: "sk-exported", DEFAULT_AI_MODEL: "gpt-exported" };
+  loadEvalEnv(exportedBoth, file);
+  assert.equal(exportedBoth.DEFAULT_AI_MODEL, "gpt-exported");
+
+  const neither: Record<string, string | undefined> = {};
+  loadEvalEnv(neither, file);
+  assert.deepEqual(neither, { OPENAI_API_KEY: "sk-from-file", DEFAULT_AI_MODEL: "gpt-from-file" });
+
+  const noFile: Record<string, string | undefined> = {};
+  loadEvalEnv(noFile, null);
+  assert.deepEqual(noFile, {}, "no key → the script reports NOT_AVAILABLE");
 });

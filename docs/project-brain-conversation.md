@@ -182,9 +182,15 @@ citation was rejected or a statement was downgraded or dropped.
   in the reply or statements — milestone codes (`MPP-04`), PR numbers (`#412`), branch names
   (`feat/…`), percentages, ISO dates — are checked against everything the turn supplied
   (source labels and content, recorded dates, today's date, the question, recent history).
-  Unmatched tokens are counted in `citations.unsupportedReferences` (which raises the grounding
-  notice), and an evidence-type or RECOMMENDATION statement naming one becomes a low-confidence
-  `ASSUMPTION`. A false positive only adds caution; it never upgrades anything.
+  Codes match in any case (`MPP-07`, `mpp-07`, `Pb-Exec-01`) and every token is compared
+  exactly after lowercasing (`MPP-1` is not vouched for by `MPP-10`); earlier assistant turns
+  never count as supplied. Unmatched tokens are counted in `citations.unsupportedReferences`
+  (which raises the grounding notice), and an evidence-type or RECOMMENDATION statement naming
+  one becomes a low-confidence `ASSUMPTION`. A reply with **no** statements (a general or
+  off-topic answer) is checked only for project-shaped references — PR numbers, branch names,
+  and codes from one of the project's own identifier families (`mpp-07` when the records use
+  `MPP-…`) — so "50%" or a historical date in a general answer raises no project-grounding
+  warning. A false positive only adds caution; it never upgrades anything.
 - Persisted metadata: `projectBrain { mode, statements, sources, citations, context summary,
   provider, model }`. Never the prompt, keys, raw provider payload or reasoning.
 
@@ -234,8 +240,15 @@ change. What changed is what the model is told and what it can see:
 Verification: `tests/pb-reason-01-intent-first-reasoning.test.ts` (deterministic behaviour on
 the shared fixtures in `tests/fixtures/pb-reason-01-projects.ts`) and
 `scripts/pb-reason-01/eval-real-provider.ts` (manual real-provider evaluation of the same
-fixtures through the real turn service; prints answers for human grading, exits cleanly with
-`NOT_AVAILABLE` when no provider key is configured).
+fixtures through the real turn service, pinned to the fixtures' clock `FIXTURE_NOW`
+(2026-09-26T12:00:00Z) and reporting the `as_of` and the model that answered; prints answers
+for human grading). `OPENAI_API_KEY` and `DEFAULT_AI_MODEL` load independently from
+`.env.local` unless exported. Certification: `NOT_AVAILABLE` (exit 0) only when no key is
+configured; `RUN` (exit 0) only when at least one case was selected and every selected case
+returned a generative provider answer; `INCOMPLETE` (exit 2) for an empty or unknown
+`PB_EVAL_ONLY` selection; `FAILED` (exit 1) for any degraded answer (auth failure, timeout,
+quota/rate limit, invalid output) — reported by failure class, never with provider messages or
+secrets.
 
 ## Degraded mode
 
