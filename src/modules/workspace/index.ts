@@ -16,6 +16,10 @@
 
 export { CommandCenterClient } from "./screens/command-center/command-center-client";
 export { CommandCenterEmptyState } from "./screens/command-center/command-center-empty-state";
+// CHAT-SHELL-01: the Command Center's operational state and tools, rendered one tool
+// at a time in the project conversation's right-hand inspector.
+export { ProjectOperationsInspector, OPERATIONAL_TOOLS } from "./screens/command-center/command-center-layout";
+export type { OperationalToolKey } from "./screens/command-center/command-center-layout";
 
 // View-model types that describe the screen's public props vocabulary.
 export type { ProjectListItem, ToneBadge, StatusTone } from "./presentation/command-center/types";

@@ -18,6 +18,7 @@ import {
 import { saveProjectOnboarding } from "@/lib/projects/save-project-onboarding";
 import type { ProjectSaveResult } from "@/lib/projects/save-project-onboarding";
 import { BrainBootSequence } from "./brain-boot-sequence";
+import { workspaceCommandCenterPath } from "@/lib/workspaces/workspace-paths";
 
 // ─── Styles ────────────────────────────────────────────────────────────────────
 
@@ -689,7 +690,17 @@ function StepBrainActivation({
 
 // ─── Main Wizard ───────────────────────────────────────────────────────────────
 
-export function CreateProjectWizard({ pmoId }: { pmoId?: string } = {}) {
+export function CreateProjectWizard({
+  pmoId,
+  workspaceId,
+}: {
+  pmoId?: string;
+  /**
+   * The target workspace the page authorized server-side (CHAT-SHELL-01 F1). Passed to
+   * the save action as a claim that the action re-authorizes; never trusted as-is.
+   */
+  workspaceId?: string;
+} = {}) {
   const router = useRouter();
   const [step, setStep] = useState(1);
   const [errors, setErrors] = useState<string[]>([]);
@@ -792,7 +803,7 @@ export function CreateProjectWizard({ pmoId }: { pmoId?: string } = {}) {
 
     let result: ProjectSaveResult;
     try {
-      result = await saveProjectOnboarding(payload, correlationId, { pmoId: pmoId ?? null });
+      result = await saveProjectOnboarding(payload, correlationId, { pmoId: pmoId ?? null, workspaceId: workspaceId ?? null });
     } catch {
       // Server action transport failure — treat as recoverable
       setSaveError("A network error occurred. Your draft is preserved. Please try again.");
@@ -818,14 +829,23 @@ export function CreateProjectWizard({ pmoId }: { pmoId?: string } = {}) {
     // projects land in the Command Center showing the Project Intelligence
     // Inbox first.
     clearDraft();
-    const briefParam = result.briefStatus === "generation_failed" ? "&briefGeneration=failed" : "";
     navigationCommittedRef.current = true;
     setShowBootSequence(true);
     await waitForBootSequence();
     // A dedicated `brainActivated` marker (not the generic `from=onboarding`
     // used by the PMO activation and invite-team flows) so only the project
     // actually just activated here shows the Project Intelligence Inbox.
-    router.push(`/command-center?projectId=${result.projectId}${briefParam}&brainActivated=1`);
+    //
+    // CHAT-SHELL-01 F1: to the Command Center of the workspace the server ACTUALLY created
+    // the project in. The bare `/command-center` resolves the preferred-workspace cookie,
+    // which would refuse a project created in any other workspace as "not found".
+    router.push(
+      workspaceCommandCenterPath(result.workspaceId, {
+        projectId: result.projectId,
+        briefGeneration: result.briefStatus === "generation_failed" ? "failed" : undefined,
+        brainActivated: 1,
+      }),
+    );
   };
 
   const handleRetry = () => {

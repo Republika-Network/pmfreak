@@ -18,7 +18,7 @@ export function AgentDock({
   return (
     <div>
       <div className="flex items-center justify-between gap-2 px-1">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-500">AI Specialist Team</p>
+        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">AI Specialist Team</p>
       </div>
       {loading && agents.length === 0 && <SectionLoadingState label="Checking agent activity..." />}
       {!loading && agents.length === 0 && (

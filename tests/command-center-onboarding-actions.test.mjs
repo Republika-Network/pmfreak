@@ -29,8 +29,13 @@ test("Command Center empty state mounts the real WorkspaceOnboardingPanel", () =
 });
 
 test("Command Center populated layout mounts the real WorkspaceOnboardingPanel", () => {
-  assert.match(layout, /import \{ WorkspaceOnboardingPanel \} from "@\/components\/pmfreak\/onboarding\/workspace-onboarding-panel"/);
-  assert.match(layout, /<WorkspaceOnboardingPanel/);
+  // CHAT-SHELL-01: the populated Command Center is now the project conversation with
+  // the Command Center's tools beside it; the onboarding panel moved from the old
+  // canvas footer into the Project tool.
+  const view = readFileSync(join(ROOT, "src/components/pmfreak/conversation-shell/project-conversation-view.tsx"), "utf8");
+  assert.match(view, /import \{ WorkspaceOnboardingPanel \} from "@\/components\/pmfreak\/onboarding\/workspace-onboarding-panel"/);
+  assert.match(view, /<WorkspaceOnboardingPanel/);
+  assert.doesNotMatch(layout, /<WorkspaceOnboardingPanel/, "mounted once, not twice");
 });
 
 test("the old dead placeholder 'Get started' cards are gone from the empty state", () => {

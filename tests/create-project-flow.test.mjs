@@ -15,6 +15,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+// CHAT-SHELL-01 F1: to the Command Center of the workspace the server ACTUALLY created the
+// project in (`result.workspaceId`) — the bare `/command-center` resolved the preferred-workspace
+// cookie and so could name a different workspace than the project's.
+const PROJECT_CREATED_PUSH = "router.push(\n      workspaceCommandCenterPath(result.workspaceId, {\n        projectId: result.projectId,";
+
 const ROOT = process.cwd();
 
 const saveProject = readFileSync(join(ROOT, "src/lib/projects/save-project-onboarding.ts"), "utf8");
@@ -41,7 +46,7 @@ const routedProjectResolver = readFileSync(join(ROOT, "src/lib/projects/routed-p
 test("saveProjectOnboarding success result includes projectId, correlationId, and briefStatus", () => {
   assert.match(
     saveProject,
-    /status: "success", projectId: data\.id, correlationId: cid, briefStatus/,
+    /status: "success", projectId: data\.id, workspaceId: ensured\.workspaceId, correlationId: cid, briefStatus/,
     "success return must include projectId, correlationId, and briefStatus"
   );
 });
@@ -110,7 +115,7 @@ test("wizard emits project.create.retry event before retrying", () => {
 
 test("wizard does not call router.push before status check", () => {
   const statusCheckIdx = wizard.indexOf('result.status !== "success"');
-  const pushIdx = wizard.indexOf("router.push(`/command-center?projectId=${result.projectId}");
+  const pushIdx = wizard.indexOf(PROJECT_CREATED_PUSH);
   assert.ok(statusCheckIdx > 0, "status check must exist");
   assert.ok(pushIdx > statusCheckIdx, "router.push must not appear before the status check");
 });
@@ -167,7 +172,7 @@ test("activate button disabled when saveError is present", () => {
 });
 
 test("wizard has exactly one router.push to the command center with projectId and only on success", () => {
-  const allPushes = [...wizard.matchAll(/router\.push\(`\/command-center\?projectId=\$\{result\.projectId/g)];
+  const allPushes = [...wizard.matchAll(/router\.push\(\s*workspaceCommandCenterPath\(result\.workspaceId, \{\s*projectId: result\.projectId,/g)];
   assert.equal(allPushes.length, 1, "router.push to the command center must appear exactly once");
 });
 
@@ -184,7 +189,7 @@ test("wizard lands in the command center scoped to the new project after activat
   );
   assert.match(
     wizard,
-    /router\.push\(`\/command-center\?projectId=\$\{result\.projectId\}/,
+    /router\.push\(\s*workspaceCommandCenterPath\(result\.workspaceId, \{\s*projectId: result\.projectId,/,
     "wizard must land users in the command center scoped to the created project"
   );
 });
@@ -293,9 +298,9 @@ test("saveProjectOnboarding returns fatal_failure with failureClass=invalid_payl
 // ─────────────────────────────────────────────────────────────────────────────
 
 test("wizard navigates only using result.projectId from a confirmed success result", () => {
-  assert.match(wizard, /router\.push\(`\/command-center\?projectId=\$\{result\.projectId\}/);
+  assert.match(wizard, /router\.push\(\s*workspaceCommandCenterPath\(result\.workspaceId, \{\s*projectId: result\.projectId,/);
   // projectId in the navigation comes from result, not from any intermediate variable
-  const navIdx = wizard.indexOf("router.push(`/command-center?projectId=${result.projectId}");
+  const navIdx = wizard.indexOf(PROJECT_CREATED_PUSH);
   assert.ok(navIdx > 0, "navigation must use result.projectId");
 });
 

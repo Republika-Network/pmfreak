@@ -19,6 +19,13 @@ type Props = ContextChatScopeProps & {
   subtitle: string;
   placeholder?: string;
   suggestions?: string[];
+  /**
+   * `card` is the framed panel; `surface` (CHAT-SHELL-01) renders the same
+   * conversation as the page's primary surface — filling the shell's centre with
+   * a readable measure and the composer pinned to the bottom. Presentation only:
+   * the scope, the endpoint and every request are identical in both.
+   */
+  layout?: "card" | "surface";
 };
 
 function scopeParams(props: ContextChatScopeProps): URLSearchParams {
@@ -34,7 +41,8 @@ function scopeParams(props: ContextChatScopeProps): URLSearchParams {
  * or posts outside the scope it was mounted with.
  */
 export function ContextChatPanel(props: Props) {
-  const { title, subtitle, placeholder, suggestions } = props;
+  const { title, subtitle, placeholder, suggestions, layout = "card" } = props;
+  const surface = layout === "surface";
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [contextId, setContextId] = useState<string>("");
   const [loading, setLoading] = useState(true);
@@ -102,8 +110,12 @@ export function ContextChatPanel(props: Props) {
   }, [props, sending]);
 
   return (
-    <section className="flex h-full min-h-[28rem] flex-col rounded-3xl border border-slate-200 bg-white">
-      <header className="border-b border-slate-200 px-5 py-4">
+    <section
+      className={surface ? "flex h-full min-h-0 flex-col bg-white" : "flex h-full min-h-[28rem] flex-col rounded-3xl border border-slate-200 bg-white"}
+      data-testid="context-chat-panel"
+      data-layout={layout}
+    >
+      <header className={surface ? "sr-only" : "border-b border-slate-200 px-5 py-4"}>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
@@ -117,7 +129,8 @@ export function ContextChatPanel(props: Props) {
         </div>
       </header>
 
-      <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto px-5 py-4">
+      <div ref={scrollRef} className={surface ? "min-h-0 flex-1 overflow-y-auto" : "flex-1 overflow-y-auto px-5 py-4"}>
+        <div className={surface ? "mx-auto w-full max-w-3xl space-y-4 px-4 py-6 sm:px-6" : "space-y-3"}>
         {loading ? (
           <p className="text-sm text-slate-600">Loading conversation…</p>
         ) : messages.length === 0 ? (
@@ -156,10 +169,11 @@ export function ContextChatPanel(props: Props) {
         )}
         {sending ? <p className="text-xs text-slate-500">Analyzing this context…</p> : null}
         {error ? <p className="text-xs text-rose-700">{error}</p> : null}
+        </div>
       </div>
 
       <form
-        className="flex items-end gap-2 border-t border-slate-200 px-5 py-4"
+        className={surface ? "mx-auto flex w-full max-w-3xl items-end gap-2 px-4 pb-5 pt-2 sm:px-6" : "flex items-end gap-2 border-t border-slate-200 px-5 py-4"}
         onSubmit={(event) => {
           event.preventDefault();
           void send(draft);

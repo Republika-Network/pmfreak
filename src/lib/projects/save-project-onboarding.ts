@@ -4,6 +4,7 @@ import { getAuthUser } from "@/lib/auth";
 import { canCreateMoreProjects } from "@/lib/feature-gates";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { resolveWriteWorkspace } from "@/lib/workspaces/resolve-write-workspace";
+import { resolveRoutedWorkspace } from "@/lib/workspaces/routed-workspace";
 import { ensureDefaultPmo, getPmoById } from "@/lib/pmos/pmo-service";
 import { generateAndPersistOperationalGovernanceBrief } from "@/lib/projects/first-insight";
 import { ingestProjectSetupContext } from "@/lib/projects/ingest-project-setup-context";
@@ -11,7 +12,15 @@ import type { ResolvedWriteWorkspace } from "@/lib/workspaces/resolve-write-work
 import type { ProjectOnboardingPayload } from "./project-onboarding-types";
 
 export type ProjectSaveResult =
-  | { status: "success"; projectId: string; correlationId: string; briefStatus: "generated" | "generation_failed"; briefError?: string }
+  | {
+      status: "success";
+      projectId: string;
+      /** The workspace the project was actually created in — read from the server's own resolution. */
+      workspaceId: string;
+      correlationId: string;
+      briefStatus: "generated" | "generation_failed";
+      briefError?: string;
+    }
   | {
       status: "recoverable_failure";
       error: string;
@@ -42,7 +51,19 @@ function emit(event: string, fields: Record<string, unknown>) {
 export async function saveProjectOnboarding(
   payload: ProjectOnboardingPayload,
   correlationId?: string,
-  opts?: { pmoId?: string | null }
+  opts?: {
+    pmoId?: string | null;
+    /**
+     * CHAT-SHELL-01 (F1) — an EXPLICIT target workspace, e.g. the one the conversation
+     * shell was displaying when "New project" was chosen. It is a CLAIM, never authority:
+     * it is re-authorized below with `resolveRoutedWorkspace`, which admits only an active
+     * workspace the caller is a member of and has no fallback. When it does not authorize
+     * the save is REFUSED — it never falls back to the preferred-workspace cookie, which
+     * is exactly how a project meant for workspace B used to land silently in A.
+     * Omitted, the previous behaviour (the preferred workspace) is unchanged.
+     */
+    workspaceId?: string | null;
+  }
 ): Promise<ProjectSaveResult> {
   const cid = correlationId ?? `proj_${Date.now()}`;
   let insertedProjectId: string | null = null;
@@ -100,7 +121,28 @@ export async function saveProjectOnboarding(
 
     let ensured: ResolvedWriteWorkspace;
     try {
-      ensured = await resolveWriteWorkspace(user.id);
+      if (opts?.workspaceId) {
+        const routed = await resolveRoutedWorkspace(user.id, opts.workspaceId);
+        if (routed.access !== "granted") {
+          // Denied (not a member / no such workspace) and archived are both refusals
+          // here; the reply names neither, so it cannot be used to probe workspace ids.
+          emit("project.create.failed", {
+            correlationId: cid,
+            failureClass: "fatal_failure",
+            reason: "target_workspace_not_writable",
+            userId: user.id,
+          });
+          return {
+            status: "fatal_failure",
+            error: "You can't create a project in that workspace. Nothing was created.",
+            failureClass: "target_workspace_not_writable",
+            correlationId: cid,
+          };
+        }
+        ensured = { workspaceId: routed.workspaceId, role: routed.role, bootstrapped: false };
+      } else {
+        ensured = await resolveWriteWorkspace(user.id);
+      }
     } catch (wsErr) {
       const detail = wsErr instanceof Error ? wsErr.message : "unknown workspace error";
       emit("project.create.failed", {
@@ -263,7 +305,7 @@ export async function saveProjectOnboarding(
       workspaceId: ensured.workspaceId,
     });
 
-    return { status: "success", projectId: data.id, correlationId: cid, briefStatus, briefError };
+    return { status: "success", projectId: data.id, workspaceId: ensured.workspaceId, correlationId: cid, briefStatus, briefError };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
 

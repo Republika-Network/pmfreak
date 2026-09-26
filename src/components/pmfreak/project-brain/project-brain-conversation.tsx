@@ -25,9 +25,27 @@ import type {
  * Deliberately absent (PB-CHAT-02/03): attachments, screenshots, slash commands,
  * "create risk/decision" controls, "Add to project". Nothing here writes project
  * state; the only thing a send persists is the conversation itself.
+ *
+ * CHAT-SHELL-01 — ONE implementation, two layouts. `panel` is the compact
+ * rendering a host frames at a fixed height. `surface` is the conversation as
+ * the product's primary surface: it fills the centre of the shell, keeps a
+ * readable measure, and pins the composer to the bottom. The layout changes
+ * presentation only — the transcript, the send path, the client message id, the
+ * idempotent retry and every grounding disclosure are the same code in both.
  */
 
 type Variant = "dark" | "light";
+type Layout = "panel" | "surface";
+
+/**
+ * Starter questions for an empty thread. They FILL the composer — they never
+ * send on the user's behalf, so nothing is asked that the user did not submit.
+ */
+const STARTER_QUESTIONS = [
+  "What needs my attention on this project right now?",
+  "Which risks and issues are open?",
+  "What changed recently?",
+];
 
 type TurnResponse = {
   status?: "completed" | "pending";
@@ -68,6 +86,23 @@ const STYLES: Record<Variant, Record<string, string>> = {
     error: "text-xs text-rose-700",
     link: "text-xs font-medium text-cyan-800 underline-offset-2 hover:underline",
   },
+};
+
+/**
+ * The primary-surface rendering (light). Turns read as a conversation, not as
+ * cards in a feed: the question in a quiet bubble, the answer as text at a
+ * readable measure — with its claims, citations and notices exactly as in the
+ * panel, so moving the conversation to the centre weakens none of its
+ * disclosure.
+ */
+const SURFACE_STYLES = {
+  user: "max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-slate-100 px-4 py-2.5 text-[15px] leading-relaxed text-slate-900",
+  assistant: "whitespace-pre-wrap px-1 text-[15px] leading-7 text-slate-800",
+  // The composer itself carries the focus indication (border + ring), so the textarea
+  // inside it does not draw a second, nested focus box.
+  composer: "flex flex-col gap-1 rounded-2xl border border-slate-300 bg-white px-3 pt-2 shadow-[0_1px_3px_rgba(15,23,42,0.06)] transition focus-within:border-cyan-600 focus-within:ring-2 focus-within:ring-cyan-500/25",
+  input: "block max-h-[220px] min-h-[2.75rem] w-full resize-none bg-transparent px-1 py-1.5 text-[15px] leading-relaxed text-slate-900 outline-none placeholder:text-slate-400",
+  send: "flex h-8 w-8 items-center justify-center rounded-full bg-slate-900 text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300",
 };
 
 /**
@@ -162,6 +197,8 @@ type ConversationProps = {
   projectId: string;
   projectName: string;
   variant?: Variant;
+  /** `surface` is the full-centre primary rendering (CHAT-SHELL-01); `panel` the compact one. */
+  layout?: Layout;
   /** Lets a host (e.g. a collapsible panel) say how much the thread holds. */
   onTranscriptSizeChange?: (count: number) => void;
 };
@@ -175,8 +212,9 @@ export function ProjectBrainConversation(props: ConversationProps) {
   return <ProjectThread key={props.projectId} {...props} />;
 }
 
-function ProjectThread({ projectId, projectName, variant = "dark", onTranscriptSizeChange }: ConversationProps) {
+function ProjectThread({ projectId, projectName, variant = "dark", layout = "panel", onTranscriptSizeChange }: ConversationProps) {
   const styles = STYLES[variant];
+  const surface = layout === "surface";
   const [messages, setMessages] = useState<ProjectBrainMessageView[]>([]);
   const [generativeAvailable, setGenerativeAvailable] = useState(true);
   const [limitedModeReason, setLimitedModeReason] = useState<"not_included" | "unavailable" | null>(null);
@@ -186,6 +224,7 @@ function ProjectThread({ projectId, projectName, variant = "dark", onTranscriptS
   const [sendError, setSendError] = useState<{ message: string; turn: OutgoingTurn } | null>(null);
   const [draft, setDraft] = useState("");
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const activeProject = useRef(projectId);
 
   useEffect(() => {
@@ -223,6 +262,25 @@ function ProjectThread({ projectId, projectName, variant = "dark", onTranscriptS
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages.length, sending]);
+
+  // The composer grows with what is typed, up to a ceiling, so a long question is
+  // readable without the input becoming its own scroll prison.
+  useEffect(() => {
+    const input = inputRef.current;
+    if (!input || !surface) return;
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, 220)}px`;
+  }, [draft, surface]);
+
+  // As the primary surface, the first obvious action is typing — so the composer
+  // takes focus once the thread has loaded. Only with a fine pointer: on a phone,
+  // focusing would throw the keyboard over the conversation unasked.
+  useEffect(() => {
+    if (!surface || loading) return;
+    if (typeof window !== "undefined" && window.matchMedia?.("(pointer: fine)").matches) {
+      inputRef.current?.focus({ preventScroll: true });
+    }
+  }, [surface, loading]);
 
   const submit = useCallback(
     async (turn: OutgoingTurn) => {
@@ -294,82 +352,198 @@ function ProjectThread({ projectId, projectName, variant = "dark", onTranscriptS
     void submit({ clientMessageId: question.clientMessageId, text: question.content, retry: true });
   };
 
+  const applyStarter = (question: string) => {
+    setDraft(question);
+    inputRef.current?.focus();
+  };
+
   const upgraded = new Set(
     messages.filter((m) => m.brain?.mode === "generative" && m.replyToMessageId).map((m) => m.replyToMessageId),
   );
 
-  return (
-    <div className={styles.frame} data-testid="project-brain-conversation" data-project-id={projectId}>
-      <div ref={scrollRef} className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 py-4 sm:px-5" aria-live="polite">
-        {loading ? (
-          <p className={`text-sm ${styles.muted}`}>Loading this project&apos;s conversation…</p>
-        ) : loadError ? (
-          <p className={styles.error}>{loadError}</p>
-        ) : messages.length === 0 ? (
-          <div className="space-y-1">
-            <p className="text-sm font-semibold">Ask Project Brain about {projectName}.</p>
-            <p className={`text-xs ${styles.muted}`}>For example: &ldquo;What is the current status of this project?&rdquo; or &ldquo;Which risks are open?&rdquo;</p>
-          </div>
-        ) : (
-          messages.map((message) =>
-            message.role === "user" ? (
-              <div key={message.id} className="flex justify-end">
-                <div className={styles.user} data-testid="project-brain-user-message">
-                  {message.content}
-                </div>
-              </div>
-            ) : (
-              <div key={message.id} className={styles.assistant} data-testid="project-brain-assistant-message" data-mode={message.brain?.mode ?? "legacy"}>
-                {message.brain?.mode === "degraded" ? (
-                  <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-amber-500">Limited mode</p>
-                ) : null}
-                {message.origin === "legacy_project_chat" ? (
-                  <p className={`mb-1 text-[11px] ${styles.muted}`}>Earlier rule-based Project Chat reply</p>
-                ) : null}
-                {message.brain?.mode === "generative" ? (
-                  <p className={`mb-1 text-[11px] ${styles.muted}`} data-testid="project-brain-synthesis-label">AI-written answer</p>
-                ) : null}
-                <p>{message.content}</p>
-                {message.brain?.conversationalOnly ? (
-                  <p className={`mt-2 text-[11px] ${styles.muted}`} data-testid="project-brain-conversational-note">
-                    General answer — not linked to this project&apos;s records.
-                  </p>
-                ) : null}
-                {message.brain ? <Statements statements={message.brain.statements} styles={styles} /> : null}
-                {message.brain ? <SourceChips sources={message.brain.sources} styles={styles} /> : null}
-                {message.brain?.groundingAdjusted ? (
-                  <p className={`mt-2 text-[11px] ${styles.muted}`} data-testid="project-brain-grounding-notice">
-                    Some generated claims could not be fully linked to project records.
-                  </p>
-                ) : null}
-                {message.brain?.mode === "degraded" && message.brain.reason !== "not_entitled" && !upgraded.has(message.replyToMessageId) ? (
-                  <button type="button" className={`mt-2 ${styles.link}`} onClick={() => retryDegraded(message)} disabled={sending}>
-                    Try again with Project Brain
-                  </button>
-                ) : null}
-              </div>
-            ),
-          )
-        )}
-        {sending ? <p className={`text-xs ${styles.muted}`} data-testid="project-brain-thinking">Project Brain is thinking…</p> : null}
-        {sendError ? (
-          <p className={styles.error}>
-            {sendError.message}{" "}
-            <button type="button" className={styles.link} onClick={() => void submit(sendError.turn)} disabled={sending}>
-              Retry
+  const transcript = loading ? (
+    <p className={`text-sm ${styles.muted}`}>Loading this project&apos;s conversation…</p>
+  ) : loadError ? (
+    <p className={styles.error}>{loadError}</p>
+  ) : messages.length === 0 ? (
+    surface ? (
+      <div className="flex flex-1 flex-col items-center justify-center py-10 text-center" data-testid="project-brain-empty">
+        <p className={`text-xs font-medium uppercase tracking-[0.18em] ${styles.muted}`}>{projectName}</p>
+        <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-900">Ask Project Brain about this project</h2>
+        <p className={`mt-2 max-w-md text-sm ${styles.muted}`}>
+          Type a question below. Project Brain answers from this project&apos;s records and this conversation.
+        </p>
+        <div className="mt-6 flex max-w-xl flex-wrap justify-center gap-2" data-testid="project-brain-starters">
+          {STARTER_QUESTIONS.map((question) => (
+            <button
+              key={question}
+              type="button"
+              onClick={() => applyStarter(question)}
+              className="rounded-full border border-slate-200 bg-white px-3.5 py-1.5 text-xs text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900"
+            >
+              {question}
             </button>
-          </p>
-        ) : null}
+          ))}
+        </div>
+      </div>
+    ) : (
+      <div className="space-y-1">
+        <p className="text-sm font-semibold">Ask Project Brain about {projectName}.</p>
+        <p className={`text-xs ${styles.muted}`}>For example: &ldquo;What is the current status of this project?&rdquo; or &ldquo;Which risks are open?&rdquo;</p>
+      </div>
+    )
+  ) : (
+    messages.map((message) =>
+      message.role === "user" ? (
+        <div key={message.id} className="flex justify-end">
+          <div className={surface ? SURFACE_STYLES.user : styles.user} data-testid="project-brain-user-message">
+            {message.content}
+          </div>
+        </div>
+      ) : (
+        <div
+          key={message.id}
+          className={surface ? SURFACE_STYLES.assistant : styles.assistant}
+          data-testid="project-brain-assistant-message"
+          data-mode={message.brain?.mode ?? "legacy"}
+        >
+          {message.brain?.mode === "degraded" ? (
+            <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-amber-500">Limited mode</p>
+          ) : null}
+          {message.origin === "legacy_project_chat" ? (
+            <p className={`mb-1 text-[11px] ${styles.muted}`}>Earlier rule-based Project Chat reply</p>
+          ) : null}
+          {message.brain?.mode === "generative" ? (
+            <p className={`mb-1 text-[11px] ${styles.muted}`} data-testid="project-brain-synthesis-label">AI-written answer</p>
+          ) : null}
+          <p>{message.content}</p>
+          {message.brain?.conversationalOnly ? (
+            <p className={`mt-2 text-[11px] ${styles.muted}`} data-testid="project-brain-conversational-note">
+              General answer — not linked to this project&apos;s records.
+            </p>
+          ) : null}
+          {message.brain ? <Statements statements={message.brain.statements} styles={styles} /> : null}
+          {message.brain ? <SourceChips sources={message.brain.sources} styles={styles} /> : null}
+          {message.brain?.groundingAdjusted ? (
+            <p className={`mt-2 text-[11px] ${styles.muted}`} data-testid="project-brain-grounding-notice">
+              Some generated claims could not be fully linked to project records.
+            </p>
+          ) : null}
+          {message.brain?.mode === "degraded" && message.brain.reason !== "not_entitled" && !upgraded.has(message.replyToMessageId) ? (
+            <button type="button" className={`mt-2 ${styles.link}`} onClick={() => retryDegraded(message)} disabled={sending}>
+              Try again with Project Brain
+            </button>
+          ) : null}
+        </div>
+      ),
+    )
+  );
+
+  const limitedModeNotice = !generativeAvailable ? (
+    <p className={`mb-2 ${styles.notice}`} data-testid="project-brain-limited-mode">
+      {limitedModeReason === "not_included"
+        ? "Full generative Project Brain answers aren't included in your current plan. Answers list what this project's records show."
+        : "Project Brain is temporarily operating in limited mode: answers list what this project's records show, without a full generative answer."}
+    </p>
+  ) : null;
+
+  const disclosure = (
+    <p className={`mt-2 px-1 text-[11px] ${styles.muted}`} data-testid="project-brain-disclosure">
+      Project Brain writes its answers from this project&apos;s records and this conversation. Listed claims show which records they cite; a citation is not proof of every sentence. It cannot change the project.
+    </p>
+  );
+
+  const input = (
+    <>
+      <label htmlFor={`project-brain-input-${projectId}`} className="sr-only">
+        Ask Project Brain
+      </label>
+      <textarea
+        ref={inputRef}
+        id={`project-brain-input-${projectId}`}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            send();
+          }
+        }}
+        rows={1}
+        maxLength={4000}
+        placeholder={surface ? `Ask about ${projectName}…` : "Ask Project Brain…"}
+        className={surface ? SURFACE_STYLES.input : styles.input}
+        // The global `:focus-visible` outline is unlayered and would outrank the utility;
+        // in the surface layout the composer's own focus ring is the indicator.
+        style={surface ? { outline: "none" } : undefined}
+        data-testid="project-brain-input"
+      />
+    </>
+  );
+
+  const status = (
+    <>
+      {sending ? <p className={`text-xs ${styles.muted}`} data-testid="project-brain-thinking">Project Brain is thinking…</p> : null}
+      {sendError ? (
+        <p className={styles.error}>
+          {sendError.message}{" "}
+          <button type="button" className={styles.link} onClick={() => void submit(sendError.turn)} disabled={sending}>
+            Retry
+          </button>
+        </p>
+      ) : null}
+    </>
+  );
+
+  if (surface) {
+    return (
+      <div className={styles.frame} data-testid="project-brain-conversation" data-project-id={projectId} data-layout="surface">
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto" data-testid="project-brain-transcript">
+          <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-5 px-4 py-6 sm:px-6" aria-live="polite">
+            {transcript}
+            {status}
+          </div>
+        </div>
+
+        <div className="shrink-0 bg-white px-4 pb-4 pt-2 sm:px-6" data-testid="project-brain-composer">
+          <div className="mx-auto w-full max-w-3xl">
+            {limitedModeNotice}
+            <form
+              className={SURFACE_STYLES.composer}
+              onSubmit={(event) => {
+                event.preventDefault();
+                send();
+              }}
+            >
+              {input}
+              {/* The composer's action row. PB-CHAT-02's richer inputs belong on the
+                  left of it when they ship; nothing is shown there until they do. */}
+              <div className="flex items-center justify-between gap-3 px-1 pb-1">
+                <span className="text-[11px] text-slate-400">Enter to send · Shift+Enter for a new line</span>
+                <button type="submit" disabled={sending || !draft.trim()} className={SURFACE_STYLES.send}>
+                  <span className="sr-only">Send</span>
+                  <svg aria-hidden viewBox="0 0 16 16" className="h-4 w-4">
+                    <path d="M8 13V3.5M3.5 7.5L8 3l4.5 4.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+              </div>
+            </form>
+            {disclosure}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={styles.frame} data-testid="project-brain-conversation" data-project-id={projectId} data-layout="panel">
+      <div ref={scrollRef} className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 py-4 sm:px-5" aria-live="polite">
+        {transcript}
+        {status}
       </div>
 
       <div className={`border-t px-4 py-3 sm:px-5 ${styles.divider}`}>
-        {!generativeAvailable ? (
-          <p className={`mb-2 ${styles.notice}`} data-testid="project-brain-limited-mode">
-            {limitedModeReason === "not_included"
-              ? "Full generative Project Brain answers aren't included in your current plan. Answers list what this project's records show."
-              : "Project Brain is temporarily operating in limited mode: answers list what this project's records show, without a full generative answer."}
-          </p>
-        ) : null}
+        {limitedModeNotice}
         <form
           className={styles.composer}
           onSubmit={(event) => {
@@ -377,32 +551,12 @@ function ProjectThread({ projectId, projectName, variant = "dark", onTranscriptS
             send();
           }}
         >
-          <label htmlFor={`project-brain-input-${projectId}`} className="sr-only">
-            Ask Project Brain
-          </label>
-          <textarea
-            id={`project-brain-input-${projectId}`}
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                send();
-              }
-            }}
-            rows={1}
-            maxLength={4000}
-            placeholder="Ask Project Brain…"
-            className={styles.input}
-            data-testid="project-brain-input"
-          />
+          {input}
           <button type="submit" disabled={sending || !draft.trim()} className={styles.send}>
             Send
           </button>
         </form>
-        <p className={`mt-2 px-1 text-[11px] ${styles.muted}`} data-testid="project-brain-disclosure">
-          Project Brain writes its answers from this project&apos;s records and this conversation. Listed claims show which records they cite; a citation is not proof of every sentence. It cannot change the project.
-        </p>
+        {disclosure}
       </div>
     </div>
   );

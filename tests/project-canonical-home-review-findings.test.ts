@@ -60,6 +60,8 @@ const pmAssignments = read("src/app/api/projects/[id]/pm-assignments/route.ts");
 const pmAssignmentRemoval = read("src/app/api/projects/[id]/pm-assignments/[assignmentId]/route.ts");
 const projectAdminService = read("src/lib/projects/project-admin-service.ts");
 const canonicalHome = read("src/app/(protected)/workspaces/[workspaceId]/projects/[projectId]/page.tsx");
+// CHAT-SHELL-01: Project Home's details screen moved, unchanged, to `/overview`.
+const projectDetails = read("src/app/(protected)/workspaces/[workspaceId]/projects/[projectId]/overview/page.tsx");
 
 function withoutComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
@@ -477,7 +479,7 @@ test("F3: the PM assignment panel still addresses one project, and adds no works
   const panel = read("src/components/pmfreak/ProjectPMAssignment.tsx");
   assert.match(panel, /\/api\/projects\/\$\{projectId\}\/pm-assignments/);
   assert.doesNotMatch(withoutComments(panel), /workspaceId/);
-  assert.match(canonicalHome, /<ProjectPMAssignment projectId=\{project\.id\} \/>/);
+  assert.match(projectDetails, /<ProjectPMAssignment projectId=\{project\.id\} \/>/);
 });
 
 // ══ Scope guardrails ═════════════════════════════════════════════════════

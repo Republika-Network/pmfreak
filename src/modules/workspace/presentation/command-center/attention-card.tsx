@@ -40,7 +40,7 @@ export function AttentionCard({
       data-testid="cc-attention-card"
       data-human-job={job}
       onClick={() => onSelect(item)}
-      className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3.5 text-left transition hover:border-white/20 hover:bg-white/[0.05] focus:border-sky-500/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/40"
+      className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3.5 text-left transition hover:border-slate-300 hover:bg-slate-50 focus:border-sky-500/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/40"
     >
       <span className="flex flex-wrap items-center gap-2">
         {severity && (
@@ -50,20 +50,20 @@ export function AttentionCard({
         )}
         <span
           data-testid="cc-attention-job"
-          className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-400"
+          className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-600"
         >
           {HUMAN_JOB_ITEM_LABELS[job]}
         </span>
       </span>
 
-      <span className="mt-2 block text-[15px] font-medium leading-snug text-zinc-100" data-testid="cc-attention-title">
+      <span className="mt-2 block text-[15px] font-medium leading-snug text-slate-900" data-testid="cc-attention-title">
         {headline}
       </span>
 
       {item.whyItMatters && (
         <span className="mt-2.5 block">
-          <span className="block text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">Why this matters</span>
-          <span className="mt-1 block text-sm leading-relaxed text-zinc-300" data-testid="cc-attention-why">
+          <span className="block text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">Why this matters</span>
+          <span className="mt-1 block text-sm leading-relaxed text-slate-700" data-testid="cc-attention-why">
             {item.whyItMatters}
           </span>
         </span>
@@ -71,22 +71,22 @@ export function AttentionCard({
 
       {recommendation && (
         <span className="mt-2.5 block">
-          <span className="block text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">PMFreak recommends</span>
-          <span className="mt-1 block text-sm leading-relaxed text-zinc-200" data-testid="cc-attention-recommendation">
+          <span className="block text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">PMFreak recommends</span>
+          <span className="mt-1 block text-sm leading-relaxed text-slate-800" data-testid="cc-attention-recommendation">
             {recommendation}
           </span>
         </span>
       )}
 
       {item.evidenceSummary && (
-        <span className="mt-2.5 block text-xs text-zinc-500" data-testid="cc-attention-evidence">
+        <span className="mt-2.5 block text-xs text-slate-500" data-testid="cc-attention-evidence">
           Based on: {item.evidenceSummary}
         </span>
       )}
 
       {/* The card opens the judgment surface rather than offering Approve/Reject inline:
           deciding is a considered act, and the supporting context lives one click away. */}
-      <span className="mt-3 block text-xs font-medium text-sky-300" data-testid="cc-attention-cta">
+      <span className="mt-3 block text-xs font-medium text-sky-800" data-testid="cc-attention-cta">
         Review recommendation →
       </span>
     </button>

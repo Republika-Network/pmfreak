@@ -56,37 +56,42 @@ export default async function PmoChatPage({ params }: Props) {
   const pmo = await getPmoById(workspaceId, pmoId);
   if (!pmo) return <PmoNotAvailable />;
 
+  // CHAT-SHELL-01: the conversation is the page — a compact orientation header,
+  // the PMO's section tabs, then the chat filling the shell's centre.
   return (
-    <main className="space-y-5">
-      <header className="rounded-3xl border border-slate-200 bg-white p-6">
-        <p className="text-xs uppercase tracking-[0.24em] text-cyan-800">
-          <Link href={PMOS_NAV_HREF} className="hover:text-cyan-900">PMOs</Link> /{" "}
-          <Link href={pmoHomePath(workspaceId, pmo.id)} className="hover:text-cyan-900">{pmo.name}</Link> / Chat
-        </p>
-        <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-900">
-          <span className="mr-2">{pmo.icon ?? "🏛️"}</span>
-          {pmo.name} — Chat
-        </h1>
-        <div className="mt-4">
-          <PmoTabNav workspaceId={workspaceId} pmoId={pmo.id} active="chat" />
+    <div className="flex h-full min-h-0 flex-col">
+      <header className="shrink-0 space-y-2 border-b border-slate-200 bg-white px-4 py-3 sm:px-6">
+        <div>
+          <p className="text-[11px] text-slate-500">
+            <Link href={PMOS_NAV_HREF} className="hover:text-slate-800">PMOs</Link> /{" "}
+            <Link href={pmoHomePath(workspaceId, pmo.id)} className="hover:text-slate-800">{pmo.name}</Link>
+          </p>
+          <h1 className="text-[15px] font-semibold tracking-tight text-slate-900">
+            <span className="mr-1.5">{pmo.icon ?? "🏛️"}</span>
+            {pmo.name} — PMO chat
+          </h1>
+          <p className="mt-0.5 text-xs text-slate-600">Sees only the projects inside this PMO. Never mixes with other PMOs, the workspace chat, or project chats.</p>
         </div>
+        <PmoTabNav workspaceId={workspaceId} pmoId={pmo.id} active="chat" />
+        {access.access === "archived" ? <PmoArchivedNotice archived={access.archived} /> : null}
       </header>
 
-      {access.access === "archived" ? <PmoArchivedNotice archived={access.archived} /> : null}
-
-      <ContextChatPanel
-        contextType="pmo"
-        pmoId={pmo.id}
-        title="PMO Conversation"
-        subtitle="Sees only the projects inside this PMO. Never mixes with other PMOs, the workspace chat, or project chats."
-        placeholder="Which projects are behind? Which risks grew this week?"
-        suggestions={[
-          "Which projects are behind?",
-          "Which risks grew this week?",
-          "Which commitments are still open?",
-          "Generate an executive report",
-        ]}
-      />
-    </main>
+      <div className="min-h-0 flex-1">
+        <ContextChatPanel
+          contextType="pmo"
+          pmoId={pmo.id}
+          layout="surface"
+          title="PMO Conversation"
+          subtitle="Sees only the projects inside this PMO. Never mixes with other PMOs, the workspace chat, or project chats."
+          placeholder="Which projects are behind? Which risks grew this week?"
+          suggestions={[
+            "Which projects are behind?",
+            "Which risks grew this week?",
+            "Which commitments are still open?",
+            "Generate an executive report",
+          ]}
+        />
+      </div>
+    </div>
   );
 }

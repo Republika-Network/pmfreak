@@ -90,7 +90,8 @@ async function signIn(page: Page, email: string) {
   expect(page.url()).not.toContain("/login");
 }
 
-const commandCenter = (t: Tenant) => `/workspaces/${t.workspaceId}/command-center?projectId=${t.projectId}`;
+// CHAT-SHELL-01: the panel is the project conversation's Schedule tool; `?tool=` opens it.
+const commandCenter = (t: Tenant) => `/workspaces/${t.workspaceId}/projects/${t.projectId}?tool=schedule`;
 const panel = (page: Page) => page.getByTestId("schedule-exposure-panel");
 
 async function openPanel(page: Page, t: Tenant) {
@@ -145,7 +146,9 @@ test.describe.serial("P2-16 schedule exposure — authenticated PM browser scena
     expect(recommendation?.status).toBe("proposed");
     expect((summary.decisions ?? []).length).toBe(0);
     expect((summary.materialActions ?? []).length).toBe(0);
-    // …and it is the same Finding the PM sees in the "Needs your attention" queue.
+    // …and it is the same Finding the PM sees in the "Needs your attention" queue — the
+    // Needs You tool beside the conversation.
+    await page.getByRole("navigation", { name: "Project tools" }).getByRole("button", { name: /Needs you/ }).click();
     const attention = page.getByTestId("cc-section-needs-you");
     await expect(attention).toContainText('Schedule exposure: milestone "Go-live" projected 4 day(s) past target');
     await expect(attention).toContainText("Confirm whether the dependency is required as modelled");

@@ -238,7 +238,12 @@ test("first insight includes DetectedRaidOverview", () => {
 test("Command Center surfaces RAID from the explicit vault pipeline", () => {
   assert.match(commandCenter, /void retryBrief\(\)/);
   assert.match(commandCenter, /onEvidenceAdded/);
-  assert.match(commandCenter, /detectedRaidOverview\.snapshot\.issues/);
+  // CHAT-SHELL-01: the brief's RAID counts moved from the removed inner project list
+  // to the project conversation's header indicators.
+  assert.match(
+    fs.readFileSync("src/components/pmfreak/conversation-shell/project-brief-indicators.ts", "utf8"),
+    /detectedRaidOverview\.snapshot\.issues/,
+  );
 });
 
 test("manual P2-04 vault intake derives Evidence without automatic RAID extraction", () => {

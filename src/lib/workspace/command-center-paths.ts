@@ -61,6 +61,9 @@ export const COMMAND_CENTER_FORWARDED_QUERY_KEYS = [
   "error",
   "brainActivated",
   "invited",
+  // CHAT-SHELL-01: `view=inbox` asks for the guided Project Intelligence Inbox
+  // instead of the hand-off to the project conversation.
+  "view",
 ] as const;
 
 /**

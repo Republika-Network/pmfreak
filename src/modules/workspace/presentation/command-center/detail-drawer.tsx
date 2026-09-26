@@ -25,25 +25,25 @@ const labelize = (value: string) => value.replaceAll("_", " ");
 function JourneySection({ journey, headingId }: { journey: DecisionJourney; headingId: string }) {
   return (
     <section aria-labelledby={headingId} className="mt-4" data-testid="cc-drawer-journey">
-      <h3 id={headingId} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+      <h3 id={headingId} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
         Where this stands
       </h3>
 
       <JourneyTrack journey={journey} className="mt-2" />
 
-      <p className="mt-2.5 text-sm leading-relaxed text-zinc-200" data-testid="cc-drawer-journey-state">
+      <p className="mt-2.5 text-sm leading-relaxed text-slate-800" data-testid="cc-drawer-journey-state">
         {journey.state}
       </p>
 
       {journey.next && (
-        <p className="mt-2 text-xs leading-relaxed text-zinc-300" data-testid="cc-drawer-journey-next">
-          <span className="text-zinc-500">Next </span>
+        <p className="mt-2 text-xs leading-relaxed text-slate-700" data-testid="cc-drawer-journey-next">
+          <span className="text-slate-500">Next </span>
           {journey.next}
         </p>
       )}
 
       {journey.owner && (
-        <p className="mt-1.5 text-xs text-zinc-400" data-testid="cc-drawer-journey-owner">
+        <p className="mt-1.5 text-xs text-slate-600" data-testid="cc-drawer-journey-owner">
           {journey.owner.isYou ? "Owned by you" : "Owned by another workspace member"}
         </p>
       )}
@@ -51,22 +51,22 @@ function JourneySection({ journey, headingId }: { journey: DecisionJourney; head
       {/* The result is what the canonical Outcome says happened — never inferred from the
           work having finished. Absent until an Observation established it. */}
       {journey.result && (
-        <p className="mt-2.5 text-xs leading-relaxed text-zinc-300" data-testid="cc-drawer-journey-result">
-          <span className="text-zinc-500">Result </span>
+        <p className="mt-2.5 text-xs leading-relaxed text-slate-700" data-testid="cc-drawer-journey-result">
+          <span className="text-slate-500">Result </span>
           {journey.result}
         </p>
       )}
 
       {/* The Observation's own summary. Never derived from the Outcome text. */}
       {journey.learning && (
-        <p className="mt-1.5 text-xs leading-relaxed text-zinc-300" data-testid="cc-drawer-journey-learning">
-          <span className="text-zinc-500">What we learned </span>
+        <p className="mt-1.5 text-xs leading-relaxed text-slate-700" data-testid="cc-drawer-journey-learning">
+          <span className="text-slate-500">What we learned </span>
           {journey.learning}
         </p>
       )}
 
       {journey.partialReason && (
-        <p className="mt-2 text-xs leading-relaxed text-amber-300/80" data-testid="cc-drawer-journey-partial">
+        <p className="mt-2 text-xs leading-relaxed text-amber-800/80" data-testid="cc-drawer-journey-partial">
           {journey.partialReason}
         </p>
       )}
@@ -80,7 +80,7 @@ function JourneySection({ journey, headingId }: { journey: DecisionJourney; head
        */}
       {journey.branches.length > 1 && (
         <div className="mt-3" data-testid="cc-drawer-journey-branches">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
             {journey.branches.length} actions follow this decision
           </p>
           <ul className="mt-1.5 space-y-1.5">
@@ -89,14 +89,14 @@ function JourneySection({ journey, headingId }: { journey: DecisionJourney; head
                 key={branch.branchId}
                 data-testid="cc-drawer-journey-branch"
                 data-branch-phase={branch.phase}
-                className="rounded-lg bg-white/[0.04] px-2.5 py-1.5"
+                className="rounded-lg bg-slate-50 px-2.5 py-1.5"
               >
-                <p className="text-xs text-zinc-300">{branch.state}</p>
-                {branch.result && <p className="mt-0.5 text-[11px] text-zinc-400">Result {branch.result}</p>}
+                <p className="text-xs text-slate-700">{branch.state}</p>
+                {branch.result && <p className="mt-0.5 text-[11px] text-slate-600">Result {branch.result}</p>}
                 {branch.learning && (
-                  <p className="mt-0.5 text-[11px] text-zinc-400">What we learned {branch.learning}</p>
+                  <p className="mt-0.5 text-[11px] text-slate-600">What we learned {branch.learning}</p>
                 )}
-                {branch.next && <p className="mt-0.5 text-[11px] text-zinc-300">Next {branch.next}</p>}
+                {branch.next && <p className="mt-0.5 text-[11px] text-slate-700">Next {branch.next}</p>}
               </li>
             ))}
           </ul>
@@ -110,9 +110,9 @@ function RowList({ rows }: { rows: { label: string; value: string }[] }) {
   return (
     <dl className="mt-1.5 space-y-1">
       {rows.map((row) => (
-        <div key={`${row.label}-${row.value}`} className="rounded-lg bg-white/[0.04] px-2.5 py-1.5">
-          <dt className="text-[10px] uppercase tracking-[0.1em] text-zinc-500">{row.label}</dt>
-          <dd className="mt-0.5 break-words text-xs text-zinc-300">{row.value}</dd>
+        <div key={`${row.label}-${row.value}`} className="rounded-lg bg-slate-50 px-2.5 py-1.5">
+          <dt className="text-[10px] uppercase tracking-[0.1em] text-slate-500">{row.label}</dt>
+          <dd className="mt-0.5 break-words text-xs text-slate-700">{row.value}</dd>
         </div>
       ))}
     </dl>
@@ -121,8 +121,8 @@ function RowList({ rows }: { rows: { label: string; value: string }[] }) {
 
 function DisclosureSection({ section }: { section: DetailSection }) {
   return (
-    <details className="mt-2 rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2">
-      <summary className="cursor-pointer text-xs font-medium text-zinc-300">{section.title}</summary>
+    <details className="mt-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+      <summary className="cursor-pointer text-xs font-medium text-slate-700">{section.title}</summary>
       <RowList rows={section.rows} />
     </details>
   );
@@ -144,7 +144,7 @@ function DisclosureSection({ section }: { section: DetailSection }) {
 function RecordedDecisionCard({ decision }: { decision: RecordedDecision }) {
   return (
     <div className="mt-2 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.06] p-3">
-      <p className="text-xs font-semibold text-emerald-300">
+      <p className="text-xs font-semibold text-emerald-800">
         Decision recorded — {labelize(decision.decisionStatus)}
         {decision.terminal ? "" : " (recommendation stays open)"}
       </p>
@@ -164,11 +164,11 @@ function RecordedDecisionCard({ decision }: { decision: RecordedDecision }) {
 function RecordedDecisionAudit({ decisions }: { decisions: RecordedDecision[] }) {
   if (decisions.length === 0) return null;
   return (
-    <details className="mt-2 rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2" data-testid="cc-decision-record-details">
-      <summary className="cursor-pointer text-xs font-medium text-zinc-300">Decision record details</summary>
+    <details className="mt-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2" data-testid="cc-decision-record-details">
+      <summary className="cursor-pointer text-xs font-medium text-slate-700">Decision record details</summary>
       {decisions.map((decision) => (
         <div key={decision.decisionId} className="mt-2">
-          <p className="text-[11px] font-medium text-zinc-400">{labelize(decision.decisionStatus)}</p>
+          <p className="text-[11px] font-medium text-slate-600">{labelize(decision.decisionStatus)}</p>
           <RowList
             rows={[
               { label: "Decision ID", value: decision.decisionId },
@@ -235,8 +235,8 @@ function DecisionSection({ panel, headingId }: { panel: DecisionPanel; headingId
   };
 
   return (
-    <section aria-labelledby={headingId} className="mt-5 border-t border-white/10 pt-4">
-      <h3 id={headingId} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+    <section aria-labelledby={headingId} className="mt-5 border-t border-slate-200 pt-4">
+      <h3 id={headingId} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
         Your decision
       </h3>
 
@@ -249,19 +249,19 @@ function DecisionSection({ panel, headingId }: { panel: DecisionPanel; headingId
       )}
 
       {panel.blockedReason && (
-        <p className="mt-3 rounded-lg border border-amber-500/25 bg-amber-500/[0.08] px-3 py-2 text-xs text-amber-200">
+        <p className="mt-3 rounded-lg border border-amber-500/25 bg-amber-500/[0.08] px-3 py-2 text-xs text-amber-900">
           {panel.blockedReason}
         </p>
       )}
 
       {terminalDecision ? (
-        <p className="mt-3 text-xs text-zinc-400">
+        <p className="mt-3 text-xs text-slate-600">
           This recommendation has been decided. No further decision can be recorded against it.
         </p>
       ) : submissionBlocked ? (
         // Inspection continues; only submission is withheld. What the actor's role would
         // otherwise permit is a governance detail and lives under the disclosure below.
-        <p className="mt-3 text-xs text-zinc-400" data-testid="cc-decision-blocked">
+        <p className="mt-3 text-xs text-slate-600" data-testid="cc-decision-blocked">
           There is nothing to decide here yet. This item stays in your queue and becomes
           decidable once the missing project context exists.
         </p>
@@ -269,7 +269,7 @@ function DecisionSection({ panel, headingId }: { panel: DecisionPanel; headingId
         <>
           {allowed.length > 0 && (
             <div className="mt-3">
-              <label htmlFor={rationaleId} className="text-[11px] font-medium text-zinc-400">
+              <label htmlFor={rationaleId} className="text-[11px] font-medium text-slate-600">
                 Rationale{panel.requiresRationale ? " (required)" : " (optional)"}
               </label>
               <textarea
@@ -278,7 +278,7 @@ function DecisionSection({ panel, headingId }: { panel: DecisionPanel; headingId
                 value={rationale}
                 onChange={(event) => setRationale(event.target.value)}
                 placeholder="Why are you deciding this?"
-                className="mt-1 w-full rounded-lg border border-white/10 bg-white/[0.04] p-2 text-xs text-zinc-200 placeholder:text-zinc-600 focus:border-sky-500/40 focus:outline-none"
+                className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-sky-500/40 focus:outline-none"
               />
               <ul className="mt-2 flex flex-col gap-2">
                 {allowed.map((control) => (
@@ -288,29 +288,29 @@ function DecisionSection({ panel, headingId }: { panel: DecisionPanel; headingId
                       onClick={() => void submit(control.status)}
                       disabled={pendingStatus !== null || rationaleMissing}
                       aria-describedby={`${rationaleId}-${control.status}-effect`}
-                      className="w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-left text-xs font-medium text-zinc-200 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
+                      className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs font-medium text-slate-800 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {pendingStatus === control.status ? `Recording ${labelize(control.status)}…` : control.label}
                     </button>
-                    <p id={`${rationaleId}-${control.status}-effect`} className="mt-1 px-1 text-[11px] leading-relaxed text-zinc-500">
+                    <p id={`${rationaleId}-${control.status}-effect`} className="mt-1 px-1 text-[11px] leading-relaxed text-slate-500">
                       {control.effect}
                     </p>
                   </li>
                 ))}
               </ul>
               {rationaleMissing && (
-                <p className="mt-2 text-[11px] text-zinc-500">Add a rationale to record a decision.</p>
+                <p className="mt-2 text-[11px] text-slate-500">Add a rationale to record a decision.</p>
               )}
             </div>
           )}
 
           {denied.length > 0 && (
-            <div className="mt-3 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2">
-              <p className="text-[11px] font-medium text-zinc-400">Not available to you</p>
+            <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+              <p className="text-[11px] font-medium text-slate-600">Not available to you</p>
               <ul className="mt-1 space-y-1">
                 {denied.map((control) => (
-                  <li key={control.status} className="text-[11px] leading-relaxed text-zinc-500">
-                    <span className="text-zinc-400">{control.label}</span> — {control.deniedExplanation}
+                  <li key={control.status} className="text-[11px] leading-relaxed text-slate-500">
+                    <span className="text-slate-600">{control.label}</span> — {control.deniedExplanation}
                   </li>
                 ))}
               </ul>
@@ -318,7 +318,7 @@ function DecisionSection({ panel, headingId }: { panel: DecisionPanel; headingId
           )}
 
           {!panel.anyAllowed && panel.readOnlyNote && (
-            <p className="mt-3 rounded-lg border border-amber-500/25 bg-amber-500/[0.08] px-3 py-2 text-xs text-amber-200">
+            <p className="mt-3 rounded-lg border border-amber-500/25 bg-amber-500/[0.08] px-3 py-2 text-xs text-amber-900">
               {panel.readOnlyNote}
             </p>
           )}
@@ -329,7 +329,7 @@ function DecisionSection({ panel, headingId }: { panel: DecisionPanel; headingId
         {pendingStatus ? `Recording ${labelize(pendingStatus)} decision.` : ""}
       </p>
       {error && (
-        <p role="alert" className="mt-3 rounded-lg border border-rose-500/25 bg-rose-500/[0.08] px-3 py-2 text-xs text-rose-200">
+        <p role="alert" className="mt-3 rounded-lg border border-rose-500/25 bg-rose-500/[0.08] px-3 py-2 text-xs text-rose-900">
           {error}
         </p>
       )}
@@ -366,30 +366,30 @@ export function DetailDrawer({ content, onClose }: { content: DrawerContent | nu
   }, [open, onClose]);
 
   return (
-    <div className={`fixed inset-0 z-40 ${open ? "" : "pointer-events-none"}`} aria-hidden={!open}>
+    <div className={`fixed inset-0 z-50 ${open ? "" : "pointer-events-none"}`} aria-hidden={!open} data-testid="cc-detail-drawer">
       <div
         onClick={onClose}
-        className={`absolute inset-0 bg-black/50 backdrop-blur-sm transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0"}`}
+        className={`absolute inset-0 bg-slate-900/25 backdrop-blur-sm transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0"}`}
       />
       <aside
         role="dialog"
         aria-modal="true"
         aria-labelledby={headingId}
-        className={`absolute right-0 top-0 h-full w-full max-w-sm border-l border-white/10 bg-[#0b0b0e] shadow-2xl transition-transform duration-200 ${
+        className={`absolute right-0 top-0 h-full w-full max-w-sm border-l border-slate-200 bg-white shadow-2xl transition-transform duration-200 ${
           open ? "translate-x-0" : "translate-x-full"
         }`}
       >
         {content && (
           <div className="flex h-full flex-col overflow-y-auto p-5">
             <div className="flex items-start justify-between gap-3">
-              <h2 id={headingId} ref={headingRef} tabIndex={-1} className="text-base font-semibold leading-snug text-zinc-100 focus:outline-none">
+              <h2 id={headingId} ref={headingRef} tabIndex={-1} className="text-base font-semibold leading-snug text-slate-900 focus:outline-none">
                 {content.title}
               </h2>
               <button
                 type="button"
                 onClick={onClose}
                 aria-label="Close"
-                className="shrink-0 rounded-lg p-1 text-zinc-500 transition hover:bg-white/10 hover:text-zinc-200"
+                className="shrink-0 rounded-lg p-1 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800"
               >
                 <CloseIcon className="h-4 w-4" />
               </button>
@@ -415,19 +415,19 @@ export function DetailDrawer({ content, onClose }: { content: DrawerContent | nu
             )}
 
             <section aria-labelledby={`${headingId}-why`} className="mt-5">
-              <h3 id={`${headingId}-why`} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+              <h3 id={`${headingId}-why`} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
                 Why this matters
               </h3>
-              <p className="mt-1.5 text-sm leading-relaxed text-zinc-300">{content.why}</p>
+              <p className="mt-1.5 text-sm leading-relaxed text-slate-700">{content.why}</p>
             </section>
 
             <section aria-labelledby={`${headingId}-evidence`} className="mt-5">
-              <h3 id={`${headingId}-evidence`} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+              <h3 id={`${headingId}-evidence`} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
                 Evidence
               </h3>
               <ul className="mt-1.5 space-y-1">
                 {content.evidence.map((item) => (
-                  <li key={item} className="rounded-lg bg-white/[0.04] px-2.5 py-1.5 text-xs text-zinc-300">
+                  <li key={item} className="rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs text-slate-700">
                     {item}
                   </li>
                 ))}
@@ -438,14 +438,14 @@ export function DetailDrawer({ content, onClose }: { content: DrawerContent | nu
               {/* "PMFreak recommends" is a claim that what follows is advice. It is used only
                   when the read model actually derived a recommendation; a drawer carrying a
                   factual state supplies its own neutral heading instead. */}
-              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-sky-300">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-sky-800">
                 {content.recommendation ? "PMFreak recommends" : content.nextStepLabel ?? "PMFreak recommends"}
               </p>
-              <p className="mt-1.5 text-sm leading-relaxed text-zinc-200">{content.recommendation ?? content.nextStep}</p>
+              <p className="mt-1.5 text-sm leading-relaxed text-slate-800">{content.recommendation ?? content.nextStep}</p>
               {/* The caveat qualifies the recommendation; it is never presented AS the
                   recommendation, which is what "Suggested next step" used to do here. */}
               {content.recommendation && content.nextStep && content.nextStep !== content.recommendation && (
-                <p className="mt-2 text-[11px] leading-relaxed text-zinc-400">{content.nextStep}</p>
+                <p className="mt-2 text-[11px] leading-relaxed text-slate-600">{content.nextStep}</p>
               )}
             </div>
 
@@ -466,13 +466,13 @@ export function DetailDrawer({ content, onClose }: { content: DrawerContent | nu
               wants to audit rather than decide.
             */}
             {((content.chain && content.chain.length > 0) || (content.sections && content.sections.length > 0)) && (
-              <section aria-labelledby={`${headingId}-detail`} className="mt-6 border-t border-white/10 pt-4">
-                <h3 id={`${headingId}-detail`} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+              <section aria-labelledby={`${headingId}-detail`} className="mt-6 border-t border-slate-200 pt-4">
+                <h3 id={`${headingId}-detail`} className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
                   Evidence &amp; governance
                 </h3>
                 {content.chain && content.chain.length > 0 && (
-                  <details className="mt-2 rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2">
-                    <summary className="cursor-pointer text-xs font-medium text-zinc-300">How PMFreak got here</summary>
+                  <details className="mt-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                    <summary className="cursor-pointer text-xs font-medium text-slate-700">How PMFreak got here</summary>
                     <RowList rows={content.chain} />
                   </details>
                 )}
@@ -488,16 +488,16 @@ export function DetailDrawer({ content, onClose }: { content: DrawerContent | nu
                   <RecordedDecisionAudit decisions={content.decisionPanel.decisions} />
                 )}
                 {(content.kindSummary || content.decisionPanel?.writePathLabel || content.badge) && (
-                  <details className="mt-2 rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2">
-                    <summary className="cursor-pointer text-xs font-medium text-zinc-300">What this is, and what a decision records</summary>
+                  <details className="mt-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                    <summary className="cursor-pointer text-xs font-medium text-slate-700">What this is, and what a decision records</summary>
                     {content.decisionPanel && content.badge && (
                       <p className="mt-2">
                         <StatusBadge tone={content.badge.tone}>{content.badge.label}</StatusBadge>
                       </p>
                     )}
-                    {content.kindSummary && <p className="mt-2 text-[11px] leading-relaxed text-zinc-400">{content.kindSummary}</p>}
+                    {content.kindSummary && <p className="mt-2 text-[11px] leading-relaxed text-slate-600">{content.kindSummary}</p>}
                     {content.decisionPanel?.writePathLabel && (
-                      <p className="mt-2 text-[11px] leading-relaxed text-zinc-400">{content.decisionPanel.writePathLabel}</p>
+                      <p className="mt-2 text-[11px] leading-relaxed text-slate-600">{content.decisionPanel.writePathLabel}</p>
                     )}
                   </details>
                 )}
@@ -525,14 +525,14 @@ export function DetailDrawer({ content, onClose }: { content: DrawerContent | nu
                     type="button"
                     onClick={action.onClick}
                     disabled={action.disabled}
-                    className="rounded-lg border border-white/10 px-3 py-1.5 text-xs font-medium text-zinc-300 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {action.label}
                   </button>
                 ))}
               </div>
             )}
-            {content.note && <p className="mt-3 text-[11px] text-amber-300">{content.note}</p>}
+            {content.note && <p className="mt-3 text-[11px] text-amber-800">{content.note}</p>}
           </div>
         )}
       </aside>

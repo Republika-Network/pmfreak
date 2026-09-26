@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { OperationalSummary } from "@/lib/operational-flow/types";
-import type { Agent, DrawerContent, MemoryItem, NeedsYouItem, ProjectListItem, RepositoryItem } from "../../presentation/command-center/types";
+import type { Agent, DrawerContent, MemoryItem, NeedsYouItem, RepositoryItem } from "../../presentation/command-center/types";
 import {
   deriveAgents,
   deriveAllGovernedAttention,
@@ -31,14 +31,14 @@ import type { ExecutionOperation, GovernedExecutionChain } from "../../presentat
 import { deriveWhatChanged } from "../../presentation/command-center/change-read-model";
 import { deriveLastUpdatedLabel } from "../../presentation/command-center/activity-read-model";
 import { assessAttentionCompleteness } from "../../presentation/command-center/attention-completeness";
-import { ProjectSidebar } from "../../presentation/command-center/project-sidebar";
-import { CommandCenterCanvas } from "../../presentation/command-center/command-center-canvas";
-import { ProjectBrainConversation } from "@/components/pmfreak/project-brain/project-brain-conversation";
 import { AgentDock } from "../../presentation/command-center/agent-dock";
 import { DetailDrawer } from "../../presentation/command-center/detail-drawer";
 import { VaultIntakePanel } from "../../presentation/command-center/vault-intake-panel";
-import { CloseIcon } from "../../presentation/command-center/icons";
-import { WorkspaceOnboardingPanel } from "@/components/pmfreak/onboarding/workspace-onboarding-panel";
+import { NeedsYouQueue } from "../../presentation/command-center/needs-you-queue";
+import { WhatChangedPanel } from "../../presentation/command-center/what-changed-panel";
+import { ExecutionQueue } from "../../presentation/command-center/execution-queue";
+import { MonitoringPanel } from "../../presentation/command-center/monitoring-panel";
+import { LastUpdatedNote, ProjectMemory, ProjectRepository } from "../../presentation/command-center/project-repository";
 import { ScheduleExposurePanel } from "@/components/pmfreak/schedule-exposure/schedule-exposure-panel";
 
 /** Default "remind me later" horizon for deferring a RAID-derived suggested action. */
@@ -59,60 +59,54 @@ function deriveMemory(data: OperationalSummary | undefined): MemoryItem[] {
   ].filter(Boolean) as MemoryItem[];
 }
 
-function MobileOverlay({ open, onClose, side, children }: { open: boolean; onClose: () => void; side: "left" | "right"; children: React.ReactNode }) {
-  return (
-    <div className={`fixed inset-0 z-30 xl:hidden ${open ? "" : "pointer-events-none"}`} aria-hidden={!open}>
-      <div onClick={onClose} className={`absolute inset-0 bg-black/50 backdrop-blur-sm transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0"}`} />
-      <div
-        className={`absolute top-0 h-full w-72 max-w-[85vw] bg-[#0a0a0d] shadow-2xl transition-transform duration-200 ${
-          side === "left" ? `left-0 ${open ? "translate-x-0" : "-translate-x-full"}` : `right-0 ${open ? "translate-x-0" : "translate-x-full"}`
-        }`}
-      >
-        <div className="flex justify-end p-2">
-          <button type="button" onClick={onClose} aria-label="Close panel" className="rounded-lg p-1.5 text-zinc-500 hover:bg-white/5">
-            <CloseIcon className="h-4 w-4" />
-          </button>
-        </div>
-        <div className="h-[calc(100%-2.5rem)] overflow-y-auto">{children}</div>
-      </div>
-    </div>
-  );
-}
+/**
+ * The operational tools a project's conversation shell exposes beside Project Brain,
+ * each a focused view over ONE shared operational read.
+ */
+export const OPERATIONAL_TOOLS = ["attention", "activity", "execution", "schedule", "monitoring", "repository"] as const;
+export type OperationalToolKey = (typeof OPERATIONAL_TOOLS)[number];
 
-export function CommandCenterLayout({
-  workspaceName,
+/**
+ * CHAT-SHELL-01 — the project's operational substrate, beside the conversation.
+ *
+ * This is the Command Center's state and behaviour, unchanged: the operational
+ * flow and RAID suggestion reads, every read model, the governed Decision path,
+ * the DECIDE → DO handoff, the P2-12 execution writes and their idempotent
+ * reconciliation, the attention-completeness rules, and the one detail drawer.
+ *
+ * What changed is COMPOSITION. It used to be an application of its own — a dark
+ * canvas with an inner project sidebar, a top bar, two columns of sections and
+ * Project Brain collapsed beneath them — nested inside the product shell. Now the
+ * shell owns navigation (one context tree) and the conversation owns the centre,
+ * and this renders only the ONE tool the user opened in the right-hand inspector.
+ * Switching tools re-renders this same instance with a different `tool`, so the
+ * reads, an unsent notes draft and any pending reconciliation survive the switch;
+ * nothing here can remount or reset the conversation beside it.
+ *
+ * It is mounted only while an operational tool is open, which is what keeps the
+ * operational reads off the conversation's critical path.
+ */
+export function ProjectOperationsInspector({
   workspaceId,
-  projects,
-  activeProjectId,
+  projectId,
+  projectName,
+  tool,
   hasBrief = false,
-  onSelectProject,
   onEvidenceAdded,
 }: {
-  workspaceName: string;
   /** Real workspace id, used to load/record project evidence and decisions. */
   workspaceId: string;
-  projects: ProjectListItem[];
-  activeProjectId?: string;
-  /** Whether a governance brief already exists for the active project (drives the Executive Briefing agent card). */
+  projectId: string;
+  projectName: string;
+  tool: OperationalToolKey;
+  /** Whether a governance brief already exists for the project (drives the Executive Briefing agent card). */
   hasBrief?: boolean;
-  /** Called when the user picks a different project. Use this to navigate so the new
-   *  project's server-scoped data (governance brief, etc.) is actually loaded — selecting
-   *  a project only updates local UI state otherwise. */
-  onSelectProject?: (id: string) => void;
   /** Called after new project evidence is added (e.g. to refresh the governance brief). */
   onEvidenceAdded?: () => void;
 }) {
-  const [selectedProjectId, setSelectedProjectId] = useState(activeProjectId ?? projects[0]?.id ?? "");
-
-  const handleSelectProject = (id: string) => {
-    setSelectedProjectId(id);
-    onSelectProject?.(id);
-  };
-
-  const selectedProject = useMemo(
-    () => projects.find((p) => p.id === selectedProjectId) ?? projects[0],
-    [projects, selectedProjectId]
-  );
+  // The project is the route's, already authorized by the page. There is no picker
+  // here any more — the shell's context tree is the one project selector.
+  const selectedProject = useMemo(() => ({ id: projectId, fullName: projectName }), [projectId, projectName]);
 
   const { data: flowData, error: flowError, mutate: mutateFlow, successGeneration } = useOperationalFlow(workspaceId, selectedProject?.id ?? "");
   const { data: raidActions, error: raidError, mutate: mutateRaidActions } = useRaidRecommendedActions(selectedProject?.id ?? "");
@@ -122,10 +116,6 @@ export function CommandCenterLayout({
   // a pending read, so it must not read as one.
   const raidLoading = Boolean(selectedProject?.id) && raidActions === undefined && !raidError;
 
-  /** PB-CHAT-01: how many persisted Project Brain messages the active project's thread
-   *  holds, reported by the conversation itself so a collapsed panel can say so. The
-   *  transcript lives on the server (context_messages), not in this screen. */
-  const [chatMessageCount, setChatMessageCount] = useState(0);
   /** Confirmation of a completed notes intake. Shown as a notice, never injected into the
    *  Project Brain transcript as if the Brain had said it. */
   const [intakeNotice, setIntakeNotice] = useState<string | null>(null);
@@ -168,12 +158,8 @@ export function CommandCenterLayout({
    *  This decides only WHEN the surface recomputes and what it offers, never whether an
    *  operation is allowed, which stays server-validated (see the P2-06 window). */
   const [projectionFloor, setProjectionFloor] = useState<number>(() => Date.now());
-  const [leftOpen, setLeftOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
-  /** PB-CHAT-01: Project Brain is open by default — the conversation is first-class, not
-   *  hidden behind a click. Collapsing governs visibility only; the thread is persisted
-   *  and the conversation component stays mounted either way. */
-  const [chatOpen, setChatOpen] = useState(true);
+  const [memoryOpen, setMemoryOpen] = useState(false);
 
   /** Records a canonical Decision. Rejects on failure so the drawer keeps the rationale, stays
    *  open and shows the error — never an optimistic success. The status posted is a canonical
@@ -312,10 +298,9 @@ export function CommandCenterLayout({
   // only from the operational flow, so a failed suggestion read must not make those three
   // sections claim they failed.
   const activityErrorMessage = flowError ? "We couldn't load project attention." : null;
-  // A header must not answer "how much needs me?" with a number it does not have. Only a
-  // COMPLETE read produces a count; a successful read of zero is a real answer and is
-  // stated as one.
-  const needsYouCount = attention.complete ? needsYouItems.length : null;
+  // CHAT-SHELL-01: the screen-level "how much needs me?" count fed the Command Center's
+  // own top bar, which no longer exists. `NeedsYouQueue` states a count only for a
+  // complete answer itself, so no number is shown that this read does not have.
   // Shown beneath an empty attention queue. Built from the real monitored families, and
   // only once this project actually has evidence for PMFreak to read — otherwise "clear"
   // would be paired with a claim that something is watching, which nothing is yet.
@@ -343,7 +328,7 @@ export function CommandCenterLayout({
     setFollowDecidedRecommendationId(next.followRecommendationId ?? null);
   };
 
-  const handleTopBarSourceClick = (source: RepositoryItem) => {
+  const handleRepositorySourceClick = (source: RepositoryItem) => {
     selectDrawer({ content: {
       title: source.label,
       why: "This is one of the sources of truth currently attached to this conversation.",
@@ -488,153 +473,122 @@ export function CommandCenterLayout({
     onEvidenceAdded?.();
   };
 
-  if (!selectedProject) return null;
+  const retryAll = () => {
+    void mutateFlow();
+    void mutateRaidActions();
+  };
+
+  const intake = notesOpen ? (
+    <div className="mb-4">
+      <VaultIntakePanel
+        workspaceId={workspaceId}
+        projectId={selectedProject.id}
+        onClose={() => setNotesOpen(false)}
+        onIntakeComplete={handleIntakeComplete}
+      />
+    </div>
+  ) : intakeNotice ? (
+    <div className="mb-4 flex items-start justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-700" role="status">
+      <span>{intakeNotice}</span>
+      <button type="button" onClick={() => setIntakeNotice(null)} className="shrink-0 text-slate-500 hover:text-slate-800">
+        Dismiss
+      </button>
+    </div>
+  ) : null;
 
   return (
-    <div
-      data-build="command-center-light-v2"
-      data-shell="pmfreak-light-command-center"
-      className="overflow-hidden rounded-[28px] border border-white/10 bg-[#0a0a0d] shadow-[0_40px_90px_-60px_rgba(0,0,0,0.7)]"
-    >
-      <div className="flex min-h-[600px] xl:h-[calc(100vh-190px)]">
-        <aside className="hidden w-[280px] shrink-0 border-r border-white/10 bg-white/[0.015] xl:block">
-          <ProjectSidebar
-            workspaceName={workspaceName}
-            projects={projects}
-            selectedProjectId={selectedProject.id}
-            onSelectProject={handleSelectProject}
-            repository={repositoryItems}
-            memory={memoryReal}
-            onAddNotes={() => setNotesOpen(true)}
-          />
-        </aside>
+    <div data-testid="project-operations-inspector" data-tool={tool}>
+      {intake}
 
-        {/*
-         * The attention-first canvas IS the main region. Everything a PM opens this screen
-         * to know — what needs them, what changed, what is under way, what is being watched
-         * — is in the document itself, in that order, on every viewport. Project Brain,
-         * the project's one persisted conversation, follows them, open by default.
-         */}
-        <main className="flex min-w-0 flex-1 flex-col">
-          <CommandCenterCanvas
-            project={selectedProject}
-            sources={repositoryItems}
-            lastUpdatedLabel={lastUpdatedLabel}
-            onOpenProjects={() => setLeftOpen(true)}
-            onSourceClick={handleTopBarSourceClick}
-            onAttach={() => setNotesOpen(true)}
-            needsYouItems={needsYouItems}
-            needsYouCount={needsYouCount}
-            onSelectNeedsYou={handleNeedsYouSelect}
-            attentionLoading={attention.loading}
-            attentionIncomplete={attention.partial}
-            attentionErrorMessage={attentionErrorMessage}
-            attentionIncompleteNote={
-              // A known-partial governed read gets the server's own numbers, so the PM is
-              // told how much of the answer they are looking at rather than a vague caveat.
-              //
-              // "X of Y" is only said when X is genuinely fewer than Y. A partial answer can
-              // still hold Y items — a Recommendation outside the frozen snapshot is shown
-              // because it IS open, it simply is not the one the snapshot named — and
-              // phrasing that as "3 of 3" would claim exactly the coverage this read could
-              // not prove. That case gets the caveat instead of a number.
-              governedAttentionPartial && !attention.failed
-                ? governedAttentionTotal !== null && governedShownCount < governedAttentionTotal
-                  ? `Showing ${governedShownCount} of ${governedAttentionTotal} governed items needing review.`
-                  : "This list may not be every governed item needing review."
-                : attention.loading && !attention.failed && needsYouItems.length > 0
-                  ? `Still checking ${attention.unresolved.join(" and ")}.`
-                  : null
-            }
-            onRetryAttention={() => {
-              void mutateFlow();
-              void mutateRaidActions();
-            }}
-            onAddNotes={() => setNotesOpen(true)}
-            monitoringNote={monitoringNote}
-            changes={changes}
-            chains={executionChains}
-            onSelectChain={handleChainSelect}
-            chainActorUserId={flowData?.actor?.userId ?? null}
-            chainsIncomplete={executionRootIncomplete}
-            chainsIncompleteNote={
-              executionRootIncomplete
-                ? "Some of this project's work could not be read, so this list may not be complete."
+      {tool === "attention" ? (
+        <NeedsYouQueue
+          variant="canvas"
+          items={needsYouItems}
+          onSelect={handleNeedsYouSelect}
+          loading={attention.loading}
+          errorMessage={attentionErrorMessage}
+          incompleteNote={
+            // A known-partial governed read gets the server's own numbers, so the PM is
+            // told how much of the answer they are looking at rather than a vague caveat.
+            //
+            // "X of Y" is only said when X is genuinely fewer than Y. A partial answer can
+            // still hold Y items — a Recommendation outside the frozen snapshot is shown
+            // because it IS open, it simply is not the one the snapshot named — and
+            // phrasing that as "3 of 3" would claim exactly the coverage this read could
+            // not prove. That case gets the caveat instead of a number.
+            governedAttentionPartial && !attention.failed
+              ? governedAttentionTotal !== null && governedShownCount < governedAttentionTotal
+                ? `Showing ${governedShownCount} of ${governedAttentionTotal} governed items needing review.`
+                : "This list may not be every governed item needing review."
+              : attention.loading && !attention.failed && needsYouItems.length > 0
+                ? `Still checking ${attention.unresolved.join(" and ")}.`
                 : null
-            }
-            monitoring={monitoring}
-            monitoringActive={hasRealData}
-            agentDetail={
-              <AgentDock agents={agentItems} onSelect={handleAgentSelect} loading={flowLoading} onAddContext={() => setNotesOpen(true)} />
-            }
-            chatOpen={chatOpen}
-            onToggleChat={setChatOpen}
-            chatMessageCount={chatMessageCount}
-            chat={
-              <ProjectBrainConversation
-                key={selectedProject.id}
-                projectId={selectedProject.id}
-                projectName={selectedProject.fullName}
-                onTranscriptSizeChange={setChatMessageCount}
-              />
-            }
-            activityLoading={flowLoading}
-            activityErrorMessage={activityErrorMessage}
-            intakeSlot={
-              notesOpen ? (
-                <div className="border-b border-white/10 p-4">
-                  <VaultIntakePanel
-                    workspaceId={workspaceId}
-                    projectId={selectedProject.id}
-                    onClose={() => setNotesOpen(false)}
-                    onIntakeComplete={handleIntakeComplete}
-                  />
-                </div>
-              ) : intakeNotice ? (
-                <div className="flex items-start justify-between gap-3 border-b border-white/10 px-4 py-3 text-xs text-zinc-300" role="status">
-                  <span>{intakeNotice}</span>
-                  <button type="button" onClick={() => setIntakeNotice(null)} className="text-zinc-500 hover:text-zinc-300">
-                    Dismiss
-                  </button>
-                </div>
-              ) : null
-            }
-            footerSlot={
-              <div className="space-y-5">
-                {/* P2-16: project schedule exposure. Its Recommendations also enter the
-                    attention queue above through the canonical operational flow. */}
-                <ScheduleExposurePanel
-                  key={selectedProject.id}
-                  workspaceId={workspaceId}
-                  projectId={selectedProject.id}
-                  onRecorded={() => void mutateFlow()}
-                />
-                <WorkspaceOnboardingPanel surface="dashboard" />
-              </div>
-            }
-          />
-        </main>
-      </div>
-
-      {/* Project navigation may live behind an overlay on a small screen; attention content
-          never does — it is in the main document flow above, at every width. */}
-      <MobileOverlay open={leftOpen} onClose={() => setLeftOpen(false)} side="left">
-        <ProjectSidebar
-          workspaceName={workspaceName}
-          projects={projects}
-          selectedProjectId={selectedProject.id}
-          onSelectProject={(id) => {
-            handleSelectProject(id);
-            setLeftOpen(false);
-          }}
-          repository={repositoryItems}
-          memory={memoryReal}
-          onAddNotes={() => {
-            setNotesOpen(true);
-            setLeftOpen(false);
-          }}
+          }
+          incomplete={attention.partial}
+          onRetry={retryAll}
+          onAddNotes={() => setNotesOpen(true)}
+          emptyStateNote={monitoringNote}
         />
-      </MobileOverlay>
+      ) : null}
+
+      {tool === "activity" ? (
+        <WhatChangedPanel items={changes} loading={flowLoading} errorMessage={activityErrorMessage} onRetry={retryAll} />
+      ) : null}
+
+      {tool === "execution" ? (
+        <ExecutionQueue
+          chains={executionChains}
+          onSelect={handleChainSelect}
+          loading={flowLoading}
+          actorUserId={flowData?.actor?.userId ?? null}
+          incomplete={executionRootIncomplete}
+          incompleteNote={
+            executionRootIncomplete
+              ? "Some of this project's work could not be read, so this list may not be complete."
+              : null
+          }
+        />
+      ) : null}
+
+      {tool === "schedule" ? (
+        // P2-16: project schedule exposure. Its Recommendations also enter Needs You
+        // through the canonical operational flow, which a recorded evaluation refreshes.
+        <ScheduleExposurePanel
+          key={selectedProject.id}
+          workspaceId={workspaceId}
+          projectId={selectedProject.id}
+          onRecorded={() => void mutateFlow()}
+        />
+      ) : null}
+
+      {tool === "monitoring" ? (
+        <MonitoringPanel
+          summary={monitoring}
+          active={hasRealData}
+          loading={flowLoading}
+          errorMessage={activityErrorMessage}
+          onRetry={retryAll}
+          onAddContext={() => setNotesOpen(true)}
+          detail={<AgentDock agents={agentItems} onSelect={handleAgentSelect} loading={flowLoading} onAddContext={() => setNotesOpen(true)} />}
+        />
+      ) : null}
+
+      {tool === "repository" ? (
+        <div className="space-y-5">
+          <ProjectRepository items={repositoryItems} onAddNotes={() => setNotesOpen(true)} onSelect={handleRepositorySourceClick} />
+          <ProjectMemory items={memoryReal} open={memoryOpen} onToggle={() => setMemoryOpen((value) => !value)} onAddNotes={() => setNotesOpen(true)} />
+          {!notesOpen ? (
+            <button
+              type="button"
+              onClick={() => setNotesOpen(true)}
+              className="w-full rounded-xl border border-dashed border-slate-300 px-3 py-2.5 text-xs font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+            >
+              Add project notes
+            </button>
+          ) : null}
+          <LastUpdatedNote label={lastUpdatedLabel} />
+        </div>
+      ) : null}
 
       <DetailDrawer content={activeDrawer} onClose={closeDrawer} />
     </div>

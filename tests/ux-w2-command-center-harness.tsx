@@ -1,6 +1,13 @@
 /**
  * UX-W2 — attention-first Command Center harness.
  *
+ * CHAT-SHELL-01: the Command Center's canvas, top bar, inner project sidebar and
+ * collapsible Project Brain panel were removed — the project's primary surface is
+ * now its Project Brain conversation, and the Command Center's sections are the
+ * tools of the inspector beside it. This harness therefore renders (1) those
+ * sections exactly as the inspector composes them, through the same read models,
+ * and (2) the real `ProjectConversationView`, closed and with a tool open.
+ *
  * Executed by `tests/ux-w2-attention-first-command-center.test.mjs` through tsx, the way
  * this repository runs REAL behaviour rather than source scanning (same pattern as
  * `tests/p2-11-attention-harness.tsx` and `tests/ux-w0-capture-defaults-harness.tsx`).
@@ -31,11 +38,13 @@ import { assessAttentionCompleteness } from "../src/modules/workspace/presentati
 import { deriveLastUpdatedLabel, latestOperationalActivityAt, serverActivityCeiling } from "../src/modules/workspace/presentation/command-center/activity-read-model";
 import { ExecutionQueue } from "../src/modules/workspace/presentation/command-center/execution-queue";
 import { deriveWhatChanged } from "../src/modules/workspace/presentation/command-center/change-read-model";
-import { CommandCenterCanvas } from "../src/modules/workspace/presentation/command-center/command-center-canvas";
 import { AgentDock } from "../src/modules/workspace/presentation/command-center/agent-dock";
-import { ProjectBrainConversation } from "../src/components/pmfreak/project-brain/project-brain-conversation";
-import { ProjectBrainPanel } from "../src/modules/workspace/presentation/command-center/project-brain-panel";
-import { CommandCenterLayout } from "../src/modules/workspace/screens/command-center/command-center-layout";
+import { NeedsYouQueue } from "../src/modules/workspace/presentation/command-center/needs-you-queue";
+import { WhatChangedPanel } from "../src/modules/workspace/presentation/command-center/what-changed-panel";
+import { MonitoringPanel } from "../src/modules/workspace/presentation/command-center/monitoring-panel";
+import { LastUpdatedNote } from "../src/modules/workspace/presentation/command-center/project-repository";
+import { ProjectConversationView } from "../src/components/pmfreak/conversation-shell/project-conversation-view";
+import type { ProjectToolKey } from "../src/components/pmfreak/conversation-shell/operational-tools";
 import type { ProjectListItem } from "../src/modules/workspace/presentation/command-center/types";
 
 const NOW = new Date("2026-09-06T12:00:00.000Z");
@@ -274,75 +283,142 @@ function section(markup: string, testId: string): string {
   return markup.slice(open);
 }
 
-type CanvasOverrides = Partial<Parameters<typeof CommandCenterCanvas>[0]>;
+type ToolOverrides = {
+  needsYouItems?: ReturnType<typeof deriveNeedsYou>;
+  attentionLoading?: boolean;
+  attentionErrorMessage?: string | null;
+  attentionIncompleteNote?: string | null;
+  attentionIncomplete?: boolean;
+  activityLoading?: boolean;
+  activityErrorMessage?: string | null;
+  monitoringActive?: boolean;
+};
 
-/** Renders the real canvas from the real read models for a given payload. */
-function renderCanvas(data: OperationalSummary | undefined, overrides: CanvasOverrides = {}): string {
+/**
+ * The Command Center's sections, rendered from the real read models with exactly the
+ * props `ProjectOperationsInspector` gives them, in the inspector's tool order. (The
+ * inspector shows ONE tool at a time; they are concatenated here so one markup can be
+ * asked about all four.)
+ */
+function renderTools(data: OperationalSummary | undefined, overrides: ToolOverrides = {}): string {
   const chains = deriveExecutionChains(data, NOW);
   const monitoring = deriveMonitoring(data);
-  const needsYouItems = deriveNeedsYou(data, noopDecide);
   const hasRealData = Boolean(data && data.evidence.length > 0);
+  const needsYouItems = overrides.needsYouItems ?? (hasRealData ? deriveNeedsYou(data, noopDecide) : []);
+  const activityLoading = overrides.activityLoading ?? false;
+  const activityErrorMessage = overrides.activityErrorMessage ?? null;
+  const monitoringActive = overrides.monitoringActive ?? hasRealData;
   return renderToStaticMarkup(
-    <CommandCenterCanvas
-      project={PROJECT}
-      sources={[]}
-      lastUpdatedLabel="8 minutes ago"
-      onOpenProjects={noop}
-      needsYouItems={hasRealData ? needsYouItems : []}
-      needsYouCount={hasRealData ? needsYouItems.length : 0}
-      onSelectNeedsYou={noop}
-      attentionLoading={false}
-      attentionErrorMessage={null}
-      onRetryAttention={noop}
-      onAddNotes={noop}
-      monitoringNote={hasRealData ? `PMFreak is still monitoring ${monitoring.areas.map((a) => a.label.toLowerCase()).join(", ")}.` : null}
-      changes={deriveWhatChanged(data, NOW)}
-      chains={chains}
-      onSelectChain={noop}
-      monitoring={monitoring}
-      monitoringActive={hasRealData}
-      // Mirrors the screen: agents render from real evidence, or not at all.
-      agentDetail={<AgentDock agents={hasRealData ? deriveAgents(data, false) : []} onSelect={noop} />}
-      chatOpen={false}
-      onToggleChat={noop}
-      chatMessageCount={2}
-      chat={<ProjectBrainConversation projectId="proj-1" projectName="Apollo" />}
-      activityLoading={false}
-      activityErrorMessage={null}
-      {...overrides}
-    />
+    <>
+      <div data-tool="attention">
+        <NeedsYouQueue
+          variant="canvas"
+          items={needsYouItems}
+          onSelect={noop}
+          loading={overrides.attentionLoading ?? false}
+          errorMessage={overrides.attentionErrorMessage ?? null}
+          incompleteNote={overrides.attentionIncompleteNote ?? null}
+          incomplete={overrides.attentionIncomplete ?? false}
+          onRetry={noop}
+          onAddNotes={noop}
+          emptyStateNote={hasRealData ? `PMFreak is still monitoring ${monitoring.areas.map((a) => a.label.toLowerCase()).join(", ")}.` : null}
+        />
+      </div>
+      <div data-tool="activity">
+        <WhatChangedPanel items={deriveWhatChanged(data, NOW)} loading={activityLoading} errorMessage={activityErrorMessage} onRetry={noop} />
+      </div>
+      <div data-tool="execution">
+        <ExecutionQueue chains={chains} onSelect={noop} loading={activityLoading} actorUserId={null} />
+      </div>
+      <div data-tool="monitoring">
+        <MonitoringPanel
+          summary={monitoring}
+          active={monitoringActive}
+          loading={activityLoading}
+          errorMessage={activityErrorMessage}
+          onRetry={noop}
+          onAddContext={noop}
+          // Mirrors the inspector: agents render from real evidence, or not at all.
+          detail={<AgentDock agents={hasRealData ? deriveAgents(data, false) : []} onSelect={noop} />}
+        />
+      </div>
+    </>
   );
 }
 
 const populatedSummary = summary();
 const noSignalsSummary = summary({ signals: [] });
 
-const populated = renderCanvas(populatedSummary);
-const chatExpanded = renderCanvas(populatedSummary, { chatOpen: true });
-const noAttention = renderCanvas(summary({ recommendations: [], risksIssues: [], governanceEvents: [] }));
-const noSignals = renderCanvas(noSignalsSummary);
-const noProjectData = renderCanvas(summary({ evidence: [], signals: [], recommendations: [], decisions: [] }));
-const readFailed = renderCanvas(undefined, {
-  needsYouCount: null,
+const populated = renderTools(populatedSummary);
+const noAttention = renderTools(summary({ recommendations: [], risksIssues: [], governanceEvents: [] }));
+const noSignals = renderTools(noSignalsSummary);
+const noProjectData = renderTools(summary({ evidence: [], signals: [], recommendations: [], decisions: [] }));
+const readFailed = renderTools(undefined, {
   attentionErrorMessage: "We couldn't load project attention.",
   activityErrorMessage: "We couldn't load project attention.",
   activityLoading: false,
   monitoringActive: false,
 });
 
-/** The real screen, mounted the way the route mounts it. SWR has no data during a static
- *  render, so this is the Command Center's first paint — which is exactly the state the
- *  "what does a PM see first" question is about. */
-const screen = renderToStaticMarkup(
-  <CommandCenterLayout workspaceName="Republika" workspaceId="ws-1" projects={[PROJECT]} activeProjectId="pr-1" />
-);
+/**
+ * The real project conversation, mounted the way the canonical project route mounts
+ * it — closed, and with a tool open. SWR has no data during a static render, so this
+ * is the first paint, which is exactly the state "what does a PM see first" is about.
+ */
+function renderConversation(initialTool: ProjectToolKey | null): string {
+  return renderToStaticMarkup(
+    <ProjectConversationView
+      workspaceId="ws-1"
+      project={{ id: PROJECT.id, name: PROJECT.name, status: "active", icon: null, color: null }}
+      workspaceName="Republika"
+      pmoName="Delivery PMO"
+      initialTool={initialTool}
+      hasBrief={false}
+      canCreateTask
+      links={{
+        workspace: "/workspaces/ws-1",
+        pmo: "/workspaces/ws-1/pmos/pmo-1",
+        overview: `/workspaces/ws-1/projects/${PROJECT.id}/overview`,
+        operationalOverview: `/workspaces/ws-1/projects/${PROJECT.id}/command-center`,
+        guidedSetup: `/workspaces/ws-1/command-center?projectId=${PROJECT.id}&view=inbox`,
+        documents: `/upload?projectId=${PROJECT.id}`,
+        evidence: `/evidence?projectId=${PROJECT.id}`,
+        settings: `/projects/${PROJECT.id}/settings`,
+      }}
+    />
+  );
+}
 
-const mainRegion = (() => {
-  const start = screen.indexOf("<main");
-  const end = screen.indexOf("</main>", start);
-  return start < 0 ? "" : screen.slice(start, end + 7);
-})();
+function conversationShape(markup: string) {
+  const center = section(markup, "project-conversation-center");
+  const inspectorAt = markup.indexOf('data-testid="operational-inspector"');
+  const inspectorTag = inspectorAt < 0 ? "" : markup.slice(markup.lastIndexOf("<aside", inspectorAt), markup.indexOf(">", inspectorAt) + 1);
+  const rail = section(markup, "operational-rail");
+  return {
+    center,
+    conversation: section(markup, "project-brain-conversation"),
+    conversationInstances: (markup.match(/data-testid="project-brain-conversation"/g) ?? []).length,
+    conversationLayout: /data-testid="project-brain-conversation"[^>]*data-layout="([a-z]+)"/.exec(markup)?.[1] ?? null,
+    composerInCenter: center.includes('data-testid="project-brain-input"'),
+    composerInstances: (markup.match(/data-testid="project-brain-input"/g) ?? []).length,
+    header: text(section(markup, "project-conversation-header")),
+    railTools: [...rail.matchAll(/data-tool="([a-z]+)"/g)].map((m) => m[1]),
+    railPressed: [...rail.matchAll(/aria-pressed="true"[^>]*data-tool="([a-z]+)"/g)].map((m) => m[1]),
+    inspectorPresent: inspectorAt >= 0,
+    inspectorHidden: /\shidden\b/.test(inspectorTag),
+    inspectorTool: /data-tool="([a-z]+)"/.exec(inspectorTag)?.[1] ?? null,
+    operationsTool: /data-testid="project-operations-inspector" data-tool="([a-z]+)"/.exec(markup)?.[1] ?? null,
+    centerBeforeInspector: markup.indexOf('data-testid="project-conversation-center"') < inspectorAt,
+    hasCanvas: markup.includes("command-center-canvas"),
+    hasProjectBrainPanel: markup.includes("cc-section-project-brain") || markup.includes("cc-project-brain-region"),
+    hasInnerProjectList: /<nav aria-label="Projects"/.test(markup),
+    hasOwnShell: /data-shell=/.test(markup),
+    sectionsInCenter: sectionOrder(center),
+  };
+}
 
+const conversationClosed = renderConversation(null);
+const conversationWithAttention = renderConversation("attention");
 
 // ── W2-P1-01: chain-progress fixtures ────────────────────────────────────────
 //
@@ -593,20 +669,22 @@ function renderAttention(input: {
   ]);
   const data = input.governedItems > 0 ? populatedSummary : summary({ recommendations: [], risksIssues: [], governanceEvents: [] });
   const needsYouItems = input.flowFailed ? [] : deriveNeedsYou(data, noopDecide);
-  const markup = renderCanvas(populatedSummary, {
+  const markup = renderTools(populatedSummary, {
     needsYouItems,
-    needsYouCount: attention.complete ? needsYouItems.length : null,
     attentionLoading: attention.loading,
     attentionErrorMessage: attention.failed ? "We couldn't load project attention." : null,
+    attentionIncomplete: attention.partial,
     attentionIncompleteNote:
       attention.loading && !attention.failed && needsYouItems.length > 0
         ? `Still checking ${attention.unresolved.join(" and ")}.`
         : null,
   });
+  const needsYou = section(markup, "cc-section-needs-you");
   return {
     completeness: attention,
-    needsYou: section(markup, "cc-section-needs-you"),
-    header: section(markup, "cc-project-header"),
+    needsYou,
+    // The count the queue's own heading states — only ever for a complete answer.
+    headingCount: /Needs your attention\s*<\/h2>\s*<span[^>]*>(\d+)<\/span>/.exec(needsYou)?.[1] ?? null,
   };
 }
 
@@ -742,61 +820,16 @@ const noServerAnchorSummary = (() => {
   return withoutAnchor as unknown as OperationalSummary;
 })();
 
-/** The header rendered from the REAL derivation rather than a literal. */
-const freshnessHeader = section(
-  renderCanvas(downstreamActivitySummary, {
-    lastUpdatedLabel: deriveLastUpdatedLabel(downstreamActivitySummary),
-    needsYouCount: 0,
-  }),
-  "cc-project-header"
-);
+/** The freshness line rendered from the REAL derivation rather than a literal — the
+ *  Evidence tool's `LastUpdatedNote`, where CHAT-SHELL-01 moved the top bar's label. */
+const freshnessHeader = renderToStaticMarkup(<LastUpdatedNote label={deriveLastUpdatedLabel(downstreamActivitySummary)} />);
 
-
-
-// ── W2 Codex remediation: the Project Brain panel never unmounts the conversation ──
-//
-// An unsent draft is the Project Brain conversation's own local state, and local state survives exactly as
-// long as the component stays mounted. React preserves it when the same element type sits
-// at the same position across renders, so the property that decides whether a draft
-// survives collapse is: IS THE CHILD RENDERED IN BOTH STATES, IN THE SAME PLACE?
-//
-// The panel used to render `{open ? children : null}`, which answered no. These two renders
-// answer it directly, against real markup rather than the source text.
-
-function askPanelMarkup(open: boolean): string {
-  return renderToStaticMarkup(
-    <ProjectBrainPanel open={open} onToggle={noop} messageCount={2}>
-      <ProjectBrainConversation projectId="proj-1" projectName="Apollo" />
-    </ProjectBrainPanel>
-  );
-}
-
-/** The conversation region's own attributes, and where the composer sits inside it. */
-function askPanelShape(open: boolean) {
-  const markup = askPanelMarkup(open);
-  const regionAt = markup.indexOf('data-testid="cc-project-brain-region"');
-  const regionOpenTag = regionAt < 0 ? null : markup.slice(markup.lastIndexOf("<div", regionAt), markup.indexOf(">", regionAt) + 1);
-  const composerAt = markup.indexOf("<textarea");
-  return {
-    regionPresent: regionAt >= 0,
-    regionHidden: regionOpenTag !== null && /\shidden\b/.test(regionOpenTag),
-    // The composer is rendered in BOTH states — that is what keeps the draft alive.
-    composerRendered: composerAt >= 0,
-    // ...and it is rendered INSIDE the region, so hiding the region hides it.
-    composerInsideRegion: regionAt >= 0 && composerAt > regionAt,
-    composerInstances: (markup.match(/<textarea/g) ?? []).length,
-    disclosureRendered: markup.includes("project-brain-disclosure"),
-    /** Bytes from the region's opening tag to the composer: the child's position, which must
-     *  be identical in both states for React to treat it as the same instance. */
-    composerOffsetInRegion: regionAt >= 0 && composerAt >= 0 ? composerAt - regionAt : null,
-  };
-}
 
 
 process.stdout.write(
   JSON.stringify(
     {
-      canvas: {
+      tools: {
         populated,
         populatedOrder: sectionOrder(populated),
         populatedText: text(populated),
@@ -804,16 +837,10 @@ process.stdout.write(
         whatChanged: section(populated, "cc-section-what-changed"),
         inProgress: section(populated, "cc-section-in-progress"),
         monitoring: section(populated, "cc-section-monitoring"),
-        projectBrain: section(populated, "cc-section-project-brain"),
-        header: section(populated, "cc-project-header"),
       },
-      askPanel: {
-        collapsed: askPanelShape(false),
-        expanded: askPanelShape(true),
-      },
-      chatExpanded: {
-        projectBrain: section(chatExpanded, "cc-section-project-brain"),
-        order: sectionOrder(chatExpanded),
+      conversation: {
+        closed: conversationShape(conversationClosed),
+        withAttention: conversationShape(conversationWithAttention),
       },
       emptyAttention: {
         needsYou: text(section(noAttention, "cc-section-needs-you")),
@@ -832,17 +859,7 @@ process.stdout.write(
         needsYou: text(section(readFailed, "cc-section-needs-you")),
         whatChanged: text(section(readFailed, "cc-section-what-changed")),
         monitoring: text(section(readFailed, "cc-section-monitoring")),
-        header: text(section(readFailed, "cc-project-header")),
-      },
-      screen: {
-        order: sectionOrder(screen),
-        mainOrder: sectionOrder(mainRegion),
-        mainHasCanvas: mainRegion.includes('data-testid="command-center-canvas"'),
-        canvasCount: (screen.match(/data-testid="command-center-canvas"/g) ?? []).length,
-        needsYouCount: (screen.match(/data-testid="cc-section-needs-you"/g) ?? []).length,
-        primarySurface: /data-primary-surface="([A-Z_]+)"/.exec(screen)?.[1] ?? null,
-        chatRole: /data-chat-role="([A-Z_]+)"/.exec(screen)?.[1] ?? null,
-        headerBeforeCanvasBody: screen.indexOf('data-testid="cc-project-header"') < screen.indexOf('data-testid="cc-section-needs-you"'),
+        headingCount: /Needs your attention\s*<\/h2>\s*<span[^>]*>(\d+)<\/span>/.exec(section(readFailed, "cc-section-needs-you"))?.[1] ?? null,
       },
       readModels: {
         changes: deriveWhatChanged(populatedSummary, NOW),
@@ -917,15 +934,7 @@ process.stdout.write(
         futureCaptureLatest: latestOperationalActivityAt(futureCaptureSummary),
         fetchedButEmptyLatest: latestOperationalActivityAt(fetchedButEmptySummary),
         renderedHeader: text(freshnessHeader),
-        rawInputCaptureHeader: text(
-          section(
-            renderCanvas(rawInputCaptureSummary, {
-              lastUpdatedLabel: deriveLastUpdatedLabel(rawInputCaptureSummary),
-              needsYouCount: 0,
-            }),
-            "cc-project-header"
-          )
-        ),
+        rawInputCaptureHeader: text(renderToStaticMarkup(<LastUpdatedNote label={deriveLastUpdatedLabel(rawInputCaptureSummary)} />)),
       },
       clockSkew: {
         serverGeneratedAt: SKEW_SERVER_GENERATED_AT,
@@ -938,15 +947,7 @@ process.stdout.write(
         // ten-minute-fast browser cannot turn "2 minutes ago" into "12 minutes ago".
         pastLatest: latestOperationalActivityAt(skewPastSummary),
         pastLabel: deriveLastUpdatedLabel(skewPastSummary),
-        pastHeader: text(
-          section(
-            renderCanvas(skewPastSummary, {
-              lastUpdatedLabel: deriveLastUpdatedLabel(skewPastSummary),
-              needsYouCount: 0,
-            }),
-            "cc-project-header"
-          )
-        ),
+        pastHeader: text(renderToStaticMarkup(<LastUpdatedNote label={deriveLastUpdatedLabel(skewPastSummary)} />)),
         // No trustworthy server reading: refuse to answer rather than answer with the browser's.
         noAnchorCeiling: serverActivityCeiling(noServerAnchorSummary),
         noAnchorLatest: latestOperationalActivityAt(noServerAnchorSummary),
@@ -957,7 +958,7 @@ process.stdout.write(
         emptyWindowSummary: deriveMonitoring(noSignalsSummary),
         panelText: text(section(populated, "cc-section-monitoring")),
         emptyWindowPanelText: text(
-          section(renderCanvas(noSignalsSummary), "cc-section-monitoring")
+          section(renderTools(noSignalsSummary), "cc-section-monitoring")
         ),
         scopeNotePresent: populated.includes('data-testid="cc-monitoring-scope"'),
       },

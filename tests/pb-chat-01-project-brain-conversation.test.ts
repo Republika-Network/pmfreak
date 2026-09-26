@@ -912,21 +912,33 @@ test("J1: no customer UI calls the retired deterministic chat route; the slash m
 });
 
 test("J2: the Command Center hosts ONE Project Brain conversation, keyed by the active project", () => {
+  // CHAT-SHELL-01: the ONE conversation moved out of the Command Center and became
+  // the canonical project route's primary surface. It is mounted in exactly one
+  // place in the product, and that host is keyed by the project it renders.
+  const mounts = walk("src")
+    .filter((file) => file.endsWith(".tsx"))
+    .filter((file) => /<ProjectBrainConversation\b/.test(code(file)));
+  assert.deepEqual(mounts, ["src/components/pmfreak/conversation-shell/project-conversation-view.tsx"]);
   const layout = read("src/modules/workspace/screens/command-center/command-center-layout.tsx");
-  assert.equal((layout.match(/<ProjectBrainConversation/g) ?? []).length, 1);
-  assert.match(layout, /key=\{selectedProject\.id\}\s*\n\s*projectId=\{selectedProject\.id\}/);
+  assert.equal((layout.match(/<ProjectBrainConversation/g) ?? []).length, 0);
+  const view = read("src/components/pmfreak/conversation-shell/project-conversation-view.tsx");
+  assert.match(view, /<ProjectBrainConversation projectId=\{project\.id\} projectName=\{project\.name\} variant="light" layout="surface" \/>/);
+  assert.match(read("src/app/(protected)/workspaces/[workspaceId]/projects/[projectId]/page.tsx"), /<ProjectConversationView\s*\n\s*key=\{project\.id\}/);
   const component = code("src/components/pmfreak/project-brain/project-brain-conversation.tsx");
   assert.match(component, /\/api\/projects\/\$\{encodeURIComponent\(projectId\)\}\/brain\/turns/);
   assert.match(component, /\}, \[projectId\]\);/, "the thread reloads whenever the project changes");
   assert.doesNotMatch(component, /type="file"|onPaste|onDrop|attachment/i, "no attachments in PB-CHAT-01");
-  // The canonical Project Command Center mounts the same component (same thread).
+  // The Project Command Center projection no longer embeds a second copy; it links
+  // back to the conversation instead.
   const canonical = read("src/app/(protected)/workspaces/[workspaceId]/projects/[projectId]/command-center/page.tsx");
-  assert.match(canonical, /<ProjectBrainConversation projectId=\{project\.id\}/);
+  assert.doesNotMatch(canonical, /<ProjectBrainConversation/);
+  assert.match(canonical, /href=\{projectHomePath\(workspaceId, project\.id\)\}/);
 });
 
 test("K1: /projects/[id]/chat redirects to the canonical Project Command Center; no second chat UI remains", () => {
+  // CHAT-SHELL-01: the conversation's home is now the canonical project route itself.
   const legacy = code("src/app/(protected)/projects/[id]/chat/page.tsx");
-  assert.match(legacy, /redirect\(projectCommandCenterPath\(project\.workspace_id, project\.id\)\)/);
+  assert.match(legacy, /redirect\(projectHomePath\(project\.workspace_id, project\.id\)\)/);
   assert.doesNotMatch(legacy, /ContextChatPanel/);
   assert.doesNotMatch(read("src/components/pmfreak/projects/project-tab-nav.tsx"), /label: "Chat"/);
   const contextChat = read("src/app/api/context-chat/route.ts");

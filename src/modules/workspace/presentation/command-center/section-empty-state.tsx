@@ -16,15 +16,15 @@ export function SectionEmptyState({
   note?: string | null;
 }) {
   return (
-    <div className="mt-2 rounded-xl border border-dashed border-white/10 bg-white/[0.02] px-3 py-3">
-      <p className="text-sm font-medium text-zinc-300">{title}</p>
-      <p className="mt-1 text-xs leading-relaxed text-zinc-500">{description}</p>
-      {note && <p className="mt-2 text-xs leading-relaxed text-zinc-500">{note}</p>}
+    <div className="mt-2 rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-3">
+      <p className="text-sm font-medium text-slate-700">{title}</p>
+      <p className="mt-1 text-xs leading-relaxed text-slate-500">{description}</p>
+      {note && <p className="mt-2 text-xs leading-relaxed text-slate-500">{note}</p>}
       {ctaLabel && onCta && (
         <button
           type="button"
           onClick={onCta}
-          className="mt-2.5 rounded-lg border border-sky-500/25 bg-sky-500/10 px-2.5 py-1.5 text-xs font-medium text-sky-300 transition hover:bg-sky-500/15"
+          className="mt-2.5 rounded-lg border border-sky-500/25 bg-sky-500/10 px-2.5 py-1.5 text-xs font-medium text-sky-800 transition hover:bg-sky-500/15"
         >
           {ctaLabel}
         </button>
@@ -35,5 +35,5 @@ export function SectionEmptyState({
 
 /** Muted placeholder while a section's real data is still loading. */
 export function SectionLoadingState({ label }: { label: string }) {
-  return <p className="mt-2 rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2.5 text-xs text-zinc-500">{label}</p>;
+  return <p className="mt-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-500">{label}</p>;
 }

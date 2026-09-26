@@ -1,9 +1,19 @@
 import Link from "next/link";
-import { projectHomePath } from "@/lib/projects/project-paths";
+import { projectHomePath, projectOverviewPath } from "@/lib/projects/project-paths";
 import { projectCommandCenterPath } from "@/lib/projects/project-command-center-paths";
 
 /**
- * Project section navigation. The project opens on Overview; Project Brain, the
+ * Project section navigation, for the project's secondary screens.
+ *
+ * CHAT-SHELL-01: the project opens on its conversation — Project Brain, the
+ * family root — and the first tab returns there. Overview is the project's
+ * details screen, which moved from the root to `/overview` unchanged. The
+ * "Execution" tab still points at `/command-center?projectId=`, whose resolver
+ * now lands on this project's conversation with its operational tools open.
+ *
+ * What follows is the strip's earlier record.
+ *
+ * The project opens on Overview; Project Brain, the
  * project's conversation, lives inside the Project Command Center. Sections that already exist as
  * workspace surfaces are reused via ?projectId= links rather than rebuilt.
  *
@@ -60,10 +70,11 @@ export function ProjectTabNav({
    */
   workspaceId: string;
   projectId: string;
-  active: "overview" | "command-center" | "settings";
+  active: "conversation" | "overview" | "command-center" | "settings";
 }) {
   const tabs: { label: string; href: string; key?: string }[] = [
-    { label: "Overview", href: projectHomePath(workspaceId, projectId), key: "overview" },
+    { label: "Project Brain", href: projectHomePath(workspaceId, projectId), key: "conversation" },
+    { label: "Overview", href: projectOverviewPath(workspaceId, projectId), key: "overview" },
     { label: "Project Command Center", href: projectCommandCenterPath(workspaceId, projectId), key: "command-center" },
     { label: "Execution", href: `/command-center?projectId=${projectId}` },
     { label: "Timeline", href: `/dashboard?projectId=${projectId}` },

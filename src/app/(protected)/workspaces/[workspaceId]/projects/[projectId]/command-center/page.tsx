@@ -6,7 +6,6 @@ import { resolveRoutedProject } from "@/lib/projects/routed-project";
 import { ProjectArchivedNotice, ProjectNotAvailable } from "@/components/pmfreak/projects/project-route-states";
 import { ProjectTabNav } from "@/components/pmfreak/projects/project-tab-nav";
 import { SupportingRaidEvidencePanel } from "@/components/pmfreak/projects/supporting-raid-evidence-panel";
-import { ProjectBrainConversation } from "@/components/pmfreak/project-brain/project-brain-conversation";
 import { projectHomePath } from "@/lib/projects/project-paths";
 import {
   projectCommandCenterBreadcrumb,
@@ -103,6 +102,14 @@ export const dynamic = "force-dynamic";
  *   denied   — absent, deleted, unauthorized, or an ancestry mismatch. One
  *              indistinguishable reply, so the route cannot be used to probe
  *              which project ids exist (§7).
+ *
+ * CHAT-SHELL-01 — A SECONDARY SURFACE NOW
+ * -------------------------------------
+ * The project's primary experience is its conversation, at the family root.
+ * This screen stays as the project's read-only operational overview — the four
+ * zones below, unchanged — reachable from the conversation's Project tool and
+ * the tab strip. It no longer embeds Project Brain: the conversation has one
+ * home, and a link back to it replaces the second copy.
  *
  * SLICE 1 IS READ-ONLY
  * --------------------
@@ -693,21 +700,23 @@ export default async function ProjectCommandCenterPage({
       {isArchived ? <ProjectArchivedNotice archived={access.archived} /> : null}
 
       {/*
-        PB-CHAT-01 — Project Brain, this project's ONE persisted conversation. The
-        same component and the same thread as the Command Center's Project Brain
-        panel: it loads and posts only through /api/projects/[id]/brain/turns,
-        which derives the workspace from the project row and re-authorizes every
-        call. It is a client island; nothing here passes project data into it.
+        CHAT-SHELL-01 — this projection no longer embeds Project Brain. The
+        project's ONE persisted conversation is the primary surface of the
+        canonical project route, where these same zones' live counterparts sit
+        in the tool rail beside it. Rendering a second copy here would give the
+        conversation two homes again; this link is the way back to it.
       */}
-      <section aria-labelledby="project-brain-heading" data-zone="project-brain" className="rounded-3xl border border-slate-200 bg-white">
-        <div className="px-5 pt-5">
-          <h2 id="project-brain-heading" className="text-lg font-semibold text-slate-900">Project Brain</h2>
-          <p className="mt-1 text-xs text-slate-500">Ask about this project. Answers are written from this project&apos;s records and conversation; listed claims show the records they cite.</p>
-        </div>
-        <div className="h-[480px] max-h-[70vh]">
-          <ProjectBrainConversation projectId={project.id} projectName={project.name} variant="light" />
-        </div>
-      </section>
+      <Link
+        href={projectHomePath(workspaceId, project.id)}
+        data-zone="project-brain-link"
+        className="flex items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white px-5 py-4 transition hover:border-slate-300 hover:bg-slate-50"
+      >
+        <span>
+          <span className="block text-sm font-semibold text-slate-900">Ask Project Brain about {project.name}</span>
+          <span className="mt-0.5 block text-xs text-slate-500">Continue this project&apos;s conversation, with these tools beside it.</span>
+        </span>
+        <span aria-hidden className="text-slate-400">→</span>
+      </Link>
 
       {/* ── Zone 1 ─────────────────────────────────────────────────────────── */}
       <Zone

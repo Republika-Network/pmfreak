@@ -33,7 +33,13 @@ test("the pure chat seam calls runConversationalBrainGateway, not a direct playb
 test("command-center-layout no longer calls the deterministic gateway (PB-CHAT-01)", () => {
   assert.doesNotMatch(layout, /still learning to answer open-ended questions/);
   assert.doesNotMatch(layout, /postConversationMessage|conversationResultToAssistantMessage|\/api\/command-center\/chat/);
-  assert.match(layout, /<ProjectBrainConversation/);
+  // CHAT-SHELL-01: Project Brain is no longer hosted by the Command Center at all — it
+  // is the project conversation surface, and the operations inspector sits beside it.
+  assert.doesNotMatch(layout, /<ProjectBrainConversation/);
+  assert.match(
+    fs.readFileSync("src/components/pmfreak/conversation-shell/project-conversation-view.tsx", "utf8"),
+    /<ProjectBrainConversation/,
+  );
   // The client-side gateway adapter and the feed it rendered are gone.
   assert.equal(fs.existsSync("src/modules/workspace/presentation/command-center/conversation-data.ts"), false);
   assert.equal(fs.existsSync("src/modules/workspace/presentation/command-center/command-feed.tsx"), false);

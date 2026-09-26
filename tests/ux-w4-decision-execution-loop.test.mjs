@@ -889,10 +889,13 @@ test("N3 — the loop indicator is an ordered list, and never nested inside a bu
 });
 
 test("M — the queue renders one tree, so no second divergent truth exists", () => {
-  const source = read("src/modules/workspace/presentation/command-center/command-center-canvas.tsx");
-  // One ExecutionQueue in the composition; the layout places it responsively rather than
-  // rendering a separate mobile copy with its own props.
+  // CHAT-SHELL-01: the queue is the "In progress" tool of the project conversation's
+  // inspector — ONE element at every width (inline beside the conversation on a wide
+  // screen, a sheet below that), never a separate mobile copy with its own props.
+  const source = read("src/modules/workspace/screens/command-center/command-center-layout.tsx");
   assert.equal((source.match(/<ExecutionQueue/g) ?? []).length, 1);
+  const inspector = read("src/components/pmfreak/conversation-shell/operational-inspector.tsx");
+  assert.equal((inspector.match(/<aside/g) ?? []).length, 1, "one inspector element at every breakpoint");
 });
 
 // ── Customer language ────────────────────────────────────────────────────────
@@ -973,15 +976,21 @@ test("the human phase is never persisted or sent to a write path", () => {
 });
 
 test("W3's frozen contracts survive: attention stays the primary surface", () => {
-  const canvas = read("src/modules/workspace/presentation/command-center/command-center-canvas.tsx");
-  assert.match(canvas, /data-primary-surface="NEEDS_YOU"/);
-  // PB-CHAT-01: the conversation became Project Brain; attention is still the primary surface.
-  assert.match(canvas, /data-chat-role="PROJECT_BRAIN"/);
-  // Needs You is still first in the document, ahead of In Progress.
-  assert.ok(
-    canvas.indexOf("<NeedsYouQueue") < canvas.indexOf("<ExecutionQueue"),
-    "attention must remain ahead of execution in DOM order",
-  );
+  // CHAT-SHELL-01 deliberately SUPERSEDES W2's "attention is the primary surface":
+  // the project's primary surface is now its Project Brain conversation, and the
+  // Command Center's sections are tools beside it. What survives of W3's contract is
+  // attention's PRIORITY among those tools: Needs You is the first tool, the one the
+  // Tools button opens by default, and the one the Command Center hand-off opens.
+  const tools = read("src/components/pmfreak/conversation-shell/operational-tools.ts");
+  const view = read("src/components/pmfreak/conversation-shell/project-conversation-view.tsx");
+  const handoff = read("src/app/(protected)/workspaces/[workspaceId]/command-center/page.tsx");
+  const firstTool = tools.slice(tools.indexOf("PROJECT_TOOLS: ProjectToolDefinition[] = ["));
+  assert.ok(firstTool.indexOf('key: "attention"') < firstTool.indexOf('key: "execution"'), "Needs You leads the tools");
+  assert.match(view, /switchTool\(lastOperationalTool \?\? "attention"\)/);
+  assert.match(handoff, /\?tool=attention`/);
+  // And within the operations component, Needs You still precedes In Progress.
+  const layout = read("src/modules/workspace/screens/command-center/command-center-layout.tsx");
+  assert.ok(layout.indexOf("<NeedsYouQueue") < layout.indexOf("<ExecutionQueue"), "attention must remain ahead of execution");
 });
 
 test("the post-decision handoff follows persisted state, and only terminal decisions", () => {

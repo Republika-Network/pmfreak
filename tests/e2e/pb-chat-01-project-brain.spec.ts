@@ -126,12 +126,13 @@ async function signIn(page: Page, email: string) {
   expect(page.url()).not.toContain("/login");
 }
 
-const commandCenter = (projectId: string) => `/workspaces/${t.main.workspaceId}/command-center?projectId=${projectId}`;
+// CHAT-SHELL-01: the project's conversation IS the canonical project route.
+const projectConversation = (projectId: string) => `/workspaces/${t.main.workspaceId}/projects/${projectId}`;
 const brain = (page: Page) => page.getByTestId("project-brain-conversation").first();
 
 async function openBrain(page: Page, projectId: string) {
-  await page.goto(commandCenter(projectId));
-  await expect(page.getByTestId("cc-section-project-brain")).toBeVisible();
+  await page.goto(projectConversation(projectId));
+  await expect(page.getByTestId("project-conversation-center")).toBeVisible();
   await expect(brain(page)).toHaveAttribute("data-project-id", projectId);
   await expect(brain(page).getByText(/Loading this project/)).toHaveCount(0, { timeout: 45_000 });
 }
@@ -218,7 +219,9 @@ test("SIT-H: project switching isolates threads and records; another tenant's pr
   await signIn(page, t.main.email);
   await openBrain(page, t.main.projectB);
   await expect(brain(page).getByTestId("project-brain-user-message")).toHaveCount(0);
-  await expect(brain(page).getByText(/Ask Project Brain about Bravo/)).toBeVisible();
+  // CHAT-SHELL-01: the full-surface empty state names the project above its invitation.
+  await expect(brain(page).getByTestId("project-brain-empty")).toContainText(/Bravo/);
+  await expect(brain(page).getByTestId("project-brain-empty")).toContainText("Ask Project Brain about this project");
   const reply = await ask(page, "Which risks are open?");
   const ids = await reply.locator("[data-source-id]").evaluateAll((nodes) => nodes.map((n) => n.getAttribute("data-source-id") ?? ""));
   for (const id of ids) {
@@ -299,8 +302,9 @@ test("Degraded: a provider failure is answered honestly in limited mode, never a
 test("Legacy: /projects/[id]/chat redirects to the canonical Project Command Center with the same thread", async ({ page }) => {
   await signIn(page, t.main.email);
   await page.goto(`/projects/${t.main.projectA}/chat`);
-  await page.waitForURL((url) => url.pathname === `/workspaces/${t.main.workspaceId}/projects/${t.main.projectA}/command-center`, { timeout: 45_000 });
-  await expect(page.getByRole("heading", { name: "Project Brain" })).toBeVisible();
+  // CHAT-SHELL-01: it lands on the canonical project conversation itself.
+  await page.waitForURL((url) => url.pathname === `/workspaces/${t.main.workspaceId}/projects/${t.main.projectA}`, { timeout: 45_000 });
+  await expect(brain(page)).toHaveAttribute("data-layout", "surface");
   await expect(brain(page).getByText("What is the current status of this project?")).toBeVisible({ timeout: 45_000 });
   await expect(page.getByRole("link", { name: "Chat", exact: true })).toHaveCount(0);
   await shot(page, "07-legacy-redirect-canonical");
