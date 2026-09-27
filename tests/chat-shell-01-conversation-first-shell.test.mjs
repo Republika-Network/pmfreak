@@ -454,10 +454,11 @@ test("the conversation route authorizes exactly as Project Home did — before a
 });
 
 test("the project_brain.converse boundary and the PB-CHAT API are not touched", { skip: BASE_REF ? false : "no origin/main in this checkout" }, () => {
+  // prompt.ts and turn-service.ts were frozen here for CHAT-SHELL-01 only; PB-REASON-01
+  // deliberately changes them (reasoning guidance, as_of date) and is pinned by its own
+  // suite. The route, entitlement and authorization boundary stay frozen.
   for (const file of [
     "src/app/api/projects/[id]/brain/turns/route.ts",
-    "src/lib/project-brain/conversation/prompt.ts",
-    "src/lib/project-brain/conversation/turn-service.ts",
     "src/lib/project-brain/conversation/generative-access.ts",
     "src/lib/aoc/runtime/governance-actions.ts",
     "src/lib/security/server-authorization.ts",

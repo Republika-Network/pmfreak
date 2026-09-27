@@ -50,7 +50,8 @@ export type ProjectBrainMessageView = {
     reason: string | null;
     /**
      * Some generated claims could not be fully linked to project records: a citation
-     * was rejected, a statement was downgraded, or a statement was dropped.
+     * was rejected, a statement was downgraded or dropped, or the answer named a
+     * reference (milestone code, PR number, percentage, …) no project record contains.
      */
     groundingAdjusted: boolean;
     /**
@@ -117,6 +118,7 @@ export function toProjectBrainMessageView(row: ContextMessageRow): ProjectBrainM
     Number(citations?.rejectedCitations ?? 0) > 0 ||
     Number(citations?.downgradedStatements ?? 0) > 0 ||
     Number(citations?.droppedStatements ?? 0) > 0 ||
+    Number(citations?.unsupportedReferences ?? 0) > 0 ||
     statements.some((s) => s.downgradedFrom);
   return {
     ...base,

@@ -38,6 +38,35 @@ export type ProjectBrainSourceFamily = (typeof PROJECT_BRAIN_SOURCE_FAMILIES)[nu
  */
 export type ProjectBrainTrust = "RECORD" | "SELF_REPORTED" | "DERIVED" | "UNVERIFIED";
 
+/**
+ * What a source says about time (PB-REASON-01), stated to the model as the `kind`
+ * attribute so an old plan cannot pass for the project's current position:
+ *   plan        setup answers — intentions, target dates, contractual milestones and
+ *               declarations typed when the project was created
+ *   state       records of what exists or happened — project, milestone and task
+ *               status, decisions, outcomes, evidence
+ *   assessment  judgements about the project — risks, issues, detector signals,
+ *               recommendations, proposed actions, discovery items
+ * Derived from the family alone (server-side, deterministic); never from content.
+ */
+export type ProjectBrainSourceKind = "plan" | "state" | "assessment";
+
+export const SOURCE_KIND_BY_FAMILY: Readonly<Record<ProjectBrainSourceFamily, ProjectBrainSourceKind>> = {
+  PROJECT: "state",
+  ONBOARDING: "plan",
+  EVIDENCE: "state",
+  SIGNAL: "assessment",
+  RISK: "assessment",
+  ISSUE: "assessment",
+  RECOMMENDATION: "assessment",
+  DECISION: "state",
+  ACTION: "assessment",
+  TASK: "state",
+  OUTCOME: "state",
+  MILESTONE: "state",
+  RAID_DISCOVERY: "assessment",
+};
+
 export type ProjectBrainContextSource = {
   /** Short per-turn citation handle ("S1"). The model cites these and nothing else. */
   alias: string;

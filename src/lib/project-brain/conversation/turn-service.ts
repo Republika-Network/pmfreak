@@ -166,7 +166,7 @@ async function generate(
         actorType: "user",
         dataSensitivity: "confidential",
         chainDepth: 0,
-        messages: buildProjectBrainMessages(context, userMessage.content),
+        messages: buildProjectBrainMessages(context, userMessage.content, { asOf: generatedAt }),
         responseFormat: { type: "json_schema", jsonSchema: PROJECT_BRAIN_OUTPUT_SCHEMA },
         temperature: PROJECT_BRAIN_INFERENCE.temperature,
         maxTokens: PROJECT_BRAIN_INFERENCE.maxTokens,
@@ -184,7 +184,7 @@ async function generate(
       }
       const parsed = parseProjectBrainModelOutput({ parsedJson: response.parsedJson, content: response.content });
       const grounded = parsed
-        ? groundProjectBrainOutput({ output: parsed, context, statementIdPrefix: userMessage.id, generatedAt })
+        ? groundProjectBrainOutput({ output: parsed, context, statementIdPrefix: userMessage.id, generatedAt, question: userMessage.content })
         : null;
       if (grounded?.ok) {
         generative = {
