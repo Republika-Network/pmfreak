@@ -121,6 +121,9 @@ const EPISTEMIC_BADGE: Record<string, string> = {
   UNKNOWN: "Not known yet",
 };
 
+/** PB-REASON-02: a claim resting on what someone said in this conversation — not on a record. */
+const REPORTED_IN_CONVERSATION_BADGE = "Reported in chat · not verified";
+
 const FAMILY_LABEL: Record<string, string> = {
   PROJECT: "Project",
   ONBOARDING: "Project setup",
@@ -181,9 +184,16 @@ function Statements({ statements, styles }: { statements: ProjectBrainStatementV
       <p className={`text-[11px] font-semibold uppercase tracking-[0.12em] ${styles.muted}`}>Claims about this project</p>
       <ul className="mt-1.5 space-y-1.5" data-testid="project-brain-statements">
         {statements.map((statement) => (
-          <li key={statement.id} className="text-xs leading-relaxed" data-epistemic-type={statement.epistemicType}>
+          <li
+            key={statement.id}
+            className="text-xs leading-relaxed"
+            data-epistemic-type={statement.epistemicType}
+            data-reported-in-conversation={statement.reportedTurnIds.length > 0 ? "true" : undefined}
+          >
             <span className={`mr-1.5 rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] ${styles.divider} ${styles.muted}`}>
-              {EPISTEMIC_BADGE[statement.epistemicType] ?? statement.epistemicLabel}
+              {statement.epistemicType === "REPORTED" && statement.reportedTurnIds.length > 0
+                ? REPORTED_IN_CONVERSATION_BADGE
+                : (EPISTEMIC_BADGE[statement.epistemicType] ?? statement.epistemicLabel)}
             </span>
             {statement.text}
           </li>

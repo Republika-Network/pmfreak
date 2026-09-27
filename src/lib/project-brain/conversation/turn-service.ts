@@ -35,6 +35,7 @@ import type { ProjectBrainContext, ProjectBrainHistoryMessage } from "./context-
 import { buildDegradedReply, type DegradedReason } from "./degraded";
 import { groundProjectBrainOutput, parseProjectBrainModelOutput, type CitationReport, type GroundedStatement } from "./output";
 import { buildProjectBrainMessages, PROJECT_BRAIN_OUTPUT_SCHEMA } from "./prompt";
+import { buildReportedContext } from "./reported-context";
 
 export const PROJECT_BRAIN_MODULE_ID = "project-brain";
 export const PROJECT_BRAIN_METADATA_VERSION = 1;
@@ -103,7 +104,8 @@ export type ProjectBrainReplyMetadata = {
     provider?: string;
     model?: string;
     citations?: CitationReport;
-    context: { sourceCount: number; truncated: boolean; unavailable: string[] };
+    /** reportCount (PB-REASON-02) is absent on older rows. */
+    context: { sourceCount: number; truncated: boolean; unavailable: string[]; reportCount?: number };
   };
 };
 
@@ -126,16 +128,27 @@ export function classifyInferenceFailure(error: unknown): DegradedReason {
   return "provider_error";
 }
 
-function historyFrom(messages: ContextMessageRow[], before: ContextMessageRow): ProjectBrainHistoryMessage[] {
+function historyFrom(messages: ContextMessageRow[], before: ContextMessageRow, userId: string): ProjectBrainHistoryMessage[] {
   // Messages strictly before this turn. A degraded reply is boilerplate about the
   // provider, not conversation, so it is left out when shaping history.
+  // PB-REASON-02: a user row keeps its id and, when it has an authenticated author
+  // (RLS: created_by_user_id = auth.uid()), who wrote it — only such a row can later
+  // become a report. Assistant rows never get an author.
   return messages
     .filter((m) => m.message_seq < before.message_seq && (m.role === "user" || m.role === "assistant") && m.brain_mode !== "degraded")
-    .map((m) => ({ role: m.role as "user" | "assistant", content: m.content, createdAt: m.created_at }));
+    .map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: m.content,
+      createdAt: m.created_at,
+      id: m.id,
+      ...(m.role === "user" && m.created_by_user_id
+        ? { author: m.created_by_user_id === userId ? ("you" as const) : ("another project member" as const) }
+        : {}),
+    }));
 }
 
 function contextSummary(context: ProjectBrainContext) {
-  return { sourceCount: context.sources.length, truncated: context.truncated, unavailable: [...context.unavailable] };
+  return { sourceCount: context.sources.length, truncated: context.truncated, unavailable: [...context.unavailable], reportCount: context.reports?.length ?? 0 };
 }
 
 async function generate(
@@ -146,8 +159,10 @@ async function generate(
   replayed: boolean,
 ): Promise<ProjectBrainTurnResult> {
   const { scope, store } = deps;
-  const history = historyFrom(await store.listMessages(conversation.id), userMessage);
-  const context = await deps.loadContext(history);
+  const history = historyFrom(await store.listMessages(conversation.id), userMessage, deps.userId);
+  // PB-REASON-02: the report map is built from the BOUNDED history the context
+  // kept, plus this turn — never from the loader, never from assistant rows.
+  const context = buildReportedContext(await deps.loadContext(history), { id: userMessage.id, createdAt: userMessage.created_at });
   const generatedAt = deps.now().toISOString();
 
   let generative: { content: string; metadata: ProjectBrainReplyMetadata } | null = null;

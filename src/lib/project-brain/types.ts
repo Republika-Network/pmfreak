@@ -76,6 +76,21 @@ export type ProjectBrainSourceReference = {
   projectId?: string;
 };
 
+/**
+ * PB-REASON-02 — provenance for a claim a HUMAN stated in the current Project
+ * Brain conversation. Deliberately NOT a `ProjectBrainSourceReference`: a chat
+ * turn is not evidence, not a source and not project state. It only records which
+ * authenticated user turn (context_messages.id) supports a REPORTED claim, when,
+ * and that a user — never the assistant — said it. It holds no message content.
+ */
+export type ProjectBrainReportReference = {
+  /** context_messages.id of the user turn that made the report. */
+  turnId: string;
+  createdAt: string;
+  /** Always "user": the app knows an authenticated user said it, not their project role. */
+  reportedBy: "user";
+};
+
 // ─── Uncertainty model ──────────────────────────────────────────────────────
 
 export type QualitativeConfidenceLevel = "high" | "medium" | "low" | "unknown";
@@ -120,6 +135,13 @@ export type ProjectBrainStatement = {
   text: string;
   confidence: ProjectBrainConfidence;
   sources: ProjectBrainSourceReference[];
+  /**
+   * PB-REASON-02: user turns in the current conversation that support this claim.
+   * Allowed on REPORTED (as its support, instead of or beside `sources`) and on
+   * RECOMMENDATION / ASSUMPTION / OPEN_QUESTION (as the basis they rely on) —
+   * never on FACT, INFERENCE, CONTRADICTION or UNKNOWN. Absent on older statements.
+   */
+  reports?: ProjectBrainReportReference[];
   /** REPORTED only: who reported it, when the reporter is known. */
   reportedBy?: string | null;
   /** INFERENCE only: the reasoning that connects the sources to the conclusion. */

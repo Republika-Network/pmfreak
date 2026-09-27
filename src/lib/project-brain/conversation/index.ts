@@ -11,6 +11,7 @@ export * from "./context-builder";
 export * from "./prompt";
 export * from "./output";
 export * from "./degraded";
+export * from "./reported-context";
 export * from "./turn-service";
 export * from "./transcript-view";
 export { insertProjectBrainReply } from "./assistant-message-writer";

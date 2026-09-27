@@ -34,6 +34,9 @@ const EPISTEMIC_TYPE_DEFINITION_BY_TYPE = new Map(
   EPISTEMIC_TYPE_DEFINITIONS.map((def) => [def.type, def]),
 );
 
+/** Types that may carry `reports` (see ProjectBrainStatement.reports). */
+const REPORT_BEARING_TYPES = new Set(["REPORTED", "RECOMMENDATION", "ASSUMPTION", "OPEN_QUESTION"]);
+
 function hasPrimarySource(sources: ProjectBrainSourceReference[]): boolean {
   return sources.some((source) => source.isPrimary);
 }
@@ -81,11 +84,31 @@ export function validateStatement(statement: ProjectBrainStatement): GuardrailRe
     failures.push({ code: "empty_statement_text", message: "A statement must have non-empty text." });
   }
 
-  if (statement.sources.length < definition.minSources) {
+  // PB-REASON-02: a human report from the current conversation is support ONLY
+  // for the types the constitution allows (REPORTED). It is never a source, and it
+  // never satisfies FACT/INFERENCE/CONTRADICTION's evidence requirement.
+  const reports = statement.reports ?? [];
+  const support = statement.sources.length + (definition.humanReportsCountAsSupport ? reports.length : 0);
+  if (support < definition.minSources) {
     failures.push({
       code: "insufficient_sources",
-      message: `${definition.label} statements require at least ${definition.minSources} source(s) (evidence_before_assertion); found ${statement.sources.length}.`,
+      message: `${definition.label} statements require at least ${definition.minSources} source(s)${definition.humanReportsCountAsSupport ? " or human report(s)" : ""} (evidence_before_assertion); found ${support}.`,
     });
+  }
+
+  if (reports.length > 0 && !REPORT_BEARING_TYPES.has(statement.epistemicType)) {
+    failures.push({
+      code: "reports_on_evidence_only_type",
+      message: `A ${definition.label} statement cannot rest on a conversation report — only REPORTED, RECOMMENDATION, ASSUMPTION and OPEN_QUESTION may carry reports.`,
+    });
+  }
+  for (const report of reports) {
+    if (!report.turnId?.trim() || report.reportedBy !== "user") {
+      failures.push({
+        code: "invalid_report_reference",
+        message: "A report reference must name the user turn it came from, and only a user can report — never the assistant.",
+      });
+    }
   }
 
   // Every source must be scoped to the same workspace/project as the statement.

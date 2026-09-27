@@ -30,6 +30,11 @@ export type ProjectBrainStatementView = {
   epistemicLabel: string;
   confidence: string;
   sourceIds: string[];
+  /**
+   * PB-REASON-02: ids of the user turns (context_messages.id) this claim rests on.
+   * Empty on older rows and on claims that rest on project records only.
+   */
+  reportedTurnIds: string[];
   downgradedFrom: EpistemicType | null;
 };
 
@@ -83,6 +88,9 @@ function statement(value: unknown): ProjectBrainStatementView | null {
   const confidence = text(record(s.confidence)?.level) ?? "unknown";
   const sources = Array.isArray(s.sources) ? s.sources.map(chip).filter((c): c is ProjectBrainSourceChip => c !== null) : [];
   const downgraded = text(s.downgradedFrom);
+  const reportedTurnIds = Array.isArray(s.reports)
+    ? s.reports.map((r) => text(record(r)?.turnId)).filter((id): id is string => Boolean(id))
+    : [];
   return {
     id: text(s.id) ?? "",
     text: body,
@@ -90,6 +98,7 @@ function statement(value: unknown): ProjectBrainStatementView | null {
     epistemicLabel: labelForEpistemicType(type as EpistemicType),
     confidence,
     sourceIds: sources.map((c) => c.id),
+    reportedTurnIds,
     downgradedFrom: downgraded && EPISTEMIC_SET.has(downgraded) ? (downgraded as EpistemicType) : null,
   };
 }
@@ -116,6 +125,7 @@ export function toProjectBrainMessageView(row: ContextMessageRow): ProjectBrainM
   const citations = record(meta?.citations);
   const groundingAdjusted =
     Number(citations?.rejectedCitations ?? 0) > 0 ||
+    Number(citations?.rejectedReports ?? 0) > 0 ||
     Number(citations?.downgradedStatements ?? 0) > 0 ||
     Number(citations?.droppedStatements ?? 0) > 0 ||
     Number(citations?.unsupportedReferences ?? 0) > 0 ||

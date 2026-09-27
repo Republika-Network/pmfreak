@@ -2,7 +2,7 @@
 // Project Brain conversation — context vocabulary (PB-CHAT-01)
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { ProjectBrainSourceReference, ProjectContextScope } from "../types";
+import type { ProjectBrainReportReference, ProjectBrainSourceReference, ProjectContextScope } from "../types";
 
 /**
  * What kind of project record a context source is. The model sees this as the
@@ -83,6 +83,30 @@ export type ProjectBrainHistoryMessage = {
   role: "user" | "assistant";
   content: string;
   createdAt: string;
+  /** context_messages.id — set by the turn service; absent in older/synthetic history. */
+  id?: string;
+  /**
+   * PB-REASON-02, user turns only: who wrote it relative to the requesting user.
+   * Set by the turn service from `created_by_user_id`; a user row without an
+   * authenticated author (or any assistant row) has none and can never be a report.
+   */
+  author?: "you" | "another project member";
+};
+
+/**
+ * PB-REASON-02 — a human user turn the model may use as REPORTED working context.
+ * NOT a source: it has its own alias namespace (R1, R2, …, never S*), it is never a
+ * `ProjectBrainSourceReference`, and it is built only from authenticated USER turns
+ * of THIS conversation inside the bounded history window, plus the current turn.
+ * Its content is not repeated to the model: the alias is an attribute on the turn.
+ */
+export type ProjectBrainContextReport = {
+  /** Per-turn report handle ("R1"). */
+  alias: string;
+  author: "you" | "another project member";
+  /** True for the message being answered right now. */
+  current: boolean;
+  reference: ProjectBrainReportReference;
 };
 
 export type ProjectBrainContext = {
@@ -94,4 +118,9 @@ export type ProjectBrainContext = {
   /** True when any family or the total budget dropped records. */
   truncated: boolean;
   history: ProjectBrainHistoryMessage[];
+  /**
+   * PB-REASON-02: the report map for THIS turn (see reported-context.ts). Absent
+   * means no conversational report can support any claim.
+   */
+  reports?: ProjectBrainContextReport[];
 };

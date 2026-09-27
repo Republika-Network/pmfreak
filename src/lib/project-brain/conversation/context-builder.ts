@@ -383,6 +383,8 @@ function boundHistory(history: ProjectBrainHistoryMessage[]): ProjectBrainHistor
     role: message.role,
     createdAt: message.createdAt,
     content: clip(message.content, MAX_HISTORY_MESSAGE_CHARS),
+    ...(message.id ? { id: message.id } : {}),
+    ...(message.role === "user" && message.author ? { author: message.author } : {}),
   }));
 }
 

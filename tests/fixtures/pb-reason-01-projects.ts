@@ -28,13 +28,13 @@ export const FIXTURE_NOW = new Date("2026-09-26T12:00:00.000Z");
 type Row = Record<string, unknown>;
 let counter = 0;
 const id = (prefix: string) => `${prefix}${String(++counter).padStart(7, "0")}-0000-4000-8000-000000000000`;
-const row = (extra: Row, projectId = PROJECT): Row => ({ id: id("f"), workspace_id: WS, project_id: projectId, ...extra });
+export const row = (extra: Row, projectId = PROJECT): Row => ({ id: id("f"), workspace_id: WS, project_id: projectId, ...extra });
 
 /** Setup-time answers as typed on 2026-06-01: a PLAN, including the stale step. */
 const STALE_SETUP_PLAN =
   "MPP-01 payments core; architecture approval after MPP-01; MPP-02 merchant onboarding; MPP-03 settlement reconciliation; MPP-04 payouts; go-live by 2026-12-15";
 
-function base(input: {
+export function base(input: {
   name: string;
   description: string;
   contractualMilestones?: string;

@@ -309,3 +309,57 @@ test("Legacy: /projects/[id]/chat redirects to the canonical Project Command Cen
   await expect(page.getByRole("link", { name: "Chat", exact: true })).toHaveCount(0);
   await shot(page, "07-legacy-redirect-canonical");
 });
+
+// ─── PB-REASON-02: reported working context ─────────────────────────────────
+
+test("SIT-R: a recent user report is used as provisional working context — never canonical — persists, and never leaks to another project", async ({ page }) => {
+  await signIn(page, t.main.email);
+  await openBrain(page, t.main.projectA);
+  const baseline = await stateCounts(t.main.workspaceId);
+  const callsBefore = stubCalls();
+
+  const update = "P13 was merged today and P14 is the next milestone.";
+  const first = await ask(page, update);
+  await expect(first).toHaveAttribute("data-mode", "generative");
+  await expect(first).toContainText("Based on your update");
+  const reported = first.locator('[data-epistemic-type="REPORTED"]');
+  await expect(reported).toHaveAttribute("data-reported-in-conversation", "true");
+  await expect(reported).toContainText("Reported in chat · not verified");
+  // A report is never shown as citing project records, and the invented R999 was stripped.
+  await expect(reported).not.toContainText("Cites project records");
+  await expect(first.locator('[data-epistemic-type="FACT"]')).toHaveCount(0);
+  await expect(first.getByTestId("project-brain-grounding-notice")).toBeVisible();
+
+  const next = await ask(page, "What should I work on next?");
+  await expect(next).toHaveAttribute("data-mode", "generative");
+  // The answer rests on the EARLIER turn's report, in the same thread.
+  await expect(next).toContainText("P13 was merged today and P14 is the next milestone");
+  await expect(next.locator('[data-epistemic-type="REPORTED"]')).toContainText("Reported in chat · not verified");
+  const transcript = await (await page.request.get(`/api/projects/${t.main.projectA}/brain/turns`)).json();
+  type View = { id: string; role: string; content: string; brain: { statements: Array<{ epistemicType: string; reportedTurnIds: string[] }> } | null };
+  const updateTurn = (transcript.messages as View[]).find((m) => m.role === "user" && m.content === update)!;
+  const lastReply = (transcript.messages as View[]).filter((m) => m.role === "assistant").at(-1)!;
+  const reportedClaim = lastReply.brain!.statements.find((s) => s.epistemicType === "REPORTED")!;
+  expect(reportedClaim.reportedTurnIds).toEqual([updateTurn.id]);
+  expect(lastReply.brain!.statements.some((s) => s.epistemicType === "FACT" && s.reportedTurnIds.length > 0)).toBe(false);
+  if (stubLog) expect(stubCalls()).toBe(callsBefore + 2);
+
+  const conversations = must(await admin.from("context_conversations").select("id").eq("project_id", t.main.projectA).eq("context_type", "project"), "conversations");
+  expect(conversations.length).toBe(1);
+  expect(await stateCounts(t.main.workspaceId)).toEqual(baseline);
+  await shot(page, "08-reported-working-context");
+
+  await page.reload();
+  await expect(brain(page).getByTestId("project-brain-user-message").filter({ hasText: update })).toBeVisible({ timeout: 45_000 });
+  await expect(brain(page).locator('[data-reported-in-conversation="true"]').first()).toBeVisible();
+
+  // Project B: Project A's report must not exist here at all.
+  await openBrain(page, t.main.projectB);
+  const other = await ask(page, "What should I work on next?");
+  await expect(other).toHaveAttribute("data-mode", "generative");
+  await expect(other).not.toContainText("P13");
+  await expect(other.locator('[data-reported-in-conversation="true"]')).toHaveCount(0);
+  await expect(brain(page).getByText("P13 was merged today")).toHaveCount(0);
+  expect(await stateCounts(t.main.workspaceId)).toEqual(baseline);
+  await shot(page, "09-reported-context-isolated");
+});

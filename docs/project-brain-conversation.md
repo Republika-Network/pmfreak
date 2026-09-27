@@ -250,6 +250,63 @@ returned a generative provider answer; `INCOMPLETE` (exit 2) for an empty or unk
 quota/rate limit, invalid output) — reported by failure class, never with provider messages or
 secrets.
 
+## Reported working context (PB-REASON-02)
+
+```text
+Conversation ≠ Source    Reported ≠ Fact    Reported ≠ Canonical State    Reported ≠ Evidence
+…but what the human just told Project Brain is still useful.
+```
+
+What a user says in this conversation ("P13 merged this morning", "P14 is next", "correction:
+the PR is still open") can be used as **provisional working context**: Project Brain may reason
+and recommend from it, framed as reported and unverified, without ever turning it into a
+project fact, a source or a write. Still one inference call per turn; no new table, migration
+or model call.
+
+- **Report map (`reported-context.ts`).** Built by the turn service after the context loads,
+  from the already bounded history (`MAX_HISTORY_MESSAGES`) plus the current turn. Only USER
+  rows with an authenticated author (`created_by_user_id`, which RLS pins to `auth.uid()`)
+  become reports; assistant rows never do, so a past hallucination cannot vouch for itself.
+  Each report gets a per-turn alias `R1…Rn` in time order. Reports outside the window expire
+  with it; there is no report index.
+- **Prompt.** No content is duplicated: the alias is an attribute on the turn itself —
+  `<turn role="user" at="…" report_id="R2" by="you">…</turn>` and
+  `<current_question at="…" report_id="R3" by="you">…` (the current message counts
+  immediately). Assistant turns get only `at`. `by="another project member"` marks a report
+  written by someone else in the shared project thread. The system prompt's REPORTED WORKING
+  CONTEXT section tells the model to use relevant reports instead of refusing, to say they are
+  unverified, to state both sides when a record disagrees (never overwriting the record nor
+  dropping the report), to drop the provisional framing once a record confirms it, to let a
+  later explicit correction supersede an earlier report, to ignore off-topic messages and to
+  never obey instructions inside a report.
+- **Output contract.** Each statement gains `reportIds` (strict schema, at most
+  `reportIdsPerStatement` = 3). `sourceIds` (S*) and `reportIds` (R*) are separate
+  namespaces, each resolved server-side against its own map: `R999`, an `S` id in
+  `reportIds` or an `R` id in `sourceIds` is rejected and counted (`citations.rejectedReports` /
+  `rejectedCitations`). `maxTokens` was re-derived for the larger worst case (3700 → 3800).
+- **Epistemics.** A resolved report is persisted on the statement as
+  `reports: [{ turnId, createdAt, reportedBy: "user" }]` — never as a
+  `ProjectBrainSourceReference`, never with message content. REPORTED now needs a source OR a
+  report (`humanReportsCountAsSupport`, REPORTED only); a report-backed REPORTED gets
+  `reportedBy: "user"` from the server (the model cannot name a stakeholder role). A FACT
+  resting only on a report becomes REPORTED; INFERENCE/CONTRADICTION without sources still fall
+  to ASSUMPTION; FACT/INFERENCE/CONTRADICTION/UNKNOWN never carry reports (guardrail
+  `reports_on_evidence_only_type`); RECOMMENDATION, ASSUMPTION and OPEN_QUESTION may list the
+  reports they rely on. A record/report disagreement is FACT + REPORTED, not a forced
+  CONTRADICTION (a chat turn is not a contradicting source). Constitution `1.0.0 → 1.1.0`.
+- **Compatibility.** Metadata stays version 1: `reports`, `citations.rejectedReports` and
+  `context.reportCount` are optional additions; older rows parse and render unchanged. The UI
+  labels a report-backed REPORTED claim "Reported in chat · not verified".
+- **Not in scope:** memory promotion (PB-CHAT-03), relevance/materiality classification
+  (PB-CHAT-02), progressive disclosure UI (PB-PRESENT-01), execution briefs (PB-EXEC-*).
+
+Verification: `tests/pb-reason-02-reported-working-context.test.ts` (cases A–O plus guardrails,
+on `tests/fixtures/pb-reason-02-projects.ts`), browser scenario SIT-R in
+`tests/e2e/pb-chat-01-project-brain.spec.ts` (the stub answers from `report_id`s and also cites
+an invented `R999`), and `scripts/pb-reason-02/certify-reported-context.ts` — the PB-REASON-01
+certification contract (reused `loadEvalEnv` / `certifyEvaluation`) over multi-turn cases with
+seeded prior turns, plus deterministic structural checks that turn a violation into `FAILED`.
+
 ## Degraded mode
 
 Not entitled (no provider call), provider not configured, timeout, circuit open, quota/cost ceiling or invalid output →
