@@ -270,9 +270,13 @@ export function requiredExecutionBriefMaxTokens(): number {
  *
  *   maxTokens    ≥ requiredExecutionBriefMaxTokens() (≈ 28.1k characters worst case
  *                → ≈ 11.25k tokens with the 3-chars/token floor and 1.2 margin)
- *   maxAttempts  1 — a brief is larger and slower; one attempt of ≤ 45 s keeps the
- *                whole call inside TURN_PENDING_WINDOW_MS, so a duplicate request can
- *                never mistake an in-flight brief for a dead one and call the model again.
+ *   maxAttempts  1 — a brief is larger and slower than an answer.
+ *
+ * The provider timeout alone does NOT bound the turn: the user row's age starts before
+ * history/context loading and target re-resolution, and after the call come parse,
+ * grounding, assembly, hashing, the credential scan and reply persistence. Pending and
+ * stale-recovery semantics for a brief therefore use EXECUTION_BRIEF_PENDING_WINDOW_MS
+ * (below), not the ordinary TURN_PENDING_WINDOW_MS.
  */
 export const EXECUTION_BRIEF_INFERENCE = {
   temperature: 0.2,
@@ -281,3 +285,52 @@ export const EXECUTION_BRIEF_INFERENCE = {
   maxAttempts: 1,
   retryDelayMs: 0,
 } as const;
+
+/**
+ * PB-EXEC-01 — the execution-brief pending window and inference lease (review P1-1).
+ *
+ *   window = pre-provider allowance        history, project context, reports, target
+ *                                          re-resolution (the same reads an answer does)
+ *          + provider timeout × attempts + retry delay
+ *          + post-provider allowance       parse, grounding, assembly, hashing, credential
+ *                                          scan, reply persistence (all local; no I/O but
+ *                                          one insert)
+ *          + margin                        clock skew between the server clock and the
+ *                                          database's created_at, GC/event-loop stalls
+ *
+ * Inference LEASE: a brief turn calls the provider only if the call can still end, with
+ * its post-provider allowance, before the window closes, measured from the lease anchor
+ * (the start of the request running the generation: for a first request that is no later
+ * than the user row's created_at; for a stale recovery, the recovery's own start). If slow pre-provider work has eaten the lease, the turn degrades
+ * ("timeout") WITHOUT calling the provider.
+ *
+ * Together: another instance treats the turn as stale only after the window, and by then
+ * the original request's provider call has either finished or been aborted by its timeout
+ * — so the two provider calls do not overlap, as long as clock skew and stalls stay inside
+ * the margin. This is NOT exactly-once: a process frozen longer than the margin, or a
+ * provider that bills a request after the client aborted, can still produce a second
+ * billed call; the reply's unique (turn, mode) index still keeps exactly one stored reply.
+ */
+export const EXECUTION_BRIEF_PENDING_BUDGET = {
+  preProviderAllowanceMs: 30_000,
+  postProviderAllowanceMs: 15_000,
+  marginMs: 30_000,
+} as const;
+
+export const EXECUTION_BRIEF_PENDING_WINDOW_MS =
+  EXECUTION_BRIEF_PENDING_BUDGET.preProviderAllowanceMs +
+  EXECUTION_BRIEF_INFERENCE.timeoutMs * EXECUTION_BRIEF_INFERENCE.maxAttempts +
+  EXECUTION_BRIEF_INFERENCE.retryDelayMs * Math.max(0, EXECUTION_BRIEF_INFERENCE.maxAttempts - 1) +
+  EXECUTION_BRIEF_PENDING_BUDGET.postProviderAllowanceMs +
+  EXECUTION_BRIEF_PENDING_BUDGET.marginMs;
+
+/** Time the provider call plus everything after it may take, which must fit in the remaining lease. */
+export const EXECUTION_BRIEF_PROVIDER_AND_POST_MS =
+  EXECUTION_BRIEF_INFERENCE.timeoutMs * EXECUTION_BRIEF_INFERENCE.maxAttempts +
+  EXECUTION_BRIEF_INFERENCE.retryDelayMs * Math.max(0, EXECUTION_BRIEF_INFERENCE.maxAttempts - 1) +
+  EXECUTION_BRIEF_PENDING_BUDGET.postProviderAllowanceMs;
+
+/** May a brief turn still START its provider call, given its lease anchor and the current time? */
+export function executionBriefLeaseAllowsInference(anchorMs: number, nowMs: number): boolean {
+  return nowMs - anchorMs + EXECUTION_BRIEF_PROVIDER_AND_POST_MS <= EXECUTION_BRIEF_PENDING_WINDOW_MS - EXECUTION_BRIEF_PENDING_BUDGET.marginMs;
+}

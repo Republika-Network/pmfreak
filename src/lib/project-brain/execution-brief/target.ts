@@ -163,7 +163,23 @@ export function classifyComposerRequest(text: string):
 
 // ─── Persisted statements ────────────────────────────────────────────────────
 
-type PersistedStatement = { id: string; epistemicType: string; text: string; scope: { workspaceId: string; projectId: string } | null };
+type PersistedStatement = {
+  id: string;
+  epistemicType: string;
+  text: string;
+  scope: { workspaceId: string; projectId: string } | null;
+  /** Stable ids of the sources the statement cited when it was persisted. */
+  sourceIds: string[];
+  /** context_messages ids of the user reports the statement cited. */
+  reportedTurnIds: string[];
+};
+
+/**
+ * Deterministic support anchors of a selected prior Recommendation (review P1-2): the
+ * STABLE ids it cited when it was persisted. Identification only — never a source, never
+ * evidence, never an alias. Used to prove the brief is still about the selected work.
+ */
+export type RecommendationAnchors = { sourceIds: string[]; reportedTurnIds: string[] };
 
 function statementsOf(row: ContextMessageRow): PersistedStatement[] | null {
   const meta = record(record(row.metadata)?.projectBrain);
@@ -173,7 +189,11 @@ function statementsOf(row: ContextMessageRow): PersistedStatement[] | null {
     const s = record(value);
     if (!s || typeof s.id !== "string" || typeof s.epistemicType !== "string" || typeof s.text !== "string") continue;
     const scope = record(s.scope);
+    const ids = (list: unknown, key: string) =>
+      Array.isArray(list) ? [...new Set(list.map((x) => record(x)?.[key]).filter((v): v is string => typeof v === "string" && v.length > 0))] : [];
     out.push({
+      sourceIds: ids(s.sources, "evidenceId"),
+      reportedTurnIds: ids(s.reports, "turnId"),
       id: s.id,
       epistemicType: s.epistemicType,
       text: s.text,
@@ -195,7 +215,7 @@ export function validateRecommendationTarget(input: {
   workspaceId: string;
   scope: ProjectContextScope;
   ref: Extract<ExecutionBriefTargetRef, { kind: "project_brain_recommendation" }>;
-}): { ok: true; text: string } | { ok: false } {
+}): { ok: true; text: string; anchors: RecommendationAnchors } | { ok: false } {
   const { row, ref, scope } = input;
   if (!row || row.id !== ref.assistantTurnId) return { ok: false }; // 1
   if (row.conversation_id !== input.conversationId || row.workspace_id !== input.workspaceId) return { ok: false }; // 2
@@ -205,7 +225,7 @@ export function validateRecommendationTarget(input: {
   if (!statement) return { ok: false };
   if (statement.epistemicType !== "RECOMMENDATION") return { ok: false }; // 5
   if (!statement.scope || statement.scope.workspaceId !== scope.workspaceId || statement.scope.projectId !== scope.projectId) return { ok: false };
-  return { ok: true, text: statement.text };
+  return { ok: true, text: statement.text, anchors: { sourceIds: statement.sourceIds, reportedTurnIds: statement.reportedTurnIds } };
 }
 
 /**
@@ -225,7 +245,13 @@ export function targetCandidates(input: { messages: ContextMessageRow[]; convers
 }
 
 export type TargetResolution =
-  | { kind: "resolved"; targetRef: ResolvedExecutionBriefTargetRef; recommendationText: string | null }
+  | {
+      kind: "resolved";
+      targetRef: ResolvedExecutionBriefTargetRef;
+      recommendationText: string | null;
+      /** Present exactly when the target is a prior Recommendation. */
+      recommendationAnchors: RecommendationAnchors | null;
+    }
   | { kind: "invalid" }
   | { kind: "needs_target"; candidates: ExecutionBriefTargetCandidate[] };
 
@@ -248,17 +274,21 @@ export function resolveExecutionTarget(input: {
     if (!input.conversationId) return { kind: "invalid" };
     const validated = validateRecommendationTarget({ row: input.explicitRow, conversationId: input.conversationId, workspaceId: input.workspaceId, scope: input.scope, ref: requested });
     if (!validated.ok) return { kind: "invalid" };
-    return { kind: "resolved", targetRef: { ...requested, resolvedBy: "explicit" }, recommendationText: validated.text };
+    return { kind: "resolved", targetRef: { ...requested, resolvedBy: "explicit" }, recommendationText: validated.text, recommendationAnchors: validated.anchors };
   }
   if (requested?.kind === "current_user_request" && describesWork(input.text)) {
-    return { kind: "resolved", targetRef: { kind: "current_user_request" }, recommendationText: null };
+    return { kind: "resolved", targetRef: { kind: "current_user_request" }, recommendationText: null, recommendationAnchors: null };
   }
   const candidates = input.conversationId
     ? targetCandidates({ messages: input.messages, conversationId: input.conversationId, workspaceId: input.workspaceId, scope: input.scope, beforeSeq: input.beforeSeq })
     : [];
-  if (candidates.length === 1) {
+  if (candidates.length === 1 && input.conversationId) {
     const [only] = candidates;
-    return { kind: "resolved", targetRef: { kind: "project_brain_recommendation", assistantTurnId: only.assistantTurnId, statementId: only.statementId, resolvedBy: "single_candidate" }, recommendationText: only.text };
+    const ref = { kind: "project_brain_recommendation" as const, assistantTurnId: only.assistantTurnId, statementId: only.statementId };
+    const row = input.messages.find((m) => m.id === only.assistantTurnId) ?? null;
+    const validated = validateRecommendationTarget({ row, conversationId: input.conversationId, workspaceId: input.workspaceId, scope: input.scope, ref });
+    if (!validated.ok) return { kind: "needs_target", candidates };
+    return { kind: "resolved", targetRef: { ...ref, resolvedBy: "single_candidate" }, recommendationText: validated.text, recommendationAnchors: validated.anchors };
   }
   return { kind: "needs_target", candidates };
 }

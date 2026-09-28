@@ -4,7 +4,7 @@
 // A turn is identified by (conversation, clientMessageId). The state of a turn is
 // read entirely from persisted rows — no workflow table, no mutable status:
 //
-//   user row only, younger than TURN_PENDING_WINDOW_MS   → PENDING (another
+//   user row only, younger than its pending window       → PENDING (another
 //        request is generating; answer 202, never run the model again)
 //   user row only, older                                  → UNANSWERED: the
 //        request that owned it died after persisting the question; a replay
@@ -47,6 +47,7 @@ import { groundProjectBrainOutput, parseProjectBrainModelOutput, type CitationRe
 import { buildProjectBrainMessages, PROJECT_BRAIN_OUTPUT_SCHEMA } from "./prompt";
 import { buildReportedContext } from "./reported-context";
 import { canonicalJson } from "../execution-brief/canonical-json";
+import { EXECUTION_BRIEF_PENDING_WINDOW_MS, executionBriefLeaseAllowsInference } from "../execution-brief/schema";
 import { executionBriefReplyContent, generateExecutionBrief } from "../execution-brief/generate";
 import { requestIdentityMetadata, resolveExecutionTarget, storedRequestIdentity, type TargetResolution } from "../execution-brief/target";
 import {
@@ -132,6 +133,15 @@ export type ProjectBrainTurnResult =
  * Only `runProjectBrainRequest` can return it — never an answer turn.
  */
 export type ProjectBrainNeedsTargetResult = { status: "needs_target"; conversationId: string | null; candidates: ExecutionBriefTargetCandidate[] };
+
+/**
+ * How long a persisted-but-unanswered user turn is presumed still in flight elsewhere.
+ * Operation-aware (PB-EXEC-01 review P1-1): an answer keeps TURN_PENDING_WINDOW_MS; an
+ * execution brief uses its own window, derived from its whole budget (execution-brief/schema.ts).
+ */
+export function pendingWindowFor(operation: ProjectBrainOperation): number {
+  return operation === "execution_brief" ? EXECUTION_BRIEF_PENDING_WINDOW_MS : TURN_PENDING_WINDOW_MS;
+}
 
 export class ProjectBrainTurnConflictError extends Error {
   constructor(
@@ -343,7 +353,12 @@ async function generate(
 
 // ─── PB-EXEC-01: the execution-brief operation ───────────────────────────────
 
-type BriefTurn = { identity: ProjectBrainRequestIdentity; resolution: TargetResolution | null };
+type BriefTurn = {
+  identity: ProjectBrainRequestIdentity;
+  resolution: TargetResolution | null;
+  /** Inference-lease anchor (ms): the start of the request that runs this generation. */
+  leaseAnchorMs: number;
+};
 
 /** First line of a limited-mode reply to a brief request: no partial brief, and why. */
 export const BRIEF_DEGRADED_NOTICE =
@@ -406,6 +421,11 @@ async function generateBriefTurn(
   let reason: DegradedReason = "invalid_output";
   if (!deps.generativeEntitled) {
     reason = "not_entitled";
+  } else if (existingDegraded === null && !executionBriefLeaseAllowsInference(brief.leaseAnchorMs, deps.now().getTime())) {
+    // Pre-provider work ate the inference lease: starting the call now could still be running
+    // when another instance treats this turn as stale. Degrade honestly, never call the model.
+    reason = "timeout";
+    console.warn(JSON.stringify({ event: "project_brain.execution_brief.lease_expired", projectId: scope.projectId }));
   } else if (resolution.kind === "resolved") {
     try {
       const outcome = await generateExecutionBrief({
@@ -417,6 +437,7 @@ async function generateBriefTurn(
         context,
         targetRef: resolution.targetRef,
         recommendationText: resolution.recommendationText,
+        recommendationAnchors: resolution.recommendationAnchors,
         generatedAt,
         retry: existingDegraded !== null,
         infer: deps.infer,
@@ -554,7 +575,7 @@ export async function runProjectBrainRequest(deps: ProjectBrainTurnDeps, input: 
   if (stored === "unknown" || canonicalJson(stored) !== canonicalJson(identity)) {
     throw new ProjectBrainTurnConflictError("client_message_id_reused_with_different_operation");
   }
-  const brief: BriefTurn | null = identity.operation === "execution_brief" ? { identity, resolution } : null;
+  const requestStartMs = deps.now().getTime();
 
   const replies = await store.listReplies(conversation.id, userMessage.id);
   const generativeReply = replies.find((r) => r.brain_mode === "generative");
@@ -570,18 +591,24 @@ export async function runProjectBrainRequest(deps: ProjectBrainTurnDeps, input: 
   const running = inFlight.get(key);
   if (running) return running.then((result) => ({ ...result, replayed: true }) as ProjectBrainTurnResult);
 
+  const createdAtMs = new Date(userMessage.created_at).getTime();
+  const pendingWindowMs = pendingWindowFor(identity.operation);
   if (!degradedReply && replayed) {
-    const ageMs = deps.now().getTime() - new Date(userMessage.created_at).getTime();
-    if (ageMs < TURN_PENDING_WINDOW_MS) {
+    const ageMs = requestStartMs - createdAtMs;
+    if (ageMs < pendingWindowMs) {
       return {
         status: "pending",
         replayed: true,
         conversationId: conversation.id,
         userMessage,
-        retryAfterMs: Math.max(1000, TURN_PENDING_WINDOW_MS - ageMs),
+        retryAfterMs: Math.max(1000, pendingWindowMs - ageMs),
       };
     }
   }
+  // Lease anchor = this request's start. For a first request it is no later than the row's
+  // created_at (clock skew aside, covered by the margin); for a stale recovery it is the
+  // recovery's own start, since the original lease is already over.
+  const brief: BriefTurn | null = identity.operation === "execution_brief" ? { identity, resolution, leaseAnchorMs: requestStartMs } : null;
 
   const work = generate(deps, conversation, userMessage, degradedReply, replayed, brief).finally(() => inFlight.delete(key));
   inFlight.set(key, work);

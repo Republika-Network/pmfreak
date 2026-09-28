@@ -20,7 +20,9 @@ import type { InferenceRequest, InferenceResponse } from "@/lib/ai/inference/typ
 import type { ProjectBrainContext } from "../conversation/context-types";
 import type { ProjectContextScope } from "../types";
 import { assembleExecutionBrief, ExecutionBriefAssemblyError } from "./assemble";
+import { checkRecommendationContinuity, withRecommendationContinuity } from "./continuity";
 import { groundExecutionBrief, reportTextsOf } from "./ground";
+import type { RecommendationAnchors } from "./target";
 import { buildExecutionBriefMessages } from "./prompt";
 import { extractReportedRepositoryContext } from "./repository-context";
 import { EXECUTION_BRIEF_INFERENCE, EXECUTION_BRIEF_MODEL_SCHEMA, parseExecutionBriefModelOutput } from "./schema";
@@ -36,6 +38,8 @@ export type ExecutionBriefGenerationInput = {
   context: ProjectBrainContext;
   targetRef: ResolvedExecutionBriefTargetRef;
   recommendationText: string | null;
+  /** Stable support anchors of the selected prior Recommendation (null for current_user_request). */
+  recommendationAnchors: RecommendationAnchors | null;
   generatedAt: string;
   /** True for an explicit retry of a degraded brief turn. */
   retry: boolean;
@@ -65,7 +69,7 @@ export async function generateExecutionBrief(input: ExecutionBriefGenerationInpu
     actorType: "user",
     dataSensitivity: "confidential",
     chainDepth: 0,
-    messages: buildExecutionBriefMessages({ context, question: userMessage.content, targetRef: input.targetRef, recommendationText: input.recommendationText, asOf: input.generatedAt }),
+    messages: buildExecutionBriefMessages({ context, question: userMessage.content, targetRef: input.targetRef, recommendationText: input.recommendationText, recommendationAnchors: input.recommendationAnchors, asOf: input.generatedAt }),
     responseFormat: { type: "json_schema", jsonSchema: EXECUTION_BRIEF_MODEL_SCHEMA },
     temperature: EXECUTION_BRIEF_INFERENCE.temperature,
     maxTokens: EXECUTION_BRIEF_INFERENCE.maxTokens,
@@ -83,7 +87,21 @@ export async function generateExecutionBrief(input: ExecutionBriefGenerationInpu
   if (!parsed) return { ok: false, stage: "schema" };
 
   try {
-    const grounded = groundExecutionBrief({ output: parsed, context, question: userMessage.content, generatedAt: input.generatedAt, targetRef: input.targetRef });
+    let grounded = groundExecutionBrief({ output: parsed, context, question: userMessage.content, generatedAt: input.generatedAt, targetRef: input.targetRef });
+    if (input.targetRef.kind === "project_brain_recommendation") {
+      // The brief must still be about the SELECTED work (continuity.ts). A failure never
+      // retargets: it adds a blocking "Reconfirm the selected recommendation" unknown.
+      const continuity = checkRecommendationContinuity({
+        grounded,
+        context,
+        anchors: input.recommendationAnchors ?? { sourceIds: [], reportedTurnIds: [] },
+        recommendationText: input.recommendationText ?? "",
+        question: userMessage.content,
+        generatedAt: input.generatedAt,
+      });
+      if (!continuity.ok) console.warn(JSON.stringify({ event: "project_brain.execution_brief.target_unconfirmed", projectId: scope.projectId, reason: continuity.reason }));
+      grounded = withRecommendationContinuity(grounded, continuity);
+    }
     const reportTexts = reportTextsOf(context, userMessage.content).map((r) => ({ turnId: r.report.reference.turnId, text: r.text }));
     const repositoryContext = extractReportedRepositoryContext(reportTexts);
     const reportCreatedAt = new Map((context.reports ?? []).map((r) => [r.reference.turnId, r.reference.createdAt] as const));

@@ -32,6 +32,7 @@ import { estimateCostUsd } from "../../src/lib/ai/usage-accounting";
 import { assembleProjectBrainContext, type ProjectBrainRawContext } from "../../src/lib/project-brain/conversation/context-builder";
 import { runProjectBrainRequest, type ProjectBrainTurnStore } from "../../src/lib/project-brain/conversation/turn-service";
 import { toProjectBrainMessageView } from "../../src/lib/project-brain/conversation/transcript-view";
+import { persistedBriefVerifier } from "../../src/lib/project-brain/execution-brief/verify";
 import { computeReadiness } from "../../src/lib/project-brain/execution-brief/assemble";
 import { scanBriefForCredentials } from "../../src/lib/project-brain/execution-brief/credential-guard";
 import { extractExecutionReferences } from "../../src/lib/project-brain/execution-brief/ground";
@@ -48,6 +49,8 @@ type Case = {
   /** Recommendations of the seeded prior generative answer (targeted explicitly when `target: "recommendation"`). */
   recommendations: string[];
   target: "recommendation" | "current_user_request" | "phrase";
+  /** Stable source ids the seeded prior Recommendation cited (default: the P14 milestone). */
+  anchors?: string[];
   text: string;
   expect: string;
   /**
@@ -104,7 +107,7 @@ export const CASES: Case[] = [
     check: (b) => (b.provenance.sources.length >= 2 ? [] : ["fewer than two project records cited"]),
   },
   {
-    id: "EB7-not-code", fixture: steeringReportProject, prior: [], recommendations: ["Prepare the Q4 steering committee report."], target: "recommendation",
+    id: "EB7-not-code", fixture: steeringReportProject, prior: [], recommendations: ["Prepare the Q4 steering committee report."], target: "recommendation", anchors: ["project_milestones:f00000q4-0000-4000-8000-000000000000"],
     text: "Prepare an execution brief for the selected recommendation.", expect: "capabilityFit not_code (or unclear) → needs_input.", readiness: { value: "needs_input", hard: true },
   },
   {
@@ -166,7 +169,8 @@ export async function runCase(c: Case, complete: (request: InferenceRequest) => 
   let targetRef: ExecutionBriefTargetRef | null = null;
   if (c.recommendations.length > 0) {
     const user = store.seed({ content: "What should I work on next?", client_message_id: crypto.randomUUID() });
-    const statements = c.recommendations.map((text, i) => ({ id: `${user.id}:${i}`, scope, epistemicType: "RECOMMENDATION", text, confidence: { kind: "qualitative", level: "medium" }, sources: [], requiresHumanApproval: true, generatedAt: FIXTURE_NOW.toISOString(), constitutionVersion: "1.1.0" }));
+    const anchorSources = (c.anchors ?? ["project_milestones:f0000014-0000-4000-8000-000000000000"]).map((evidenceId) => ({ evidenceId, sourceSystem: "project_milestones", title: "t", evidenceType: "MILESTONE", recordedAt: FIXTURE_NOW.toISOString(), authorityLevel: "primary", isPrimary: true }));
+    const statements = c.recommendations.map((text, i) => ({ id: `${user.id}:${i}`, scope, epistemicType: "RECOMMENDATION", text, confidence: { kind: "qualitative", level: "medium" }, sources: anchorSources, requiresHumanApproval: true, generatedAt: FIXTURE_NOW.toISOString(), constitutionVersion: "1.1.0" }));
     const reply = store.seed({ role: "assistant", content: c.recommendations.join(" "), created_by_user_id: null, reply_to_message_id: user.id, brain_mode: "generative", metadata: { projectBrain: { version: 1, mode: "generative", statements, sources: [], constitutionVersion: "1.1.0", context: { sourceCount: 0, truncated: false, unavailable: [] } } } });
     if (c.target === "recommendation") targetRef = { kind: "project_brain_recommendation", assistantTurnId: reply.id, statementId: `${user.id}:0` };
   }
@@ -196,7 +200,7 @@ export async function runCase(c: Case, complete: (request: InferenceRequest) => 
     { clientMessageId: crypto.randomUUID(), text: c.text, request: { operation: "execution_brief", targetRef } },
   );
   const reply = result.status === "completed" ? result.reply : null;
-  const view = reply ? toProjectBrainMessageView(reply) : null;
+  const view = reply ? toProjectBrainMessageView(reply, { verifyExecutionBrief: persistedBriefVerifier(scope) }) : null;
   const brief = view?.brain?.executionBrief ?? null;
   const checks: string[] = [];
   const notes: string[] = [];

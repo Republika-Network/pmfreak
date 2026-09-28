@@ -26,6 +26,7 @@ import { buildReportedContext } from "../src/lib/project-brain/conversation/repo
 import {
   ProjectBrainExecutionTargetError,
   ProjectBrainTurnConflictError,
+  pendingWindowFor,
   runProjectBrainRequest,
   runProjectBrainTurn,
   type ProjectBrainTurnDeps,
@@ -51,6 +52,9 @@ import { extractReportedRepositoryContext } from "../src/lib/project-brain/execu
 import {
   EXECUTION_BRIEF_INFERENCE,
   EXECUTION_BRIEF_MODEL_SCHEMA,
+  EXECUTION_BRIEF_PENDING_BUDGET,
+  EXECUTION_BRIEF_PENDING_WINDOW_MS,
+  executionBriefLeaseAllowsInference,
   EXECUTION_BRIEF_OUTPUT_LIMITS as L,
   parseExecutionBriefModelOutput,
   requiredExecutionBriefMaxTokens,
@@ -68,9 +72,14 @@ import {
 } from "../src/lib/project-brain/execution-brief/target";
 import { EXECUTION_BRIEF_RENDERERS, EXECUTION_BRIEF_SERIALIZER_VERSION, type ExecutionBriefTargetRef, type ExecutionBriefV1 } from "../src/lib/project-brain/execution-brief/types";
 import { parseExecutionBriefV1 } from "../src/lib/project-brain/execution-brief/validate";
+import { persistedBriefVerifier, verifyPersistedExecutionBrief } from "../src/lib/project-brain/execution-brief/verify";
 import { exportSpecEvidence, FIXTURE_NOW, p14ExportProject, PROJECT, scope, USER, WS } from "./fixtures/pb-exec-01-projects";
 
 const OTHER_USER = "77777777-7777-4777-8777-777777777777";
+/** The transcript API's own server verifier, bound to the route scope. */
+const VIEW = { verifyExecutionBrief: persistedBriefVerifier(scope) };
+/** Stable id of the P14 milestone in the fixture — what a real prior Recommendation would have cited. */
+const P14_SOURCE = "project_milestones:f0000014-0000-4000-8000-000000000000";
 const fake = (...parts: string[]) => parts.join("");
 
 // ─── Harness ────────────────────────────────────────────────────────────────
@@ -204,7 +213,9 @@ const brief = (deps: ProjectBrainTurnDeps, text: string, targetRef: ExecutionBri
 const ask = (deps: ProjectBrainTurnDeps, text: string, clientMessageId = newId()) => runProjectBrainTurn(deps, { clientMessageId, text });
 
 /** A persisted prior generative answer with the given RECOMMENDATION texts (plus optional other statements). */
-function seedAnswer(store: Store, recommendations: string[], opts: { others?: Array<{ type: string; text: string }>; mode?: "generative" | "degraded" | null; scopeOverride?: { workspaceId: string; projectId: string }; metadata?: unknown } = {}) {
+function seedAnswer(store: Store, recommendations: string[], opts: { others?: Array<{ type: string; text: string }>; mode?: "generative" | "degraded" | null; scopeOverride?: { workspaceId: string; projectId: string }; metadata?: unknown; anchors?: { sources?: string[]; reports?: string[] } } = {}) {
+  const anchorSources = opts.anchors?.sources ?? [P14_SOURCE];
+  const anchorReports = opts.anchors?.reports ?? [];
   const user = store.seed({ content: "What should I work on next?", client_message_id: newId() });
   const statements = [
     ...recommendations.map((text) => ({ type: "RECOMMENDATION", text })),
@@ -215,7 +226,9 @@ function seedAnswer(store: Store, recommendations: string[], opts: { others?: Ar
     epistemicType: s.type,
     text: s.text,
     confidence: { kind: "qualitative", level: "medium" },
-    sources: [],
+    // A persisted statement keeps full source references (the fields that matter: evidenceId).
+    sources: s.type === "RECOMMENDATION" ? anchorSources.map((evidenceId) => ({ evidenceId, sourceSystem: evidenceId.split(":")[0], title: "t", evidenceType: "MILESTONE", recordedAt: FIXTURE_NOW.toISOString(), authorityLevel: "primary", isPrimary: true })) : [],
+    ...(s.type === "RECOMMENDATION" && anchorReports.length > 0 ? { reports: anchorReports.map((turnId) => ({ turnId, createdAt: FIXTURE_NOW.toISOString(), reportedBy: "user" })) } : {}),
     ...(s.type === "RECOMMENDATION" ? { requiresHumanApproval: true } : {}),
     generatedAt: FIXTURE_NOW.toISOString(),
     constitutionVersion: "1.1.0",
@@ -234,7 +247,7 @@ function completedBrief(result: Awaited<ReturnType<typeof brief>>) {
   assert.equal(result.status, "completed");
   if (result.status !== "completed") throw new Error("unreachable");
   const meta = (result.reply.metadata as { projectBrain: Record<string, unknown> }).projectBrain;
-  const view = toProjectBrainMessageView(result.reply)!;
+  const view = toProjectBrainMessageView(result.reply, VIEW)!;
   return { result, meta, view, brief: meta.executionBrief as ExecutionBriefV1 };
 }
 
@@ -442,7 +455,9 @@ test("C3: the selected recommendation identifies the work but is never evidence 
   const { reply } = seedAnswer(store, ["Implement BILL-99 invoice export next."]);
   const { brief: b } = completedBrief(await brief(deps, "Prepare an execution brief for the selected recommendation.", recTarget(reply)));
   const prompt = calls[0].messages[1].content;
-  assert.match(prompt, /<selected_prior_ai_recommendation>\nImplement BILL-99 invoice export next\.\n<\/selected_prior_ai_recommendation>/);
+  // The tag names only THIS turn's alias of the recommendation's surviving anchor — never a stable id, never evidence.
+  assert.match(prompt, /<selected_prior_ai_recommendation supported_by="S\d+">\nImplement BILL-99 invoice export next\.\n<\/selected_prior_ai_recommendation>/);
+  assert.equal(prompt.includes("project_milestones:"), false, "stable ids never reach the prompt");
   assert.match(EXECUTION_BRIEF_SYSTEM_PROMPT, /It is NOT evidence and NOT a source/);
   assert.equal(b.knownContext.some((k) => k.text.includes("BILL-99")), false, "a code only the prior AI answer used is unsupported");
   assert.equal(b.provenance.sources.some((s) => s.evidenceId.startsWith("context_messages")), false);
@@ -1275,7 +1290,7 @@ test("P2: the transcript view exposes only a validated brief; a malformed one is
   assert.ok(view.brain!.sources.length > 0, "source chips come from brief provenance");
   assert.equal(JSON.stringify(view).includes("sourceContextDigest"), true, "the validated brief carries its digests");
   const broken = { ...result.reply, metadata: { projectBrain: { ...(result.reply.metadata as { projectBrain: object }).projectBrain, executionBrief: { schema: "pmfreak.execution-brief", version: 1, handoff: { executionAuthorized: true } } } } } as ContextMessageRow;
-  const brokenView = toProjectBrainMessageView(broken)!;
+  const brokenView = toProjectBrainMessageView(broken, VIEW)!;
   assert.equal(brokenView.brain!.executionBrief, null);
   assert.equal(brokenView.brain!.briefUnavailable, true);
   assert.equal(brokenView.brain!.conversationalOnly, false);
@@ -1385,4 +1400,267 @@ test("Q7: renderer choice never reaches a request body, the brief or the operati
   assert.match(component, /body: JSON\.stringify\(turnBody\(turn\)\)/);
   assert.equal(existsSync("src/app/api/execution-brief"), false);
   assert.ok(statSync("src/lib/project-brain/execution-brief").isDirectory());
+});
+
+// ═══ R. Review remediation (PR #632): P1-1, P1-2, P2-1, P2-2 ═════════════════
+
+// ── P1-1: operation-aware pending window + inference lease ──
+
+const BRIEF_TEXT = "Prepare an execution brief for the selected recommendation.";
+
+/** A persisted, unanswered user row of the given operation and age (ms) — as another instance would find it. */
+function seedPendingTurn(store: Store, opts: { operation: "answer" | "execution_brief"; ageMs: number; targetRef?: ExecutionBriefTargetRef | null; text: string }) {
+  const clientMessageId = newId();
+  store.seed({
+    client_message_id: clientMessageId,
+    content: opts.text,
+    created_at: new Date(FIXTURE_NOW.getTime() - opts.ageMs).toISOString(),
+    metadata: { projectBrainRequest: { operation: opts.operation, targetRef: opts.operation === "execution_brief" ? opts.targetRef ?? null : null } },
+  });
+  return clientMessageId;
+}
+
+test("R1-1: the brief pending window is derived from the whole brief budget, and the old 60 s window could not cover it", () => {
+  const b = EXECUTION_BRIEF_PENDING_BUDGET;
+  assert.equal(
+    EXECUTION_BRIEF_PENDING_WINDOW_MS,
+    b.preProviderAllowanceMs + EXECUTION_BRIEF_INFERENCE.timeoutMs * EXECUTION_BRIEF_INFERENCE.maxAttempts + b.postProviderAllowanceMs + b.marginMs,
+  );
+  // Negative control — the pre-remediation behaviour: a supported brief (pre-work + 45 s call +
+  // post-work) outlives the ordinary 60 s window, so another instance would have recovered it.
+  assert.ok(b.preProviderAllowanceMs + EXECUTION_BRIEF_INFERENCE.timeoutMs + b.postProviderAllowanceMs > TURN_PENDING_WINDOW_MS);
+  assert.equal(pendingWindowFor("answer"), TURN_PENDING_WINDOW_MS, "ordinary answers keep their window");
+  assert.equal(pendingWindowFor("execution_brief"), EXECUTION_BRIEF_PENDING_WINDOW_MS);
+  assert.ok(EXECUTION_BRIEF_PENDING_WINDOW_MS > TURN_PENDING_WINDOW_MS);
+  // The lease: a call may start only if it and its post-work end a full margin before the window.
+  assert.equal(executionBriefLeaseAllowsInference(0, b.preProviderAllowanceMs), true);
+  assert.equal(executionBriefLeaseAllowsInference(0, b.preProviderAllowanceMs + 1), false);
+});
+
+test("R1-2: an ordinary answer keeps the ordinary window — pending under 60 s, recovered after it", async () => {
+  const store = memoryStore();
+  const { deps, calls } = turnDeps(p14ExportProject(), (s) => goodBrief(s), store);
+  const young = seedPendingTurn(store, { operation: "answer", ageMs: TURN_PENDING_WINDOW_MS - 1_000, text: "Where are we?" });
+  assert.equal((await ask(deps, "Where are we?", young)).status, "pending");
+  const stale = seedPendingTurn(store, { operation: "answer", ageMs: TURN_PENDING_WINDOW_MS + 1_000, text: "What next?" });
+  assert.equal((await ask(deps, "What next?", stale)).status, "completed");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].operationName, "project_brain.turn");
+});
+
+test("R1-3: a brief replayed at >60 s but inside its own window is PENDING — zero new inference", async () => {
+  const store = memoryStore();
+  const { deps, calls } = turnDeps(p14ExportProject(), (s) => goodBrief(s), store);
+  const { reply } = seedAnswer(store, ["Implement P14."]);
+  for (const ageMs of [TURN_PENDING_WINDOW_MS + 1_000, 90_000, EXECUTION_BRIEF_PENDING_WINDOW_MS - 1_000]) {
+    const id = seedPendingTurn(store, { operation: "execution_brief", ageMs, targetRef: recTarget(reply), text: BRIEF_TEXT });
+    const result = await brief(deps, BRIEF_TEXT, recTarget(reply), id);
+    assert.equal(result.status, "pending", `age ${ageMs} ms`);
+    if (result.status === "pending") assert.ok(result.retryAfterMs >= 1000 && result.retryAfterMs <= EXECUTION_BRIEF_PENDING_WINDOW_MS - ageMs);
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("R1-4: only after its own window is a brief stale — the recovery then generates exactly once", async () => {
+  const store = memoryStore();
+  const { deps, calls } = turnDeps(p14ExportProject(), (s) => goodBrief(s), store);
+  const { reply } = seedAnswer(store, ["Implement P14."]);
+  const id = seedPendingTurn(store, { operation: "execution_brief", ageMs: EXECUTION_BRIEF_PENDING_WINDOW_MS + 1_000, targetRef: recTarget(reply), text: BRIEF_TEXT });
+  const recovered = completedBrief(await brief(deps, BRIEF_TEXT, recTarget(reply), id));
+  assert.equal(recovered.result.reply.brain_mode, "generative");
+  assert.equal(calls.length, 1);
+  const replay = completedBrief(await brief(deps, BRIEF_TEXT, recTarget(reply), id));
+  assert.equal(replay.brief.identity.briefContentHash, recovered.brief.identity.briefContentHash);
+  assert.equal(calls.length, 1, "a completed brief replays with zero inference");
+});
+
+test("R1-5: if slow pre-provider work eats the inference lease, the turn degrades WITHOUT calling the provider", async () => {
+  let clock = FIXTURE_NOW.getTime();
+  const store = memoryStore();
+  const { deps, calls } = turnDeps(p14ExportProject(), (s) => goodBrief(s), store, {
+    now: () => new Date(clock),
+    loadContext: async (history) => {
+      clock += EXECUTION_BRIEF_PENDING_BUDGET.preProviderAllowanceMs + 5_000; // a slow context read
+      return assembleProjectBrainContext({ ...p14ExportProject(), history });
+    },
+  });
+  const { reply } = seedAnswer(store, ["Implement P14."]);
+  const result = await brief(deps, BRIEF_TEXT, recTarget(reply));
+  assert.equal(calls.length, 0);
+  assert.equal(result.status === "completed" && result.reply.brain_mode, "degraded");
+  if (result.status === "completed") assert.equal((result.reply.metadata as { projectBrain: { reason: string } }).projectBrain.reason, "timeout");
+});
+
+// ── P1-2: selected-Recommendation continuity ──
+
+const RECONFIRM = "Reconfirm the selected recommendation";
+
+async function continuityBrief(opts: { recommendation?: string; anchors?: { sources?: string[]; reports?: string[] }; patch?: (o: ExecutionBriefModelOutput, s: Seen) => void; before?: string[] } = {}) {
+  const store = memoryStore();
+  const { deps, calls } = turnDeps(p14ExportProject(), (s) => goodBrief(s, (o) => opts.patch?.(o, s)), store);
+  for (const text of opts.before ?? []) await ask(deps, text);
+  const { reply } = seedAnswer(store, [opts.recommendation ?? "Implement P14 invoice export next."], { anchors: opts.anchors });
+  const out = completedBrief(await brief(deps, BRIEF_TEXT, recTarget(reply)));
+  return { ...out, reply, calls };
+}
+
+test("R2-1: current surviving anchors + a target grounded in them → may be handoff-ready; targetRef unchanged", async () => {
+  const { brief: b, reply } = await continuityBrief();
+  assert.equal(b.readiness, "handoff_ready");
+  assert.equal(b.unknowns.some((u) => u.fact === RECONFIRM), false);
+  assert.deepEqual(b.targetRef, { ...recTarget(reply), resolvedBy: "explicit" });
+  assert.ok(b.target!.sourceIds.includes(P14_SOURCE));
+});
+
+test("R2-2: the selected recommendation's source is no longer in the current context → needs_input", async () => {
+  const { brief: b, reply } = await continuityBrief({ anchors: { sources: ["project_milestones:f0000099-0000-4000-8000-000000000000"] } });
+  assert.equal(b.readiness, "needs_input");
+  assert.ok(b.unknowns.some((u) => u.fact === RECONFIRM && u.blocking && /no longer sufficiently supported/.test(u.why)));
+  assert.deepEqual(b.targetRef, { ...recTarget(reply), resolvedBy: "explicit" }, "never retargeted");
+});
+
+test("R2-3: the recommendation's report support is outside the bounded current context → needs_input", async () => {
+  const { brief: b } = await continuityBrief({ anchors: { sources: [P14_SOURCE], reports: ["d0000000-0000-4000-8000-00000000dead"] } });
+  assert.equal(b.readiness, "needs_input");
+  assert.ok(b.unknowns.some((u) => u.fact === RECONFIRM));
+});
+
+test("R2-4: negative control — the model substitutes unrelated, currently-supported work → needs_input", async () => {
+  const { brief: b } = await continuityBrief({
+    patch: (o, s) => {
+      const other = s.source("Milestone — P13 Billing-period model");
+      o.target = { title: "Finish P13 billing-period model", statement: "Complete the P13 billing-period model.", sourceAliases: [other], reportAliases: [] };
+      o.objective = { text: "The billing-period model is complete.", origin: "project_record", sourceAliases: [other], reportAliases: [] };
+    },
+  });
+  // Every item is well grounded in CURRENT records — yet it is not the selected work.
+  assert.equal(b.target!.sourceIds.includes(P14_SOURCE), false);
+  assert.equal(b.provenance.groundingAdjusted, false);
+  assert.equal(b.readiness, "needs_input");
+  assert.ok(b.unknowns.some((u) => u.fact === RECONFIRM && u.blocking));
+});
+
+test("R2-5: a precise reference in the recommendation that nothing current supplies → needs_input", async () => {
+  const { brief: b } = await continuityBrief({ recommendation: "Implement INV-42 invoice export next." });
+  assert.equal(b.readiness, "needs_input");
+  assert.ok(b.unknowns.some((u) => u.fact === RECONFIRM));
+  const supplied = await continuityBrief({ recommendation: "Implement INV-42 invoice export next.", before: ["Finance tracks this as INV-42."] });
+  assert.equal(supplied.brief.unknowns.some((u) => u.fact === RECONFIRM), false, "a reference the user supplied is current");
+});
+
+test("R2-6: a recommendation that cited nothing cannot prove continuity → needs_input", async () => {
+  const { brief: b } = await continuityBrief({ anchors: { sources: [], reports: [] } });
+  assert.equal(b.readiness, "needs_input");
+  assert.ok(b.unknowns.some((u) => u.fact === RECONFIRM));
+});
+
+test("R2-7: the prior recommendation is never a source, evidence or known context — anchors resolve to CURRENT records only", async () => {
+  const { brief: b, reply } = await continuityBrief();
+  for (const s of b.provenance.sources) assert.ok(!s.evidenceId.startsWith("context_messages") && !s.evidenceId.includes(reply.id));
+  assert.equal(b.knownContext.some((k) => k.text.includes("Implement P14 invoice export next")), false);
+  assert.equal(JSON.stringify(b).includes(reply.id), true, "only as targetRef.assistantTurnId");
+  assert.equal(JSON.stringify(b.provenance).includes(reply.id), false);
+});
+
+test("R2-8: continuity uses no model call and no semantic matching — one provider call per brief", async () => {
+  const { calls } = await continuityBrief({ anchors: { sources: ["project_milestones:gone"] } });
+  assert.equal(calls.length, 1);
+  const src = strip(readFileSync("src/lib/project-brain/execution-brief/continuity.ts", "utf8"));
+  assert.doesNotMatch(src, /infer|embedding|cosine|similarity|fetch\(/i);
+});
+
+// ── P2-1 / P2-2: persisted-brief integrity and binding ──
+
+function rehashed(b: ExecutionBriefV1, mutate: (x: ExecutionBriefV1) => void): ExecutionBriefV1 {
+  const copy = JSON.parse(JSON.stringify(b)) as ExecutionBriefV1;
+  mutate(copy);
+  copy.identity.briefContentHash = computeBriefContentHash(copy);
+  return copy;
+}
+const stale = (b: ExecutionBriefV1, mutate: (x: ExecutionBriefV1) => void): ExecutionBriefV1 => {
+  const copy = JSON.parse(JSON.stringify(b)) as ExecutionBriefV1;
+  mutate(copy); // content changes, the OLD hash stays
+  return copy;
+};
+const withBrief = (row: ContextMessageRow, value: unknown) =>
+  ({ ...row, metadata: { projectBrain: { ...(row.metadata as { projectBrain: object }).projectBrain, executionBrief: value } } }) as ContextMessageRow;
+
+test("R3-1: a persisted brief is exposed only with a recomputed, matching briefContentHash", async () => {
+  const { result, brief: b } = await preparedBrief();
+  const row = result.reply;
+  assert.deepEqual(verifyPersistedExecutionBrief(b, row, scope), { ok: true, brief: b });
+  const cases: Array<[string, ExecutionBriefV1 | unknown, string]> = [
+    ["objective changed, old hash", stale(b, (x) => (x.objective!.text = "Delete every invoice.")), "hash_mismatch"],
+    ["criterion changed, old hash", stale(b, (x) => (x.acceptanceCriteria[0].text = "Anything goes.")), "hash_mismatch"],
+    ["provenance changed, old hash", stale(b, (x) => (x.provenance.sources[0].title = "Another record")), "hash_mismatch"],
+    ["malformed hash", stale(b, (x) => (x.identity.briefContentHash = "sha256:zz")), "malformed"],
+  ];
+  for (const [label, value, reason] of cases) {
+    assert.deepEqual(verifyPersistedExecutionBrief(value, row, scope), { ok: false, reason }, label);
+    const view = toProjectBrainMessageView(withBrief(row, value), VIEW)!;
+    assert.equal(view.brain!.executionBrief, null, label);
+    assert.equal(view.brain!.briefUnavailable, true, label);
+    for (const leak of ["Delete every invoice", "Anything goes", "Another record"]) assert.equal(JSON.stringify(view).includes(leak), false, `${label}: nothing of the artifact is exposed`);
+  }
+  assert.deepEqual(row.metadata, result.reply.metadata, "the stored row is never rewritten");
+});
+
+test("R3-2: without the server verifier nothing of a brief is exposed (fail closed); ordinary answers are unaffected", async () => {
+  const { result } = await preparedBrief();
+  const unverified = toProjectBrainMessageView(result.reply)!;
+  assert.equal(unverified.brain!.executionBrief, null);
+  assert.equal(unverified.brain!.briefUnavailable, true);
+  const { deps, store } = turnDeps();
+  const answer = await ask(deps, "Where are we?");
+  if (answer.status !== "completed") throw new Error("unreachable");
+  assert.deepEqual(toProjectBrainMessageView(answer.reply, VIEW), toProjectBrainMessageView(answer.reply));
+  const degraded = seedAnswer(store, [], { mode: "degraded" }).reply;
+  const legacy = seedAnswer(store, [], { mode: null }).reply;
+  for (const row of [degraded, legacy]) assert.deepEqual(toProjectBrainMessageView(row, VIEW), toProjectBrainMessageView(row));
+});
+
+test("R4-1: negative control — a correctly RE-HASHED brief bound to another row, conversation or scope is not shown", async () => {
+  const { result, brief: b } = await preparedBrief();
+  const row = result.reply;
+  const OTHER_WS = "22222222-2222-4222-8222-222222222222";
+  const OTHER_PROJECT = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const cases: Array<[string, ExecutionBriefV1, string]> = [
+    ["wrong conversationId", rehashed(b, (x) => (x.identity.conversationId = "c0000000-0000-4000-8000-00000000ffff")), "conversation_mismatch"],
+    ["wrong requestTurnId", rehashed(b, (x) => (x.identity.requestTurnId = "d0000000-0000-4000-8000-00000000ffff")), "request_turn_mismatch"],
+    ["wrong workspaceId", rehashed(b, (x) => (x.identity.workspaceId = OTHER_WS)), "workspace_mismatch"],
+    ["wrong projectId", rehashed(b, (x) => (x.identity.projectId = OTHER_PROJECT)), "project_mismatch"],
+    ["source from another project", rehashed(b, (x) => (x.provenance.sources[0].projectId = OTHER_PROJECT)), "source_scope_mismatch"],
+    ["source from another workspace", rehashed(b, (x) => (x.provenance.sources[0].workspaceId = OTHER_WS)), "source_scope_mismatch"],
+  ];
+  for (const [label, value, reason] of cases) {
+    assert.equal(computeBriefContentHash(value), value.identity.briefContentHash, `${label}: the hash itself is valid`);
+    assert.deepEqual(verifyPersistedExecutionBrief(value, row, scope), { ok: false, reason }, label);
+    const view = toProjectBrainMessageView(withBrief(row, value), VIEW)!;
+    assert.equal(view.brain!.executionBrief, null, label);
+    assert.equal(view.brain!.briefUnavailable, true, label);
+  }
+  // The untouched brief transplanted onto another assistant row, or served under another route scope.
+  const transplanted = { ...row, id: "d0000000-0000-4000-8000-00000000aaaa", reply_to_message_id: "d0000000-0000-4000-8000-00000000bbbb" } as ContextMessageRow;
+  assert.equal(toProjectBrainMessageView(transplanted, VIEW)!.brain!.executionBrief, null);
+  const otherRoute = { verifyExecutionBrief: persistedBriefVerifier({ workspaceId: WS, projectId: OTHER_PROJECT }) };
+  assert.equal(toProjectBrainMessageView(row, otherRoute)!.brain!.executionBrief, null);
+  const otherRowWorkspace = { ...row, workspace_id: OTHER_WS } as ContextMessageRow;
+  assert.equal(toProjectBrainMessageView(otherRowWorkspace, VIEW)!.brain!.executionBrief, null);
+  assert.ok(toProjectBrainMessageView(row, VIEW)!.brain!.executionBrief, "the correct row under the correct scope is shown");
+});
+
+test("R4-2: the production transcript API verifies every brief it returns, on GET and POST, server-side only", () => {
+  const route = readFileSync("src/app/api/projects/[id]/brain/turns/route.ts", "utf8");
+  assert.match(route, /toProjectBrainTranscript\(messages, \{ verifyExecutionBrief: persistedBriefVerifier\(scope\) \}\)/);
+  assert.match(route, /const view = \{ verifyExecutionBrief: persistedBriefVerifier\(\{ workspaceId, projectId \}\) \};/);
+  assert.match(route, /toProjectBrainMessageView\(result\.userMessage, view\)/);
+  assert.match(route, /toProjectBrainMessageView\(result\.reply, view\)/);
+  assert.equal((route.match(/toProjectBrainMessageView\(|toProjectBrainTranscript\(/g) ?? []).length, 3, "no unverified conversion");
+  const view = strip(readFileSync("src/lib/project-brain/conversation/transcript-view.ts", "utf8"));
+  assert.doesNotMatch(view, /execution-brief\/(?:verify|hash|assemble)|node:crypto|parseExecutionBriefV1/, "the view stays pure; integrity lives in the server verifier");
+  const verify = readFileSync("src/lib/project-brain/execution-brief/verify.ts", "utf8");
+  assert.doesNotMatch(verify, /\.(insert|update|upsert)\(/, "a failed check never rewrites the row");
+  for (const file of ["src/components/pmfreak/project-brain/execution-brief-card.tsx", "src/components/pmfreak/project-brain/project-brain-conversation.tsx", "src/components/pmfreak/project-brain/answer-disclosure.ts"]) {
+    assert.doesNotMatch(readFileSync(file, "utf8"), /execution-brief\/verify|execution-brief\/hash/, `${file}: no server verifier in the browser`);
+  }
 });

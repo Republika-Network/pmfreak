@@ -19,6 +19,8 @@ import { assembleProjectBrainContext } from "../src/lib/project-brain/conversati
 import { runProjectBrainRequest, type ProjectBrainTurnStore } from "../src/lib/project-brain/conversation/turn-service";
 import { toProjectBrainMessageView, type ProjectBrainMessageView } from "../src/lib/project-brain/conversation/transcript-view";
 import { renderExecutionBrief } from "../src/lib/project-brain/execution-brief/render";
+import { computeBriefContentHash } from "../src/lib/project-brain/execution-brief/assemble";
+import { persistedBriefVerifier } from "../src/lib/project-brain/execution-brief/verify";
 import type { ExecutionBriefModelOutput } from "../src/lib/project-brain/execution-brief/schema";
 import { EXECUTION_BRIEF_RENDERERS, type ExecutionBriefV1 } from "../src/lib/project-brain/execution-brief/types";
 import { FIXTURE_NOW, p14ExportProject, PROJECT, scope, USER, WS } from "./fixtures/pb-exec-01-projects";
@@ -81,7 +83,8 @@ function good(prompt: string): ExecutionBriefModelOutput {
 
 function seedAnswer(store: Store, recommendations: string[]) {
   const user = store.seed({ content: "What should I work on next?", client_message_id: `00000000-0000-4000-8000-${String(store.rows.length + 900).padStart(12, "0")}` });
-  const statements = recommendations.map((text, i) => ({ id: `${user.id}:${i}`, scope, epistemicType: "RECOMMENDATION", text, confidence: { kind: "qualitative", level: "medium" }, sources: [], requiresHumanApproval: true, generatedAt: FIXTURE_NOW.toISOString(), constitutionVersion: "1.1.0" }));
+  const anchor = { evidenceId: "project_milestones:f0000014-0000-4000-8000-000000000000", sourceSystem: "project_milestones", title: "Milestone — P14 Invoice export", evidenceType: "MILESTONE", recordedAt: FIXTURE_NOW.toISOString(), authorityLevel: "primary", isPrimary: true };
+  const statements = recommendations.map((text, i) => ({ id: `${user.id}:${i}`, scope, epistemicType: "RECOMMENDATION", text, confidence: { kind: "qualitative", level: "medium" }, sources: [anchor], requiresHumanApproval: true, generatedAt: FIXTURE_NOW.toISOString(), constitutionVersion: "1.1.0" }));
   return store.seed({ role: "assistant", content: "Based on the current project state, I recommend implementing P14 next.", created_by_user_id: null, reply_to_message_id: user.id, brain_mode: "generative", metadata: { projectBrain: { version: 1, mode: "generative", statements, sources: [], constitutionVersion: "1.1.0", citations: { rejectedCitations: 0, downgradedStatements: 0, droppedStatements: 0, unsupportedReferences: 0 }, context: { sourceCount: 0, truncated: false, unavailable: [] } } } });
 }
 
@@ -129,6 +132,8 @@ export async function buildCases(): Promise<Record<string, ContextMessageRow>> {
   // guard refuses such briefs; this proves the browser's own boundary blocks display/copy).
   const poisonedMeta = JSON.parse(JSON.stringify(ready.metadata)) as { projectBrain: { executionBrief: ExecutionBriefV1 } };
   poisonedMeta.projectBrain.executionBrief.assumptions.push({ text: `Use ${["gh", "p_", "fake0fake0fake0fake0fake0fake"].join("")}` });
+  // Re-hashed, so it passes the server's integrity/binding check and exercises boundary 3.
+  poisonedMeta.projectBrain.executionBrief.identity.briefContentHash = computeBriefContentHash(poisonedMeta.projectBrain.executionBrief);
   const poisoned = { ...ready, id: "d0000000-0000-4000-8000-00000000beef", metadata: poisonedMeta } as unknown as ContextMessageRow;
   const store = memoryStore();
   const threeRecommendations = seedAnswer(store, ["Implement P14 invoice export.", "Close the P13 review.", "Draft the go-live checklist."]);
@@ -142,7 +147,7 @@ async function main() {
   const disclosure: Record<string, unknown> = {};
   const rendered: Record<string, Record<string, string>> = {};
   for (const [name, row] of Object.entries(cases)) {
-    const view = toProjectBrainMessageView(row)!;
+    const view = toProjectBrainMessageView(row, { verifyExecutionBrief: persistedBriefVerifier(scope) })!;
     views[name] = view;
     markup[name] = renderToStaticMarkup(<ProjectBrainAnswer message={view} variant="light" layout="surface" onPrepareBrief={() => {}} />);
     disclosure[name] = view.brain ? deriveAnswerDisclosure(view.brain) : null;

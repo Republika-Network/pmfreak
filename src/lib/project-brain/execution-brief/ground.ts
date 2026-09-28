@@ -180,6 +180,29 @@ function knownClaimIsRecordOnly(text: string, cited: ProjectBrainContextSource[]
   return [...text.matchAll(SENSITIVE_TERM)].every((m) => recordText.includes(m[0].toLowerCase()));
 }
 
+/**
+ * The ONE notion of "supported execution-shaped reference" for briefs: returns the kind of
+ * the first reference in `text` that nothing this request supplied (records, today's date,
+ * the question, USER turns — never assistant turns) contains, or null. Shared by grounding
+ * and the selected-Recommendation continuity check (continuity.ts).
+ */
+export function unsupportedReferenceChecker(context: ProjectBrainContext, question: string, generatedAt: string): (text: string) => BriefReferenceKind | null {
+  const supplied = suppliedReferences(context, question, generatedAt);
+  const corpus = collapse(suppliedReferenceText(context, question, generatedAt));
+  return (text: string) => {
+    for (const ref of extractTypedReferences(text)) {
+      if (supplied.tokens.has(ref.token)) continue;
+      const family = ref.token.replace(/-\d+$/, "");
+      if (ref.kind === "code" && STANDARD_CODE_FAMILIES.has(family) && !supplied.codeFamilies.has(family)) continue;
+      return ref.kind;
+    }
+    for (const ref of briefOnlyReferences(text)) {
+      if (!corpus.includes(ref.token)) return ref.kind;
+    }
+    return null;
+  };
+}
+
 // ─── Grounded result ─────────────────────────────────────────────────────────
 
 export type GroundedBrief = {
@@ -253,21 +276,8 @@ export function groundExecutionBrief(input: GroundBriefInput): GroundedBrief {
 
   // What this request supplied (records, today, the question, USER turns). The
   // selected prior recommendation is NOT here — earlier AI output never vouches.
-  const supplied = suppliedReferences(context, input.question, generatedAt);
-  const corpus = collapse(suppliedReferenceText(context, input.question, generatedAt));
   const exactCorpus = suppliedReferenceText(context, input.question, generatedAt).replace(/\s+/g, " ");
-  const unsupportedKind = (text: string): BriefReferenceKind | null => {
-    for (const ref of extractTypedReferences(text)) {
-      if (supplied.tokens.has(ref.token)) continue;
-      const family = ref.token.replace(/-\d+$/, "");
-      if (ref.kind === "code" && STANDARD_CODE_FAMILIES.has(family) && !supplied.codeFamilies.has(family)) continue;
-      return ref.kind;
-    }
-    for (const ref of briefOnlyReferences(text)) {
-      if (!corpus.includes(ref.token)) return ref.kind;
-    }
-    return null;
-  };
+  const unsupportedKind = unsupportedReferenceChecker(context, input.question, generatedAt);
   const scan = input.scanNarrative ?? narrativeCredentialCategories;
   // Fail closed: a guard error counts as a hit, so the item is removed whole.
   const credentialHit = (text: string): boolean => {

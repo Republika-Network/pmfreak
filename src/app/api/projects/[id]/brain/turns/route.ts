@@ -29,6 +29,7 @@ import {
   type ProjectBrainTurnStore,
 } from "@/lib/project-brain/conversation";
 import { parseTargetRef } from "@/lib/project-brain/execution-brief/target";
+import { persistedBriefVerifier } from "@/lib/project-brain/execution-brief/verify";
 import type { ProjectBrainRequestIdentity } from "@/lib/project-brain/execution-brief/types";
 
 /**
@@ -132,7 +133,8 @@ export async function GET(_request: Request, context: RouteContext) {
     const providerConfigured = isProviderConfigured("openai");
     return NextResponse.json({
       conversationId: conversation?.id ?? null,
-      messages: toProjectBrainTranscript(messages),
+      // Briefs are exposed only when hash-verified and bound to their row and THIS route's scope.
+      messages: toProjectBrainTranscript(messages, { verifyExecutionBrief: persistedBriefVerifier(scope) }),
       // True only when a POST would actually be allowed to call the provider: a
       // provider key is configured AND this user is entitled in this operating
       // profile. Neither the key nor plan internals are exposed.
@@ -219,7 +221,8 @@ export async function POST(request: Request, context: RouteContext) {
       return NextResponse.json({ status: "needs_target", candidates: result.candidates });
     }
 
-    const userMessage = toProjectBrainMessageView(result.userMessage);
+    const view = { verifyExecutionBrief: persistedBriefVerifier({ workspaceId, projectId }) };
+    const userMessage = toProjectBrainMessageView(result.userMessage, view);
     if (result.status === "pending") {
       return NextResponse.json(
         { status: "pending", replayed: true, conversationId: result.conversationId, messages: [userMessage], retryAfterMs: result.retryAfterMs },
@@ -231,7 +234,7 @@ export async function POST(request: Request, context: RouteContext) {
       replayed: result.replayed,
       retryFailed: result.retryFailed ?? false,
       conversationId: result.conversationId,
-      messages: [userMessage, toProjectBrainMessageView(result.reply)],
+      messages: [userMessage, toProjectBrainMessageView(result.reply, view)],
     });
   } catch (error) {
     if (error instanceof ProjectBrainExecutionTargetError) {

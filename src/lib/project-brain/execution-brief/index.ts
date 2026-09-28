@@ -23,4 +23,6 @@ export * from "./render";
 export * from "./prompt";
 export * from "./assemble";
 export * from "./generate";
+export * from "./continuity";
+export * from "./verify";
 export { sha256Tag } from "./hash";

@@ -10,9 +10,12 @@
 // older deterministic Project Chat reply) renders as plain text with no chips,
 // so no member-authored row can ever display as a sourced Project Brain answer.
 //
-// PB-EXEC-01: a generative brief reply carries `executionBrief` — exposed ONLY after
-// strict validation (execution-brief/validate.ts); a malformed or legacy brief is
-// omitted (briefUnavailable) and the reply still renders. A user row exposes its
+// PB-EXEC-01: a generative brief reply carries `executionBrief` — exposed ONLY through
+// a caller-supplied verifier. The transcript API passes the SERVER verifier
+// (execution-brief/verify.ts: strict parse + recomputed briefContentHash + binding to
+// this row and the route's workspace/project). Without a verifier nothing of a brief is
+// exposed (fail closed). A brief that fails is omitted (briefUnavailable) and the reply
+// still renders; the stored row is never rewritten. This module stays pure (no hashing). A user row exposes its
 // validated operation identity (`request`) so a retry resends the SAME operation.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -21,7 +24,10 @@ import { labelForEpistemicType } from "../language";
 import { EPISTEMIC_TYPES, type EpistemicType } from "../types";
 import { storedRequestIdentity } from "../execution-brief/target";
 import type { ExecutionBriefV1, ProjectBrainOperation, ProjectBrainRequestIdentity } from "../execution-brief/types";
-import { parseExecutionBriefV1 } from "../execution-brief/validate";
+
+/** Returns the brief only when it is verified for THIS row (and the caller's scope); else null. */
+export type ExecutionBriefVerifier = (value: unknown, row: ContextMessageRow) => ExecutionBriefV1 | null;
+export type TranscriptViewOptions = { verifyExecutionBrief?: ExecutionBriefVerifier };
 
 export type ProjectBrainSourceChip = {
   /** Server-validated stable source id (`<table>:<uuid>` or a project-configuration key). */
@@ -124,7 +130,7 @@ function statement(value: unknown): ProjectBrainStatementView | null {
   };
 }
 
-export function toProjectBrainMessageView(row: ContextMessageRow): ProjectBrainMessageView | null {
+export function toProjectBrainMessageView(row: ContextMessageRow, options: TranscriptViewOptions = {}): ProjectBrainMessageView | null {
   if (row.role !== "user" && row.role !== "assistant") return null;
   const base = {
     id: row.id,
@@ -146,7 +152,14 @@ export function toProjectBrainMessageView(row: ContextMessageRow): ProjectBrainM
     ? meta.statements.map(statement).filter((s): s is ProjectBrainStatementView => s !== null)
     : [];
   const operation: ProjectBrainOperation = meta?.operation === "execution_brief" || meta?.executionBrief !== undefined ? "execution_brief" : "answer";
-  const executionBrief = row.brain_mode === "generative" && meta?.executionBrief !== undefined ? parseExecutionBriefV1(meta.executionBrief) : null;
+  let executionBrief: ExecutionBriefV1 | null = null;
+  if (row.brain_mode === "generative" && meta?.executionBrief !== undefined && options.verifyExecutionBrief) {
+    try {
+      executionBrief = options.verifyExecutionBrief(meta.executionBrief, row);
+    } catch {
+      executionBrief = null;
+    }
+  }
   const briefUnavailable = row.brain_mode === "generative" && operation === "execution_brief" && executionBrief === null;
   const sources = executionBrief
     ? executionBrief.provenance.sources.map(chip).filter((c): c is ProjectBrainSourceChip => c !== null)
@@ -179,9 +192,9 @@ export function toProjectBrainMessageView(row: ContextMessageRow): ProjectBrainM
   };
 }
 
-export function toProjectBrainTranscript(rows: ContextMessageRow[]): ProjectBrainMessageView[] {
+export function toProjectBrainTranscript(rows: ContextMessageRow[], options: TranscriptViewOptions = {}): ProjectBrainMessageView[] {
   return rows
-    .map(toProjectBrainMessageView)
+    .map((row) => toProjectBrainMessageView(row, options))
     .filter((m): m is ProjectBrainMessageView => m !== null)
     .sort((a, b) => a.sequence - b.sequence);
 }
