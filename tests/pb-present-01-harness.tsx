@@ -9,7 +9,7 @@
  */
 
 import { renderToStaticMarkup } from "react-dom/server";
-import { ProjectBrainAnswer } from "../src/components/pmfreak/project-brain/project-brain-conversation";
+import { LimitedModeNotice, ProjectBrainAnswer, ProjectBrainDisclosureNote } from "../src/components/pmfreak/project-brain/project-brain-conversation";
 import { deriveAnswerDisclosure } from "../src/components/pmfreak/project-brain/answer-disclosure";
 import type { ContextMessageRow } from "../src/lib/db/database-contract";
 import { toProjectBrainMessageView, type ProjectBrainMessageView } from "../src/lib/project-brain/conversation/transcript-view";
@@ -106,7 +106,10 @@ const CASES: Record<string, ContextMessageRow> = {
   malformed: row({ content: "Answer.", metadata: { projectBrain: { statements: "nope", sources: [{ evidenceId: 3 }, null], citations: null } } }),
   hostile: row({
     content: "<img src=x onerror=alert(1)> answer",
-    statements: [{ type: "FACT", text: "<script>alert('claim')</script>", sources: [source("projects:p1", "PROJECT", "Project — <b onmouseover=x>Evil</b>")] }],
+    statements: [
+      { type: "FACT", text: "<script>alert('claim')</script>", sources: [source("projects:p1", "PROJECT", "Project — <b onmouseover=x>Evil</b>")] },
+      { type: "INFERENCE", text: "<SCRIPT SRC=//x></SCRIPT><IMG SRC=x ONERROR=alert(2)>", sources: [source("projects:p1", "PROJECT", "Project — <b onmouseover=x>Evil</b>")] },
+    ],
     sources: [source("projects:p1", "PROJECT", "Project — <b onmouseover=x>Evil</b>")],
   }),
 };
@@ -129,7 +132,30 @@ const render = (view: ProjectBrainMessageView, variant: "dark" | "light", layout
     <ProjectBrainAnswer message={view} variant={variant} layout={layout} onRetry={view.brain?.mode === "degraded" ? () => {} : undefined} />,
   );
 
+// The composer's persistent note and the limited-mode notice, in each generative-availability
+// state the transcript GET can report (generative-access.ts decides; nothing here changes it).
+const MODES = {
+  generative: { generativeAvailable: true, limitedModeReason: null },
+  notIncluded: { generativeAvailable: false, limitedModeReason: "not_included" },
+  unavailable: { generativeAvailable: false, limitedModeReason: "unavailable" },
+} as const;
+const footer = Object.fromEntries(
+  Object.entries(MODES).map(([name, mode]) => [
+    name,
+    Object.fromEntries(
+      (["light", "dark"] as const).map((variant) => [
+        variant,
+        {
+          notice: renderToStaticMarkup(<LimitedModeNotice {...mode} variant={variant} />),
+          note: renderToStaticMarkup(<ProjectBrainDisclosureNote variant={variant} />),
+        },
+      ]),
+    ),
+  ]),
+);
+
 const out = {
+  footer,
   surface: Object.fromEntries(Object.entries(views).map(([name, view]) => [name, render(view, "light", "surface")])),
   panel: Object.fromEntries(Object.entries(views).map(([name, view]) => [name, render(view, "dark", "panel")])),
   disclosure: Object.fromEntries(Object.entries(views).map(([name, view]) => [name, deriveAnswerDisclosure(view.brain)])),

@@ -373,6 +373,36 @@ export function ProjectBrainAnswer({ message, variant = "dark", layout = "panel"
   );
 }
 
+type LimitedModeReason = "not_included" | "unavailable" | null;
+
+/** Shown above the composer whenever answers will be deterministic limited-mode replies. */
+export function LimitedModeNotice({ generativeAvailable, limitedModeReason, variant = "dark" }: { generativeAvailable: boolean; limitedModeReason: LimitedModeReason; variant?: Variant }) {
+  if (generativeAvailable) return null;
+  return (
+    <p className={`mb-2 ${STYLES[variant].notice}`} data-testid="project-brain-limited-mode">
+      {limitedModeReason === "not_included"
+        ? "Full generative Project Brain answers aren't included in your current plan. Answers list what this project's records show."
+        : "Project Brain is temporarily operating in limited mode: answers list what this project's records show, without a full generative answer."}
+    </p>
+  );
+}
+
+/**
+ * The one persistent note under the composer. It is shown in every mode — generative and
+ * limited — so it must be true in all of them: it says what a GENERATIVE answer is (the
+ * per-answer "AI-generated" label marks which ones are), never that every answer is
+ * AI-generated, and that details exist only where an answer has project support.
+ */
+export function ProjectBrainDisclosureNote({ variant = "dark" }: { variant?: Variant }) {
+  return (
+    <p className={`mt-2 px-1 text-[11px] ${STYLES[variant].muted}`} data-testid="project-brain-disclosure">
+      Generative Project Brain answers are AI-generated and can use this project&apos;s records and what is said in this conversation.
+      When an answer has project support, its sources &amp; verification open beneath it; a citation is not proof of every sentence.
+      Project Brain cannot change the project.
+    </p>
+  );
+}
+
 type ConversationProps = {
   projectId: string;
   projectName: string;
@@ -397,7 +427,7 @@ function ProjectThread({ projectId, projectName, variant = "dark", layout = "pan
   const surface = layout === "surface";
   const [messages, setMessages] = useState<ProjectBrainMessageView[]>([]);
   const [generativeAvailable, setGenerativeAvailable] = useState(true);
-  const [limitedModeReason, setLimitedModeReason] = useState<"not_included" | "unavailable" | null>(null);
+  const [limitedModeReason, setLimitedModeReason] = useState<LimitedModeReason>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -597,19 +627,9 @@ function ProjectThread({ projectId, projectName, variant = "dark", layout = "pan
     )
   );
 
-  const limitedModeNotice = !generativeAvailable ? (
-    <p className={`mb-2 ${styles.notice}`} data-testid="project-brain-limited-mode">
-      {limitedModeReason === "not_included"
-        ? "Full generative Project Brain answers aren't included in your current plan. Answers list what this project's records show."
-        : "Project Brain is temporarily operating in limited mode: answers list what this project's records show, without a full generative answer."}
-    </p>
-  ) : null;
+  const limitedModeNotice = <LimitedModeNotice generativeAvailable={generativeAvailable} limitedModeReason={limitedModeReason} variant={variant} />;
 
-  const disclosure = (
-    <p className={`mt-2 px-1 text-[11px] ${styles.muted}`} data-testid="project-brain-disclosure">
-      Project Brain&apos;s answers are AI-generated from this project&apos;s records and what is said in this conversation. Each project answer opens its sources &amp; verification; a citation is not proof of every sentence. It cannot change the project.
-    </p>
-  );
+  const disclosure = <ProjectBrainDisclosureNote variant={variant} />;
 
   const input = (
     <>

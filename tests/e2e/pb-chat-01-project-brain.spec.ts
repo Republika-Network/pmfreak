@@ -174,7 +174,9 @@ test("SIT-A: a project status question gets a grounded answer with validated sou
   await expect(page.getByTestId("chat-determinism-disclosure")).toHaveCount(0);
   // Honest contract: prose is AI-generated synthesis; a citation is not proof of every sentence.
   await expect(brain(page).getByTestId("project-brain-disclosure")).toContainText("a citation is not proof of every sentence");
-  await expect(brain(page).getByTestId("project-brain-disclosure")).toContainText("AI-generated");
+  // PR #630 F1: true in every mode — it describes GENERATIVE answers, never all answers.
+  await expect(brain(page).getByTestId("project-brain-disclosure")).toContainText("Generative Project Brain answers are AI-generated");
+  await expect(brain(page).getByTestId("project-brain-disclosure")).not.toContainText(/Each project answer|Project Brain's answers are AI-generated/);
   // closed-free-beta: a Free-plan user is entitled to generative Project Brain.
   const initial = await (await page.request.get(`/api/projects/${t.main.projectA}/brain/turns`)).json();
   expect(initial.generativeAvailable).toBe(true);
@@ -200,6 +202,9 @@ test("SIT-A: a project status question gets a grounded answer with validated sou
   // their labels and the chips are not in view until the user opens it.
   await expect(detailsSummary(reply)).toBeVisible();
   await expect(detailsSummary(reply)).toContainText("Sources & verification");
+  // The collapsed row's visible text, as the browser computes it (PB-PRESENT-01 unit tests
+  // assert the rendered fragments; this asserts what the user actually reads).
+  await expect(detailsSummary(reply)).toHaveText(/^AI-generated\s·\s+Some claims need review\s+Sources & verification\s·\s\d+ records?\s▸\s*▾?$/);
   await expect(details(reply)).not.toHaveAttribute("open", "");
   await expect(reply.getByTestId("project-brain-statements")).toBeHidden();
   await expect(chips.first()).toBeHidden();
@@ -322,6 +327,9 @@ test("Degraded: a provider failure is answered honestly in limited mode, never a
   const reply = await ask(page, "[simulate-provider-failure] What is the status?");
   await expect(reply).toHaveAttribute("data-mode", "degraded");
   await expect(reply).toContainText("limited mode");
+  // A deterministic limited-mode reply is never labelled AI-generated.
+  await expect(reply).not.toContainText("AI-generated");
+  await expect(reply.getByTestId("project-brain-synthesis-label")).toHaveCount(0);
   await expect(reply).not.toContainText("[stub model]");
   await expect(reply.getByText("Try again with Project Brain")).toBeVisible();
   await shot(page, "06-degraded-limited-mode");
@@ -355,6 +363,7 @@ test("SIT-R: a recent user report is used as provisional working context — nev
   await expect(first.getByTestId("project-brain-answer-reported")).toBeVisible();
   await expect(first.getByTestId("project-brain-answer-reported")).toContainText("reported chat update");
   await expect(first.getByTestId("project-brain-answer-reported")).toContainText("not verified");
+  await expect(detailsSummary(first)).toHaveText(/^AI-generated\s·\s+Some claims need review\s+Sources & verification\s·\s\d+ claims?\s·\suses 1 reported chat update · not verified\s▸\s*▾?$/);
   const reported = first.locator('[data-epistemic-type="REPORTED"]');
   await expect(reported).toBeHidden();
   await openDetails(first);

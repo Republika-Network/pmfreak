@@ -353,10 +353,20 @@ as such.
 point of display of any AI-generated text, so the per-answer label stays — reworded from
 "AI-written answer" to the literal "AI-generated" and moved from above the prose into the
 quiet disclosure row (or the general-answer note). Limited-mode and legacy replies are
-deterministic and are not labelled AI-generated. The composer footer now reads: "Project
-Brain's answers are AI-generated from this project's records and what is said in this
-conversation. Each project answer opens its sources & verification; a citation is not proof
-of every sentence. It cannot change the project."
+deterministic and are not labelled AI-generated. The composer footer is shown in every mode —
+generative and limited — so it is worded to be true in all of them: "Generative Project Brain
+answers are AI-generated and can use this project's records and what is said in this
+conversation. When an answer has project support, its sources & verification open beneath it;
+a citation is not proof of every sentence. Project Brain cannot change the project." It never
+says every answer is AI-generated (limited-mode replies are not) or that every answer has a
+details panel (general and bare limited-mode answers have none).
+
+**Governance scope.** ADR-PMF-066 §4 (provenance never behind an extra click) governs domain
+Recommendation records, Agent Proposals, Project Memory and Enterprise Knowledge records. A
+Project Brain statement typed `RECOMMENDATION` is structured chat metadata — no approval control,
+no domain Recommendation is created or mutated — so it is not in that rule's scope. ADR-PMF-071
+§6 (claim evidence reachable within one interaction) is met: one activation of the disclosure
+shows every claim and cited record.
 
 **Presentation only.** One renderer (`ProjectBrainAnswer`) serves the `surface` and `panel`
 layouts. No prompt, output contract, grounding, normalization, persistence, API, migration or
