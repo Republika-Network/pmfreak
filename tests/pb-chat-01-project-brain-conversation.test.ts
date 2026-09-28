@@ -1107,7 +1107,8 @@ test("R-F5c: customer copy separates AI synthesis from cited claims and never cl
   // never that the claim came from, or is proven by, them.
   assert.match(component, /FACT: "Cites project records"/);
   assert.doesNotMatch(component, /from project records/i);
-  assert.match(component, /Records cited/);
+  // PB-PRESENT-01: the chips sit inside the answer's "Sources & verification" details.
+  assert.match(component, /Project records cited/);
   // A plan limit offers no pointless "try again".
   assert.match(component, /message\.brain\.reason !== "not_entitled"/);
 });

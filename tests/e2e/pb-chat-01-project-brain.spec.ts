@@ -22,7 +22,7 @@
  *   OPERATIONAL_FLOW_TEST_BASE_URL=http://localhost:3417 PB_CHAT_STUB_LOG=<file> \
  *   npx playwright test tests/e2e/pb-chat-01-project-brain.spec.ts
  */
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -31,7 +31,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 const supabaseUrl = process.env.OPERATIONAL_FLOW_TEST_SUPABASE_URL ?? "";
 const serviceRoleKey = process.env.OPERATIONAL_FLOW_TEST_SERVICE_ROLE_KEY ?? "";
 const stubLog = process.env.PB_CHAT_STUB_LOG ?? "";
-const SHOTS = "artifacts/pb-chat-01/screenshots";
+const SHOTS = process.env.PB_SHOTS_DIR ?? "artifacts/pb-chat-01/screenshots";
 const password = `PB-CHAT-01-${randomUUID()}!`;
 const suffix = `${Date.now()}-${randomUUID().slice(0, 6)}`;
 
@@ -145,6 +145,14 @@ async function ask(page: Page, text: string) {
   return brain(page).getByTestId("project-brain-assistant-message").last();
 }
 
+// PB-PRESENT-01: an answer's claims and cited records sit behind one native <details>.
+const details = (reply: Locator) => reply.getByTestId("project-brain-answer-details");
+const detailsSummary = (reply: Locator) => reply.getByTestId("project-brain-answer-details-summary");
+async function openDetails(reply: Locator) {
+  await detailsSummary(reply).click();
+  await expect(details(reply)).toHaveAttribute("open", "");
+}
+
 async function shot(page: Page, name: string) {
   mkdirSync(SHOTS, { recursive: true });
   await page.screenshot({ path: `${SHOTS}/${name}.png`, fullPage: false });
@@ -164,8 +172,11 @@ test("SIT-A: a project status question gets a grounded answer with validated sou
   // Open by default and first-class: the composer is visible without clicking anything.
   await expect(brain(page).getByTestId("project-brain-input")).toBeVisible();
   await expect(page.getByTestId("chat-determinism-disclosure")).toHaveCount(0);
-  // Honest contract: prose is synthesis; listed claims show what they cite, not proof of every sentence.
+  // Honest contract: prose is AI-generated synthesis; a citation is not proof of every sentence.
   await expect(brain(page).getByTestId("project-brain-disclosure")).toContainText("a citation is not proof of every sentence");
+  // PR #630 F1: true in every mode — it describes GENERATIVE answers, never all answers.
+  await expect(brain(page).getByTestId("project-brain-disclosure")).toContainText("Generative Project Brain answers are AI-generated");
+  await expect(brain(page).getByTestId("project-brain-disclosure")).not.toContainText(/Each project answer|Project Brain's answers are AI-generated/);
   // closed-free-beta: a Free-plan user is entitled to generative Project Brain.
   const initial = await (await page.request.get(`/api/projects/${t.main.projectA}/brain/turns`)).json();
   expect(initial.generativeAvailable).toBe(true);
@@ -187,17 +198,37 @@ test("SIT-A: a project status question gets a grounded answer with validated sou
     expect(row.workspace_id).toBe(t.main.workspaceId);
     expect(table === "projects" ? row.id : row.project_id).toBe(t.main.projectA);
   }
+  // PB-PRESENT-01 (P1): answer first. One closed "Sources & verification" row; the claims,
+  // their labels and the chips are not in view until the user opens it.
+  await expect(detailsSummary(reply)).toBeVisible();
+  await expect(detailsSummary(reply)).toContainText("Sources & verification");
+  // The collapsed row's visible text, as the browser computes it (PB-PRESENT-01 unit tests
+  // assert the rendered fragments; this asserts what the user actually reads).
+  await expect(detailsSummary(reply)).toHaveText(/^AI-generated\s·\s+Some claims need review\s+Sources & verification\s·\s\d+ records?\s▸\s*▾?$/);
+  await expect(details(reply)).not.toHaveAttribute("open", "");
+  await expect(reply.getByTestId("project-brain-statements")).toBeHidden();
+  await expect(chips.first()).toBeHidden();
+  await expect(reply.getByTestId("project-brain-synthesis-label")).toHaveText("AI-generated");
+  // The stub cited an invented S999: the caution is visible on the CLOSED row.
+  await expect(reply.getByTestId("project-brain-answer-caution")).toContainText("Some claims need review");
+  await shot(page, "02a-grounded-answer-collapsed");
+  await openDetails(reply);
   await expect(reply.getByTestId("project-brain-statements")).toBeVisible();
+  await expect(chips.first()).toBeVisible();
   // RC-2: a FACT with a valid project source says only that it CITES records — citation
   // validation checks identity/scope, not that the record proves the claim.
   const fact = reply.locator('[data-epistemic-type="FACT"]').first();
   await expect(fact).toContainText("Cites project records");
   await expect(reply).not.toContainText(/from project records/i);
-  await expect(reply.getByTestId("project-brain-synthesis-label")).toBeVisible();
   // The stub cited an invented S999; the server stripped it, and the customer is told.
   await expect(reply.getByTestId("project-brain-grounding-notice")).toContainText("could not be fully linked to project records");
   await expect(reply.getByTestId("project-brain-conversational-note")).toHaveCount(0);
   await shot(page, "02-grounded-answer-with-sources");
+  // Collapse: back to the answer-first view, transcript unchanged.
+  await detailsSummary(reply).click();
+  await expect(details(reply)).not.toHaveAttribute("open", "");
+  await expect(reply.getByTestId("project-brain-statements")).toBeHidden();
+  await expect(reply).toContainText("[stub model]");
   expect(await stateCounts(t.main.workspaceId)).toEqual(baseline);
 });
 
@@ -278,6 +309,8 @@ test("SIT-B: an off-topic question is answered without project sources and write
   await expect(reply).toHaveAttribute("data-mode", "generative");
   await expect(reply.locator("[data-source-id]")).toHaveCount(0);
   await expect(reply.getByTestId("project-brain-statements")).toHaveCount(0);
+  // PB-PRESENT-01: nothing to disclose → no empty "Sources & verification".
+  await expect(details(reply)).toHaveCount(0);
   // No claims → presented as a general answer, never as source-backed project status.
   await expect(reply.getByTestId("project-brain-conversational-note")).toBeVisible();
   await expect(reply).not.toContainText("Cites project records");
@@ -294,6 +327,9 @@ test("Degraded: a provider failure is answered honestly in limited mode, never a
   const reply = await ask(page, "[simulate-provider-failure] What is the status?");
   await expect(reply).toHaveAttribute("data-mode", "degraded");
   await expect(reply).toContainText("limited mode");
+  // A deterministic limited-mode reply is never labelled AI-generated.
+  await expect(reply).not.toContainText("AI-generated");
+  await expect(reply.getByTestId("project-brain-synthesis-label")).toHaveCount(0);
   await expect(reply).not.toContainText("[stub model]");
   await expect(reply.getByText("Try again with Project Brain")).toBeVisible();
   await shot(page, "06-degraded-limited-mode");
@@ -322,7 +358,16 @@ test("SIT-R: a recent user report is used as provisional working context — nev
   const first = await ask(page, update);
   await expect(first).toHaveAttribute("data-mode", "generative");
   await expect(first).toContainText("Based on your update");
+  // PB-PRESENT-01 (P2): the closed row already says the answer uses reported chat context.
+  await expect(details(first)).not.toHaveAttribute("open", "");
+  await expect(first.getByTestId("project-brain-answer-reported")).toBeVisible();
+  await expect(first.getByTestId("project-brain-answer-reported")).toContainText("reported chat update");
+  await expect(first.getByTestId("project-brain-answer-reported")).toContainText("not verified");
+  await expect(detailsSummary(first)).toHaveText(/^AI-generated\s·\s+Some claims need review\s+Sources & verification\s·\s\d+ claims?\s·\suses 1 reported chat update · not verified\s▸\s*▾?$/);
   const reported = first.locator('[data-epistemic-type="REPORTED"]');
+  await expect(reported).toBeHidden();
+  await openDetails(first);
+  await expect(reported).toBeVisible();
   await expect(reported).toHaveAttribute("data-reported-in-conversation", "true");
   await expect(reported).toContainText("Reported in chat · not verified");
   // A report is never shown as citing project records, and the invented R999 was stripped.
@@ -334,6 +379,9 @@ test("SIT-R: a recent user report is used as provisional working context — nev
   await expect(next).toHaveAttribute("data-mode", "generative");
   // The answer rests on the EARLIER turn's report, in the same thread.
   await expect(next).toContainText("P13 was merged today and P14 is the next milestone");
+  await expect(next.getByTestId("project-brain-answer-reported")).toBeVisible();
+  await openDetails(next);
+  await expect(next.locator('[data-epistemic-type="REPORTED"]')).toBeVisible();
   await expect(next.locator('[data-epistemic-type="REPORTED"]')).toContainText("Reported in chat · not verified");
   const transcript = await (await page.request.get(`/api/projects/${t.main.projectA}/brain/turns`)).json();
   type View = { id: string; role: string; content: string; brain: { statements: Array<{ epistemicType: string; reportedTurnIds: string[] }> } | null };
@@ -351,7 +399,14 @@ test("SIT-R: a recent user report is used as provisional working context — nev
 
   await page.reload();
   await expect(brain(page).getByTestId("project-brain-user-message").filter({ hasText: update })).toBeVisible({ timeout: 45_000 });
-  await expect(brain(page).locator('[data-reported-in-conversation="true"]').first()).toBeVisible();
+  // Persisted answers come back collapsed (open state is UI-only) and reopen.
+  const persisted = brain(page).getByTestId("project-brain-assistant-message").last();
+  await expect(details(persisted)).not.toHaveAttribute("open", "");
+  await expect(persisted.getByTestId("project-brain-answer-reported")).toBeVisible();
+  await expect(brain(page).locator('[data-reported-in-conversation="true"]').first()).toBeHidden();
+  await openDetails(persisted);
+  await expect(persisted.locator('[data-reported-in-conversation="true"]').first()).toBeVisible();
+  await expect(persisted.locator('[data-epistemic-type="REPORTED"]')).toContainText("Reported in chat · not verified");
 
   // Project B: Project A's report must not exist here at all.
   await openBrain(page, t.main.projectB);
@@ -359,7 +414,70 @@ test("SIT-R: a recent user report is used as provisional working context — nev
   await expect(other).toHaveAttribute("data-mode", "generative");
   await expect(other).not.toContainText("P13");
   await expect(other.locator('[data-reported-in-conversation="true"]')).toHaveCount(0);
+  // P3: nothing of Project A's disclosure — content or open state — exists in Project B.
+  await expect(brain(page).locator('[data-reported-context="true"]')).toHaveCount(0);
+  await expect(brain(page).locator("details[open]")).toHaveCount(0);
   await expect(brain(page).getByText("P13 was merged today")).toHaveCount(0);
   expect(await stateCounts(t.main.workspaceId)).toEqual(baseline);
   await shot(page, "09-reported-context-isolated");
+});
+
+// ─── PB-PRESENT-01: progressive disclosure ──────────────────────────────────
+
+test("P5: opening an earlier answer's details stays in place — no jump to the bottom, no focus theft, no request", async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 700 });
+  await signIn(page, t.main.email);
+  await openBrain(page, t.main.projectA);
+  const transcript = brain(page).getByTestId("project-brain-transcript");
+  const earliest = brain(page).getByTestId("project-brain-assistant-message").first();
+  await earliest.scrollIntoViewIfNeeded();
+  const before = await transcript.evaluate((el) => el.scrollTop);
+  const count = await brain(page).getByTestId("project-brain-assistant-message").count();
+  const requests: string[] = [];
+  page.on("request", (request) => {
+    if (!request.url().includes("/_next/")) requests.push(`${request.method()} ${request.url()}`);
+  });
+  await detailsSummary(earliest).focus();
+  await page.keyboard.press("Enter");
+  await expect(details(earliest)).toHaveAttribute("open", "");
+  await expect(earliest.getByTestId("project-brain-statements")).toBeVisible();
+  // Opening is pure client state: no endpoint, no provider call, no message change.
+  await page.waitForTimeout(500);
+  expect(requests).toEqual([]);
+  await expect(brain(page).getByTestId("project-brain-assistant-message")).toHaveCount(count);
+  expect(Math.abs((await transcript.evaluate((el) => el.scrollTop)) - before)).toBeLessThan(40);
+  await expect(detailsSummary(earliest)).toBeFocused();
+  await expect(brain(page).getByTestId("project-brain-input")).not.toBeFocused();
+  await shot(page, "10-details-open-1024");
+  // Keyboard closes it again.
+  await page.keyboard.press("Space");
+  await expect(details(earliest)).not.toHaveAttribute("open", "");
+});
+
+test("P4: at 390px the answer is readable, the summary is tappable, chips wrap and nothing overflows", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await signIn(page, t.main.email);
+  await openBrain(page, t.main.projectA);
+  const reply = brain(page).getByTestId("project-brain-assistant-message").filter({ has: page.getByTestId("project-brain-answer-reported") }).last();
+  await reply.scrollIntoViewIfNeeded();
+  const summary = detailsSummary(reply);
+  await expect(summary).toBeVisible();
+  const box = (await summary.boundingBox())!;
+  expect(box.height, "a comfortable tap target").toBeGreaterThanOrEqual(28);
+  expect(box.x + box.width).toBeLessThanOrEqual(390);
+  await shot(page, "11-mobile-collapsed");
+  await summary.tap().catch(async () => summary.click());
+  await expect(details(reply)).toHaveAttribute("open", "");
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow, "no horizontal page overflow").toBeLessThanOrEqual(0);
+  for (const chip of await reply.locator("[data-source-id]").all()) {
+    const chipBox = (await chip.boundingBox())!;
+    expect(chipBox.x + chipBox.width, "chips wrap inside the viewport").toBeLessThanOrEqual(390);
+  }
+  // No nested scroll region inside the answer.
+  const nestedScroll = await reply.evaluate((el) =>
+    [...el.querySelectorAll("*")].some((n) => ["auto", "scroll"].includes(getComputedStyle(n).overflowY) && n.scrollHeight > n.clientHeight),
+  );
+  expect(nestedScroll).toBe(false);
+  await shot(page, "12-mobile-details-open");
 });

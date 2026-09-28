@@ -6,6 +6,7 @@ import type {
   ProjectBrainSourceChip,
   ProjectBrainStatementView,
 } from "@/lib/project-brain/conversation/transcript-view";
+import { ANSWER_DETAILS_LABEL, CAUTION_LABEL, deriveAnswerDisclosure } from "./answer-disclosure";
 
 /**
  * PB-CHAT-01 — the ONE Project Brain conversation for a project.
@@ -32,6 +33,13 @@ import type {
  * readable measure, and pins the composer to the bottom. The layout changes
  * presentation only — the transcript, the send path, the client message id, the
  * idempotent retry and every grounding disclosure are the same code in both.
+ *
+ * PB-PRESENT-01 — answer first. An answer shows its prose and ONE compact
+ * "Sources & verification" row; the structured claims, their labels and the cited
+ * records open from it (native <details>, closed by default, UI-only state). What
+ * is material stays visible while closed: a record conflict, claims that need
+ * review, reliance on reported chat context, limited mode and the general-answer
+ * note. The panel holds structured claims and provenance — never model reasoning.
  */
 
 type Variant = "dark" | "light";
@@ -71,6 +79,12 @@ const STYLES: Record<Variant, Record<string, string>> = {
     notice: "rounded-xl border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-200",
     error: "text-xs text-rose-300",
     link: "text-xs font-medium text-sky-300 underline-offset-2 hover:underline",
+    summary: "text-zinc-400 hover:text-zinc-200",
+    caution: "border-amber-500/30 bg-amber-500/10 text-amber-200",
+    reported: "text-amber-300",
+    panel: "border-white/10 bg-white/[0.02]",
+    badge: "border-white/15 text-zinc-400",
+    badgeCaution: "border-amber-500/30 text-amber-300",
   },
   light: {
     frame: "flex h-full min-h-0 flex-col",
@@ -85,15 +99,20 @@ const STYLES: Record<Variant, Record<string, string>> = {
     notice: "rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900",
     error: "text-xs text-rose-700",
     link: "text-xs font-medium text-cyan-800 underline-offset-2 hover:underline",
+    summary: "text-slate-500 hover:text-slate-800",
+    caution: "border-amber-200 bg-amber-50 text-amber-900",
+    reported: "text-amber-800",
+    panel: "border-slate-200 bg-slate-50/70",
+    badge: "border-slate-200 text-slate-600",
+    badgeCaution: "border-amber-200 text-amber-800",
   },
 };
 
 /**
  * The primary-surface rendering (light). Turns read as a conversation, not as
  * cards in a feed: the question in a quiet bubble, the answer as text at a
- * readable measure — with its claims, citations and notices exactly as in the
- * panel, so moving the conversation to the centre weakens none of its
- * disclosure.
+ * readable measure — with the same answer details and notices as the panel, so
+ * moving the conversation to the centre weakens none of its disclosure.
  */
 const SURFACE_STYLES = {
   user: "max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-slate-100 px-4 py-2.5 text-[15px] leading-relaxed text-slate-900",
@@ -154,16 +173,21 @@ function mergeMessages(current: ProjectBrainMessageView[], incoming: ProjectBrai
   return [...byId.values(), ...stillLocal].sort((a, b) => a.sequence - b.sequence);
 }
 
+/** The literal label ADR-PMF-066 §5 requires wherever AI-generated text is displayed. */
+const AI_GENERATED_LABEL = "AI-generated";
+
+const GROUNDING_NOTICE = "Some generated claims could not be fully linked to project records.";
+
 function SourceChips({ sources, styles }: { sources: ProjectBrainSourceChip[]; styles: Record<string, string> }) {
   if (sources.length === 0) return null;
   return (
-    <div className={`mt-3 border-t pt-2.5 ${styles.divider}`}>
-      <p className={`text-[11px] font-semibold uppercase tracking-[0.12em] ${styles.muted}`}>Records cited</p>
+    <div>
+      <p className="text-[11px] font-semibold">Project records cited</p>
       <ul className="mt-1.5 flex flex-wrap gap-1.5" data-testid="project-brain-sources">
         {sources.map((source) => (
-          <li key={source.id}>
+          <li key={source.id} className="min-w-0 max-w-full">
             <span
-              className={styles.chip}
+              className={`inline-block max-w-full break-words ${styles.chip}`}
               data-source-id={source.id}
               data-source-family={source.family}
               title={source.recordedAt ? `Recorded ${source.recordedAt.slice(0, 10)}` : undefined}
@@ -180,26 +204,202 @@ function SourceChips({ sources, styles }: { sources: ProjectBrainSourceChip[]; s
 function Statements({ statements, styles }: { statements: ProjectBrainStatementView[]; styles: Record<string, string> }) {
   if (statements.length === 0) return null;
   return (
-    <div className="mt-3">
-      <p className={`text-[11px] font-semibold uppercase tracking-[0.12em] ${styles.muted}`}>Claims about this project</p>
-      <ul className="mt-1.5 space-y-1.5" data-testid="project-brain-statements">
-        {statements.map((statement) => (
-          <li
-            key={statement.id}
-            className="text-xs leading-relaxed"
-            data-epistemic-type={statement.epistemicType}
-            data-reported-in-conversation={statement.reportedTurnIds.length > 0 ? "true" : undefined}
-          >
-            <span className={`mr-1.5 rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] ${styles.divider} ${styles.muted}`}>
-              {statement.epistemicType === "REPORTED" && statement.reportedTurnIds.length > 0
-                ? REPORTED_IN_CONVERSATION_BADGE
-                : (EPISTEMIC_BADGE[statement.epistemicType] ?? statement.epistemicLabel)}
-            </span>
-            {statement.text}
-          </li>
-        ))}
+    <div>
+      <p className="text-[11px] font-semibold">Claims</p>
+      <ul className="mt-1.5 space-y-2" data-testid="project-brain-statements">
+        {statements.map((statement) => {
+          const inConversation = statement.reportedTurnIds.length > 0;
+          const reportedHere = statement.epistemicType === "REPORTED" && inConversation;
+          const cautious = reportedHere || statement.epistemicType === "CONTRADICTION";
+          return (
+            <li
+              key={statement.id}
+              className="text-xs leading-relaxed"
+              data-epistemic-type={statement.epistemicType}
+              data-reported-in-conversation={inConversation ? "true" : undefined}
+            >
+              <span className={`mr-1.5 inline-block rounded-full border px-1.5 text-[10px] font-medium ${cautious ? styles.badgeCaution : styles.badge}`}>
+                {reportedHere ? REPORTED_IN_CONVERSATION_BADGE : (EPISTEMIC_BADGE[statement.epistemicType] ?? statement.epistemicLabel)}
+              </span>
+              {/* Any other claim (a suggestion, an assumption, an open question) can rest on a chat report too — say so. */}
+              {inConversation && !reportedHere ? (
+                <span className={`mr-1.5 inline-block rounded-full border px-1.5 text-[10px] font-medium ${styles.badgeCaution}`}>Uses a chat report · not verified</span>
+              ) : null}
+              {statement.text}
+            </li>
+          );
+        })}
       </ul>
     </div>
+  );
+}
+
+/**
+ * PB-PRESENT-01 — the one disclosure row under an answer. Native <details>: keyboard and
+ * screen-reader operable, closed by default, its open state never stored anywhere.
+ * Opening it reads only what the transcript already holds — no request, no model call.
+ */
+function AnswerDetails({ brain, aiLabel, styles }: { brain: NonNullable<ProjectBrainMessageView["brain"]>; aiLabel: boolean; styles: Record<string, string> }) {
+  const disclosure = deriveAnswerDisclosure(brain);
+  if (!disclosure.hasDetails) return null;
+  return (
+    <details
+      className="group mt-3 whitespace-normal"
+      data-testid="project-brain-answer-details"
+      data-tone={disclosure.tone}
+      data-cautions={disclosure.cautions.join(" ") || undefined}
+      data-reported-context={disclosure.reportTurnCount > 0 ? "true" : undefined}
+    >
+      <summary
+        className={`inline-flex min-h-8 max-w-full cursor-pointer list-none flex-wrap items-center gap-x-1.5 gap-y-1 rounded-md py-1 text-xs leading-relaxed transition [&::-webkit-details-marker]:hidden ${styles.summary}`}
+        data-testid="project-brain-answer-details-summary"
+      >
+        {aiLabel ? (
+          <>
+            <span data-testid="project-brain-synthesis-label">{AI_GENERATED_LABEL}</span>{" "}
+            <span aria-hidden>·</span>{" "}
+          </>
+        ) : null}
+        {disclosure.cautions.map((caution) => (
+          <span
+            key={caution}
+            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-medium ${styles.caution}`}
+            data-testid="project-brain-answer-caution"
+            data-caution={caution}
+          >
+            <svg aria-hidden viewBox="0 0 16 16" className="h-3 w-3 shrink-0">
+              <path d="M8 2.5l6 10.5H2L8 2.5z M8 6.5v3 M8 11.3v.2" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            {CAUTION_LABEL[caution]}
+          </span>
+        )).flatMap((pill) => [pill, " "])}
+        {/* One text run, so a narrow screen wraps it word by word; the no-break space keeps
+            each "·" with the word before it instead of opening a line. */}
+        <span className="min-w-0">
+          <span className="font-medium">{ANSWER_DETAILS_LABEL}</span>
+          {disclosure.counts.map((part) => `\u00a0· ${part}`).join("")}
+          {disclosure.reportedNote ? (
+            <>
+              {"\u00a0· "}
+              <span className={styles.reported} data-testid="project-brain-answer-reported">
+                {disclosure.reportedNote}
+              </span>
+            </>
+          ) : null}
+          {/* Text glyphs, not an inline-block icon: an atomic inline may wrap onto a line of its own. */}
+          <span aria-hidden className="group-open:hidden">{"\u00a0▸"}</span>
+          <span aria-hidden className="hidden group-open:inline">{"\u00a0▾"}</span>
+        </span>
+      </summary>
+      <div className={`mt-2 space-y-3 rounded-xl border p-3 leading-relaxed ${styles.panel}`} data-testid="project-brain-answer-details-panel">
+        {brain.groundingAdjusted ? (
+          <p className={`text-[11px] ${styles.reported}`} data-testid="project-brain-grounding-notice">
+            {GROUNDING_NOTICE} The claims below carry only the labels that could be checked.
+          </p>
+        ) : null}
+        {disclosure.cautions.includes("conflict") ? (
+          <p className={`text-[11px] ${styles.reported}`} data-testid="project-brain-conflict-notice">
+            Project records disagree on at least one point — see the claims marked &ldquo;{EPISTEMIC_BADGE.CONTRADICTION}&rdquo;.
+          </p>
+        ) : null}
+        {disclosure.reportedClaimCount > 0 ? (
+          <p className={`text-[11px] ${styles.reported}`} data-testid="project-brain-reported-note">
+            {disclosure.reportedClaimCount === 1 ? "1 claim rests" : `${disclosure.reportedClaimCount} claims rest`} on something said in this conversation. Chat
+            context is working context, not a project record, and is not verified.
+          </p>
+        ) : null}
+        <Statements statements={brain.statements} styles={styles} />
+        <SourceChips sources={brain.sources} styles={styles} />
+        <p className={`text-[11px] ${styles.muted}`}>A citation shows which record a claim points to; it is not proof of every sentence.</p>
+      </div>
+    </details>
+  );
+}
+
+type AnswerProps = {
+  message: ProjectBrainMessageView;
+  variant?: Variant;
+  layout?: Layout;
+  /** Present only when a limited-mode answer can be retried with Project Brain. */
+  onRetry?: () => void;
+  retryDisabled?: boolean;
+};
+
+/**
+ * One assistant turn. PB-PRESENT-01: the answer dominates; everything structured about it
+ * sits behind one disclosure row, except what is material — which stays in view.
+ */
+export function ProjectBrainAnswer({ message, variant = "dark", layout = "panel", onRetry, retryDisabled = false }: AnswerProps) {
+  const styles = STYLES[variant];
+  const brain = message.brain;
+  // Only a generative answer is model-written; limited mode and legacy replies are deterministic.
+  // A generative answer is either conversational-only (labelled in its note) or has claims
+  // (labelled in its disclosure row) — so every one carries the label exactly once.
+  const aiLabel = brain?.mode === "generative";
+  const hasDetails = brain ? deriveAnswerDisclosure(brain).hasDetails : false;
+  return (
+    <div
+      className={layout === "surface" ? SURFACE_STYLES.assistant : styles.assistant}
+      data-testid="project-brain-assistant-message"
+      data-mode={brain?.mode ?? "legacy"}
+    >
+      {brain?.mode === "degraded" ? (
+        <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-amber-500" data-testid="project-brain-limited-answer">
+          Limited mode
+        </p>
+      ) : null}
+      {message.origin === "legacy_project_chat" ? (
+        <p className={`mb-1 text-[11px] ${styles.muted}`}>Earlier rule-based Project Chat reply</p>
+      ) : null}
+      <p>{message.content}</p>
+      {brain?.conversationalOnly ? (
+        <p className={`mt-2 whitespace-normal text-xs ${styles.muted}`} data-testid="project-brain-conversational-note">
+          <span data-testid="project-brain-synthesis-label">{AI_GENERATED_LABEL}</span> · General answer — not linked to this project&apos;s records.
+        </p>
+      ) : null}
+      {brain ? <AnswerDetails brain={brain} aiLabel={aiLabel && !brain.conversationalOnly} styles={styles} /> : null}
+      {/* Nothing to open, yet claims were adjusted: the caution cannot hide in a panel that is not there. */}
+      {brain?.groundingAdjusted && !hasDetails ? (
+        <p className={`mt-2 whitespace-normal text-xs ${styles.reported}`} data-testid="project-brain-grounding-notice">
+          {GROUNDING_NOTICE}
+        </p>
+      ) : null}
+      {onRetry ? (
+        <button type="button" className={`mt-2 ${styles.link}`} onClick={onRetry} disabled={retryDisabled}>
+          Try again with Project Brain
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+type LimitedModeReason = "not_included" | "unavailable" | null;
+
+/** Shown above the composer whenever answers will be deterministic limited-mode replies. */
+export function LimitedModeNotice({ generativeAvailable, limitedModeReason, variant = "dark" }: { generativeAvailable: boolean; limitedModeReason: LimitedModeReason; variant?: Variant }) {
+  if (generativeAvailable) return null;
+  return (
+    <p className={`mb-2 ${STYLES[variant].notice}`} data-testid="project-brain-limited-mode">
+      {limitedModeReason === "not_included"
+        ? "Full generative Project Brain answers aren't included in your current plan. Answers list what this project's records show."
+        : "Project Brain is temporarily operating in limited mode: answers list what this project's records show, without a full generative answer."}
+    </p>
+  );
+}
+
+/**
+ * The one persistent note under the composer. It is shown in every mode — generative and
+ * limited — so it must be true in all of them: it says what a GENERATIVE answer is (the
+ * per-answer "AI-generated" label marks which ones are), never that every answer is
+ * AI-generated, and that details exist only where an answer has project support.
+ */
+export function ProjectBrainDisclosureNote({ variant = "dark" }: { variant?: Variant }) {
+  return (
+    <p className={`mt-2 px-1 text-[11px] ${STYLES[variant].muted}`} data-testid="project-brain-disclosure">
+      Generative Project Brain answers are AI-generated and can use this project&apos;s records and what is said in this conversation.
+      When an answer has project support, its sources &amp; verification open beneath it; a citation is not proof of every sentence.
+      Project Brain cannot change the project.
+    </p>
   );
 }
 
@@ -227,7 +427,7 @@ function ProjectThread({ projectId, projectName, variant = "dark", layout = "pan
   const surface = layout === "surface";
   const [messages, setMessages] = useState<ProjectBrainMessageView[]>([]);
   const [generativeAvailable, setGenerativeAvailable] = useState(true);
-  const [limitedModeReason, setLimitedModeReason] = useState<"not_included" | "unavailable" | null>(null);
+  const [limitedModeReason, setLimitedModeReason] = useState<LimitedModeReason>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -411,57 +611,25 @@ function ProjectThread({ projectId, projectName, variant = "dark", layout = "pan
           </div>
         </div>
       ) : (
-        <div
+        <ProjectBrainAnswer
           key={message.id}
-          className={surface ? SURFACE_STYLES.assistant : styles.assistant}
-          data-testid="project-brain-assistant-message"
-          data-mode={message.brain?.mode ?? "legacy"}
-        >
-          {message.brain?.mode === "degraded" ? (
-            <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-amber-500">Limited mode</p>
-          ) : null}
-          {message.origin === "legacy_project_chat" ? (
-            <p className={`mb-1 text-[11px] ${styles.muted}`}>Earlier rule-based Project Chat reply</p>
-          ) : null}
-          {message.brain?.mode === "generative" ? (
-            <p className={`mb-1 text-[11px] ${styles.muted}`} data-testid="project-brain-synthesis-label">AI-written answer</p>
-          ) : null}
-          <p>{message.content}</p>
-          {message.brain?.conversationalOnly ? (
-            <p className={`mt-2 text-[11px] ${styles.muted}`} data-testid="project-brain-conversational-note">
-              General answer — not linked to this project&apos;s records.
-            </p>
-          ) : null}
-          {message.brain ? <Statements statements={message.brain.statements} styles={styles} /> : null}
-          {message.brain ? <SourceChips sources={message.brain.sources} styles={styles} /> : null}
-          {message.brain?.groundingAdjusted ? (
-            <p className={`mt-2 text-[11px] ${styles.muted}`} data-testid="project-brain-grounding-notice">
-              Some generated claims could not be fully linked to project records.
-            </p>
-          ) : null}
-          {message.brain?.mode === "degraded" && message.brain.reason !== "not_entitled" && !upgraded.has(message.replyToMessageId) ? (
-            <button type="button" className={`mt-2 ${styles.link}`} onClick={() => retryDegraded(message)} disabled={sending}>
-              Try again with Project Brain
-            </button>
-          ) : null}
-        </div>
+          message={message}
+          variant={variant}
+          layout={layout}
+          onRetry={
+            message.brain?.mode === "degraded" && message.brain.reason !== "not_entitled" && !upgraded.has(message.replyToMessageId)
+              ? () => retryDegraded(message)
+              : undefined
+          }
+          retryDisabled={sending}
+        />
       ),
     )
   );
 
-  const limitedModeNotice = !generativeAvailable ? (
-    <p className={`mb-2 ${styles.notice}`} data-testid="project-brain-limited-mode">
-      {limitedModeReason === "not_included"
-        ? "Full generative Project Brain answers aren't included in your current plan. Answers list what this project's records show."
-        : "Project Brain is temporarily operating in limited mode: answers list what this project's records show, without a full generative answer."}
-    </p>
-  ) : null;
+  const limitedModeNotice = <LimitedModeNotice generativeAvailable={generativeAvailable} limitedModeReason={limitedModeReason} variant={variant} />;
 
-  const disclosure = (
-    <p className={`mt-2 px-1 text-[11px] ${styles.muted}`} data-testid="project-brain-disclosure">
-      Project Brain writes its answers from this project&apos;s records and this conversation. Listed claims show which records they cite; a citation is not proof of every sentence. It cannot change the project.
-    </p>
-  );
+  const disclosure = <ProjectBrainDisclosureNote variant={variant} />;
 
   const input = (
     <>
