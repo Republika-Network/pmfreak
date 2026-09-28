@@ -151,9 +151,10 @@ source chips show which project records it cited. Citation validation is an
 **not** a semantic check that the record supports the claim, and nothing in the product
 says otherwise. Accordingly the FACT badge reads **"Cites project records"**: a source
 reference proves which record was cited (identity/scope), not that the record entails the
-claim. The UI labels the prose as AI-written; an answer with no statements is
-marked as a general answer not linked to project records; and a notice appears whenever a
-citation was rejected or a statement was downgraded or dropped.
+claim. The UI labels every generative answer "AI-generated"; an answer with no statements
+is marked as a general answer not linked to project records; and a caution appears whenever
+a citation was rejected or a statement was downgraded or dropped. How these are laid out is
+described under [Answer presentation (PB-PRESENT-01)](#answer-presentation-pb-present-01).
 
 
 - System message holds the only instructions. Project records, history and the question are
@@ -312,6 +313,59 @@ an invented `R999`), and `scripts/pb-reason-02/certify-reported-context.ts` — 
 certification contract (reused `loadEvalEnv` / `certifyEvaluation`) over multi-turn cases with
 seeded prior turns, plus deterministic structural checks that turn a violation into `FAILED`.
 
+## Answer presentation (PB-PRESENT-01)
+
+**Answer first.** An assistant turn shows its prose and ONE compact disclosure row beneath
+it — "Sources & verification · 3 records". The structured claims (with their epistemic
+labels) and the cited-record chips open from that row. It is a native `<details>`/`<summary>`
+(keyboard and screen-reader operable, closed by default); its open state is UI-only — never
+persisted, never in conversation metadata — and resets on reload.
+
+**Material cautions stay visible while closed** (`answer-disclosure.ts`, a pure derivation
+from the transcript view model), in this order of salience, amber from the existing palette:
+
+| Condition (view model) | Collapsed row |
+| --- | --- |
+| a statement with `epistemicType = CONTRADICTION` | "Project records conflict" |
+| `groundingAdjusted` | "Some claims need review" (the precise notice is inside) |
+| statements with `reportedTurnIds` (PB-REASON-02) | "uses N reported chat updates · not verified" |
+| otherwise | "Sources & verification · N records" (or "· N claims" with no record cited) |
+
+Record counts are the view model's deduplicated `sources`; reported counts are distinct
+turns. No internal alias (`S*`/`R*`), counter or turn id is shown.
+
+**Stays outside the disclosure:** "Limited mode" and its retry; the general-answer note
+("AI-generated · General answer — not linked to this project's records.") — a general
+answer gets no disclosure at all, since there is nothing to disclose; a grounding notice on
+an answer that has nothing to open; the legacy "Earlier rule-based Project Chat reply" label.
+
+**Inside:** the grounding, conflict and reported-context notes; every structured claim with
+a sentence-case label ("Cites project records", "Inference", "Reported in chat · not
+verified", "Suggestion · needs your approval", "Open question", "Records conflict",
+"Unverified", "Not known yet"); any other claim that rests on a chat report is
+additionally tagged "Uses a chat report · not verified"; the cited-record chips (family,
+label, recorded-date tooltip, `data-source-id` — meaning unchanged); and the boundary line "A
+citation shows which record a claim points to; it is not proof of every sentence." The panel
+contains structured claims and provenance — never model reasoning, and it is never labelled
+as such.
+
+**The AI label.** ADR-PMF-066 §5 (Accepted) requires a visible "AI-generated" label at the
+point of display of any AI-generated text, so the per-answer label stays — reworded from
+"AI-written answer" to the literal "AI-generated" and moved from above the prose into the
+quiet disclosure row (or the general-answer note). Limited-mode and legacy replies are
+deterministic and are not labelled AI-generated. The composer footer now reads: "Project
+Brain's answers are AI-generated from this project's records and what is said in this
+conversation. Each project answer opens its sources & verification; a citation is not proof
+of every sentence. It cannot change the project."
+
+**Presentation only.** One renderer (`ProjectBrainAnswer`) serves the `surface` and `panel`
+layouts. No prompt, output contract, grounding, normalization, persistence, API, migration or
+provider change; opening details issues no request and no model call and writes nothing;
+AI token/cost delta is zero. Pinned by `tests/pb-present-01-progressive-disclosure.test.mjs`
+(real renders via `tests/pb-present-01-harness.tsx`, plus a diff guard over the reasoning,
+grounding and API files) and browser scenarios P1–P5 in
+`tests/e2e/pb-chat-01-project-brain.spec.ts`.
+
 ## Degraded mode
 
 Not entitled (no provider call), provider not configured, timeout, circuit open, quota/cost ceiling or invalid output →
@@ -338,5 +392,6 @@ behavioural) and by the browser scenario's before/after row counts.
   timestamp tie written high-id first) and Data API attempts to forge `message_seq` /
   `created_at`.
 - `tests/e2e/pb-chat-01-project-brain.spec.ts` — browser SIT scenarios A, B, G, H, I, degraded,
-  legacy redirect. Run with `scripts/pb-chat-01/openai-stub.mjs` when no provider key is
+  legacy redirect, SIT-R (reported context) and PB-PRESENT-01's P4 (390px) and P5
+  (disclosure stays in place, no request). Run with `scripts/pb-chat-01/openai-stub.mjs` when no provider key is
   available (stub replies are marked `[stub model]`).
