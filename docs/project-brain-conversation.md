@@ -288,9 +288,14 @@ or model call.
   `reports: [{ turnId, createdAt, reportedBy: "user" }]` — never as a
   `ProjectBrainSourceReference`, never with message content. REPORTED now needs a source OR a
   report (`humanReportsCountAsSupport`, REPORTED only); a report-backed REPORTED gets
-  `reportedBy: "user"` from the server (the model cannot name a stakeholder role). A FACT
-  resting only on a report becomes REPORTED; INFERENCE/CONTRADICTION without sources still fall
-  to ASSUMPTION; FACT/INFERENCE/CONTRADICTION/UNKNOWN never carry reports (guardrail
+  `reportedBy: "user"` from the server (the model cannot name a stakeholder role; guardrail
+  `report_backed_reporter_not_user`). Normalization keys on VALID resolved reports, not on the
+  absence of sources: a FACT citing any valid report becomes REPORTED, and an
+  INFERENCE/CONTRADICTION/UNKNOWN citing one becomes ASSUMPTION — even beside valid sources, so
+  an incidental record can never launder a report into evidence and a report is never silently
+  dropped (PR #629 P1). An invented `R999` is not support and changes nothing. A claim resting
+  on a report is never high-confidence. INFERENCE/CONTRADICTION without sources still fall to
+  ASSUMPTION; FACT/INFERENCE/CONTRADICTION/UNKNOWN never carry reports (guardrail
   `reports_on_evidence_only_type`); RECOMMENDATION, ASSUMPTION and OPEN_QUESTION may list the
   reports they rely on. A record/report disagreement is FACT + REPORTED, not a forced
   CONTRADICTION (a chat turn is not a contradicting source). Constitution `1.0.0 → 1.1.0`.

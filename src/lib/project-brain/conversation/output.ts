@@ -23,7 +23,9 @@
 // conversation — and never against sources, nor sources against reports. A report
 // supports a REPORTED claim (reportedBy is forced to "user"); it may be the basis of
 // a RECOMMENDATION / ASSUMPTION / OPEN_QUESTION; it never supports FACT, INFERENCE
-// or CONTRADICTION. A FACT resting only on a report becomes REPORTED.
+// or CONTRADICTION. A FACT citing any valid report becomes REPORTED, and an
+// INFERENCE / CONTRADICTION / UNKNOWN citing one becomes ASSUMPTION — with or
+// without sources, so a report is never laundered into evidence nor dropped.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { PROJECT_BRAIN_CONSTITUTION_VERSION } from "../constitution";
@@ -316,10 +318,15 @@ export function groundProjectBrainOutput(input: {
     // same holds for a claim naming a reference nothing this turn supplied — a
     // cited record cannot vouch for a milestone code or PR number it never contains.
     const inventsReference = unsupportedIn(text);
-    // A FACT that only a user report supports is what it is: something a user
-    // reported. A report never lifts anything to FACT, and it is never support for
-    // INFERENCE or CONTRADICTION — those fall to ASSUMPTION below as before.
-    if (type === "FACT" && sources.length === 0 && reports.length > 0) type = "REPORTED";
+    // A claim the model says rests on a VALID user report (resolved above — an
+    // invented R999 is not support) is never left as an evidence-only type, whatever
+    // sources it also cites: an incidental record must not launder a report into
+    // evidence, nor may the report be silently dropped. FACT → REPORTED;
+    // INFERENCE / CONTRADICTION / UNKNOWN → ASSUMPTION. The report stays attached.
+    if (reports.length > 0 && !REPORT_BEARING.has(type)) {
+      type = type === "FACT" ? "REPORTED" : "ASSUMPTION";
+      if (type === "ASSUMPTION") confidence = "low";
+    }
     const reportBacked = type === "REPORTED" && reports.length > 0;
     if ((EVIDENCE_DERIVED.has(type) && sources.length === 0 && !reportBacked) || (inventsReference && (EVIDENCE_DERIVED.has(type) || type === "RECOMMENDATION"))) {
       type = "ASSUMPTION";
@@ -344,12 +351,15 @@ export function groundProjectBrainOutput(input: {
     if (type === "INFERENCE" && !inferenceBasis) inferenceBasis = hasPrimary ? GENERIC_BASIS : SECONDARY_BASIS;
     if (EVIDENCE_DERIVED.has(type) && confidence === "high" && !hasPrimary) confidence = "medium";
     if (type === "OPEN_QUESTION" && confidence === "high") confidence = "medium";
+    // What a user said is never high-confidence, even beside a primary source.
+    if (reports.length > 0 && confidence === "high") confidence = "medium";
     if (type === "UNKNOWN") {
       sources.length = 0;
       confidence = "unknown";
     }
     if (type !== "INFERENCE") inferenceBasis = null;
     if (type !== "REPORTED") reportedBy = null;
+    // Unreachable after the normalization above; kept as a defensive invariant.
     if (!REPORT_BEARING.has(type)) reports.length = 0;
 
     const downgraded = type !== original || confidence !== raw.confidence;

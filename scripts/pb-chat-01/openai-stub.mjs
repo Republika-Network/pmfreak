@@ -63,7 +63,7 @@ function answer(body) {
       reply: `[stub model] Based on your update, I am treating this as reported working context: "${claim}". No project record confirms it yet, so it stays provisional until the records are reconciled.`,
       statements: [
         { text: `You reported: ${claim}.`, epistemicType: "REPORTED", sourceIds: [], reportIds: [progress.id, "R999"], confidence: "medium", inferenceBasis: null, reportedBy: "Technical Lead", contradictingClaims: [] },
-        { text: "Continue from your reported update once the records are reconciled.", epistemicType: "RECOMMENDATION", sourceIds: [], reportIds: [progress.id], confidence: "medium", inferenceBasis: null, reportIds: [], reportedBy: null, contradictingClaims: [] },
+        { text: "Continue from your reported update once the records are reconciled.", epistemicType: "RECOMMENDATION", sourceIds: [], reportIds: [progress.id], confidence: "medium", inferenceBasis: null, reportedBy: null, contradictingClaims: [] },
       ],
     };
   }

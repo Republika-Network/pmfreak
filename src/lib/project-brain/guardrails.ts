@@ -151,6 +151,12 @@ export function validateStatement(statement: ProjectBrainStatement): GuardrailRe
       break;
     }
     case "REPORTED": {
+      if ((statement.reports?.length ?? 0) > 0 && statement.reportedBy !== "user") {
+        failures.push({
+          code: "report_backed_reporter_not_user",
+          message: "A REPORTED statement resting on a conversation report must name the reporter as \"user\" — the app cannot know a stakeholder role.",
+        });
+      }
       if (!statement.reportedBy?.trim()) {
         failures.push({
           code: "reported_without_reporter",

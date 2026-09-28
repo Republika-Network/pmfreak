@@ -314,13 +314,13 @@ test("D: reports reach the model in time order; the latest correction is the new
 
 // ═══ E. Canonical confirmation ══════════════════════════════════════════════
 
-test("E: once the record confirms the report, the claim is a plain FACT — no report attached, no provisional framing required", async () => {
+test("E: once the record confirms the report, the record alone makes it a FACT — no report, no provisional framing required", async () => {
   const outputs: Array<(s: Seen) => RawModelOutput> = [
     noReply,
     (s) => ({
       reply: "P13 Authenticity is complete; P14 is next.",
       statements: [
-        stmt({ text: "P13 Authenticity is completed.", epistemicType: "FACT", confidence: "high", sourceIds: [s.source("P13 Authenticity")], reportIds: [s.reportFor("P13 merged.")!] }),
+        stmt({ text: "P13 Authenticity is completed.", epistemicType: "FACT", confidence: "high", sourceIds: [s.source("P13 Authenticity")] }),
       ],
     }),
   ];
@@ -329,7 +329,7 @@ test("E: once the record confirms the report, the claim is a plain FACT — no r
   const { statements } = persisted(await ask(deps, "Where are we?"));
   assert.equal(statements[0].epistemicType, "FACT");
   assert.equal(statements[0].confidence.level, "high");
-  assert.equal(statements[0].reports, undefined, "a FACT rests on its record; a matching report is not attached");
+  assert.equal(statements[0].reports, undefined, "a FACT rests on its record alone");
   assert.equal(statements[0].downgradedFrom, undefined);
   assert.match(PROJECT_BRAIN_SYSTEM_PROMPT, /If a record confirms the report, it is simply a FACT: drop the provisional framing/);
 });
@@ -575,10 +575,136 @@ test("O: an off-topic user remark creates no project context server-side; the mo
   const { deps, store, calls } = turnDeps(p13PendingProject(), (s) => outputs[calls.length - 1](s));
   await ask(deps, "My son likes monster trucks.");
   const { statements, meta } = persisted(await ask(deps, "What's blocking this project?"));
-  assert.equal(statements[0].reports, undefined, "an UNKNOWN never carries report support");
+  assert.equal(statements[0].epistemicType, "ASSUMPTION", "an UNKNOWN citing a report is not 'no evidence' — it becomes an assumption");
+  assert.equal(statements[0].reports?.length, 1, "…and the report it cited stays visible, never silently dropped");
   assert.equal(meta.context.reportCount, 2, "reports are candidates only — nothing is classified or promoted");
   assert.equal(store.rows.length, 4);
   assert.match(PROJECT_BRAIN_SYSTEM_PROMPT, /Messages unrelated to this project are not project context/);
+});
+
+// ═══ P1 remediation (PR #629): mixed source + report support ════════════════
+//
+// Normalization keys on VALID RESOLVED reports, not on the absence of sources: a
+// claim the model says rests on a user report never stays FACT / INFERENCE /
+// CONTRADICTION (an incidental record must not launder it), and the report is
+// never silently dropped. An invented R999 is not a report and changes nothing.
+
+function mixedContext() {
+  const history = [{ id: "u-r1", role: "user" as const, content: "P13 merged.", createdAt: "2026-09-26T11:00:00.000Z", author: "you" as const }];
+  const context = buildReportedContext(assembleProjectBrainContext({ ...p13PendingProject(), history }), { id: "u-cur", createdAt: "2026-09-26T11:05:00.000Z" });
+  const byLabel = (part: string) => context.sources.find((src) => src.label.includes(part))!.alias;
+  return { context, p13: byLabel("P13 Authenticity"), p11: byLabel("P11 Public API"), p12: byLabel("P12 Adapters") };
+}
+
+function groundOne(statement: RawModelStatement) {
+  const { context } = mixedContext();
+  const grounded = groundProjectBrainOutput({ context, generatedAt: FIXTURE_NOW.toISOString(), statementIdPrefix: "t", output: { reply: "x", statements: [statement] } });
+  assert.ok(grounded.ok, grounded.ok ? "" : JSON.stringify(grounded.failures));
+  if (!grounded.ok) throw new Error("unreachable");
+  assert.equal(validateStatement(grounded.value.statements[0]).ok, true, "every grounded statement satisfies the constitution");
+  return { statement: grounded.value.statements[0], citations: grounded.value.citations };
+}
+
+test("P1-1: FACT + valid primary source + valid R1 cannot stay FACT — it becomes REPORTED, R1 persisted, reportedBy \"user\"", () => {
+  const { p13 } = mixedContext();
+  const { statement } = groundOne(stmt({ text: "P13 is merged.", epistemicType: "FACT", confidence: "high", sourceIds: [p13], reportIds: ["R1"], reportedBy: "Technical Lead" }));
+  assert.equal(statement.epistemicType, "REPORTED");
+  assert.equal(statement.downgradedFrom, "FACT");
+  assert.deepEqual(statement.reports, [{ turnId: "u-r1", createdAt: "2026-09-26T11:00:00.000Z", reportedBy: "user" }]);
+  assert.equal(statement.reportedBy, "user");
+  assert.equal(statement.sources.length, 1, "the record it also cited is kept beside the report");
+  assert.notEqual(statement.confidence.level, "high", "what a user said is never high-confidence");
+});
+
+test("P1-2: an UNRELATED primary source cannot launder R1 into a FACT", () => {
+  const { p11 } = mixedContext();
+  const { statement } = groundOne(stmt({ text: "P13 is merged.", epistemicType: "FACT", confidence: "high", sourceIds: [p11], reportIds: ["R1"] }));
+  assert.equal(statement.epistemicType, "REPORTED");
+  assert.equal(statement.reports?.[0].turnId, "u-r1");
+});
+
+test("P1-3: INFERENCE + valid source + valid R1 becomes ASSUMPTION; the report survives, inferenceBasis does not", () => {
+  const { p13 } = mixedContext();
+  const { statement } = groundOne(stmt({ text: "P14 is now next.", epistemicType: "INFERENCE", sourceIds: [p13], reportIds: ["R1"], inferenceBasis: "P13 merged per user." }));
+  assert.equal(statement.epistemicType, "ASSUMPTION");
+  assert.equal(statement.downgradedFrom, "INFERENCE");
+  assert.equal(statement.reports?.[0].turnId, "u-r1");
+  assert.equal(statement.inferenceBasis, undefined);
+  assert.equal(statement.confidence.level, "low");
+});
+
+test("P1-4: CONTRADICTION + valid source claims + valid R1 becomes ASSUMPTION with the report kept (no contradiction resting on chat)", () => {
+  const { p13, p12 } = mixedContext();
+  const { statement } = groundOne(stmt({
+    text: "Milestone state conflicts.", epistemicType: "CONTRADICTION", sourceIds: [p13, p12], reportIds: ["R1"],
+    contradictingClaims: [{ sourceId: p13, claim: "in progress" }, { sourceId: p12, claim: "done" }],
+  }));
+  assert.equal(statement.epistemicType, "ASSUMPTION");
+  assert.equal(statement.contradictingClaims, undefined);
+  assert.equal(statement.reports?.[0].turnId, "u-r1");
+});
+
+test("P1-5/6: FACT and INFERENCE with sources and NO report are unchanged", () => {
+  const { p13 } = mixedContext();
+  const fact = groundOne(stmt({ text: "P13 is in progress.", epistemicType: "FACT", confidence: "high", sourceIds: [p13] })).statement;
+  assert.equal(fact.epistemicType, "FACT");
+  assert.equal(fact.confidence.level, "high");
+  assert.equal(fact.downgradedFrom, undefined);
+  const inference = groundOne(stmt({ text: "P13 may slip.", epistemicType: "INFERENCE", sourceIds: [p13], inferenceBasis: "Target is close." })).statement;
+  assert.equal(inference.epistemicType, "INFERENCE");
+  assert.equal(inference.inferenceBasis, "Target is close.");
+  assert.equal(inference.downgradedFrom, undefined);
+});
+
+test("P1-6b: a source-only CONTRADICTION is unchanged", () => {
+  const { p13, p12 } = mixedContext();
+  const { statement } = groundOne(stmt({
+    text: "Milestone state conflicts.", epistemicType: "CONTRADICTION", sourceIds: [p13, p12],
+    contradictingClaims: [{ sourceId: p13, claim: "in progress" }, { sourceId: p12, claim: "done" }],
+  }));
+  assert.equal(statement.epistemicType, "CONTRADICTION");
+  assert.equal(statement.contradictingClaims?.length, 2);
+});
+
+test("P1-7: REPORTED + source + valid report stays REPORTED, reports preserved, reportedBy forced to \"user\"", () => {
+  const { p13 } = mixedContext();
+  const { statement } = groundOne(stmt({ text: "P13 merged, per you.", epistemicType: "REPORTED", sourceIds: [p13], reportIds: ["R1", "R2"], reportedBy: "Ana" }));
+  assert.equal(statement.epistemicType, "REPORTED");
+  assert.equal(statement.downgradedFrom, undefined);
+  assert.deepEqual(statement.reports?.map((r) => r.turnId), ["u-r1", "u-cur"]);
+  assert.equal(statement.reportedBy, "user");
+});
+
+test("P1-8: an invented R999 beside a valid source is rejected and does NOT downgrade a valid FACT", () => {
+  const { p13 } = mixedContext();
+  const { statement, citations } = groundOne(stmt({ text: "P13 is in progress.", epistemicType: "FACT", confidence: "high", sourceIds: [p13], reportIds: ["R999"] }));
+  assert.equal(statement.epistemicType, "FACT");
+  assert.equal(statement.confidence.level, "high");
+  assert.equal(statement.reports, undefined);
+  assert.equal(citations.rejectedReports, 1);
+  const inference = groundOne(stmt({ text: "P13 may slip.", epistemicType: "INFERENCE", sourceIds: [p13], reportIds: ["R999"], inferenceBasis: "b" }));
+  assert.equal(inference.statement.epistemicType, "INFERENCE");
+});
+
+test("P1-9: RECOMMENDATION / ASSUMPTION / OPEN_QUESTION keep source and report support unchanged", () => {
+  const { p13 } = mixedContext();
+  for (const epistemicType of ["RECOMMENDATION", "ASSUMPTION", "OPEN_QUESTION"] as const) {
+    const { statement } = groundOne(stmt({ text: "Proceed with P14.", epistemicType, sourceIds: [p13], reportIds: ["R1"] }));
+    assert.equal(statement.epistemicType, epistemicType);
+    assert.equal(statement.reports?.[0].turnId, "u-r1");
+    assert.equal(statement.sources.length, 1);
+  }
+});
+
+test("P1-10: through the real turn service, a mixed FACT persists as REPORTED with the report — never as a FACT that lost it", async () => {
+  const { deps } = turnDeps(p13PendingProject(), (s) => ({
+    reply: "ok",
+    statements: [stmt({ text: "P13 is merged.", epistemicType: "FACT", confidence: "high", sourceIds: [s.source("P13 Authenticity")], reportIds: [s.currentReport] })],
+  }));
+  const { statements, userMessage, view } = persisted(await ask(deps, "P13 merged."));
+  assert.equal(statements[0].epistemicType, "REPORTED");
+  assert.deepEqual(statements[0].reports?.map((r) => r.turnId), [userMessage.id]);
+  assert.deepEqual(view.brain!.statements[0].reportedTurnIds, [userMessage.id]);
 });
 
 // ═══ Constitution / guardrails ══════════════════════════════════════════════
@@ -607,6 +733,26 @@ test("GR2: FACT, INFERENCE and CONTRADICTION cannot rest on (or carry) a report;
   const highConfidence = validateStatement(guardStatement({ reportedBy: "user", reports: [report], confidence: { kind: "qualitative", level: "high" } }));
   assert.ok(!highConfidence.ok, "a report alone never justifies high confidence");
   assert.deepEqual(validateStatement(guardStatement({ epistemicType: "RECOMMENDATION", requiresHumanApproval: true, reports: [report] })), { ok: true });
+  // Even beside a valid primary source, evidence-only types refuse reports after grounding.
+  const primary = { evidenceId: "project_milestones:1", sourceSystem: "project_milestones" as const, title: "M", evidenceType: "MILESTONE", recordedAt: FIXTURE_NOW.toISOString(), authorityLevel: "primary" as const, isPrimary: true };
+  for (const extra of [
+    { epistemicType: "FACT" as const },
+    { epistemicType: "INFERENCE" as const, inferenceBasis: "b" },
+    { epistemicType: "CONTRADICTION" as const, sources: [primary, { ...primary, evidenceId: "project_milestones:2" }], contradictingClaims: [{ sourceEvidenceId: "project_milestones:1", claim: "a" }, { sourceEvidenceId: "project_milestones:2", claim: "b" }] },
+  ]) {
+    const result = validateStatement(guardStatement({ sources: [primary], reports: [report], ...extra }));
+    assert.ok(!result.ok && result.failures.some((f) => f.code === "reports_on_evidence_only_type"), extra.epistemicType);
+    const clean = validateStatement(guardStatement({ sources: [primary], ...extra }));
+    assert.ok(clean.ok, `${extra.epistemicType} without reports stays valid`);
+  }
+  const wrongReporter = validateStatement(guardStatement({ reportedBy: "Technical Lead", reports: [report] }));
+  assert.ok(!wrongReporter.ok && wrongReporter.failures.some((f) => f.code === "report_backed_reporter_not_user"));
+  const factNoPrimary = validateStatement(guardStatement({ epistemicType: "FACT", sources: [{ ...primary, isPrimary: false, authorityLevel: "secondary" }] }));
+  assert.ok(!factNoPrimary.ok && factNoPrimary.failures.some((f) => f.code === "fact_without_primary_source"));
+  const inferenceNoBasis = validateStatement(guardStatement({ epistemicType: "INFERENCE", sources: [primary] }));
+  assert.ok(!inferenceNoBasis.ok && inferenceNoBasis.failures.some((f) => f.code === "inference_without_basis"));
+  const inferenceNoSource = validateStatement(guardStatement({ epistemicType: "INFERENCE", inferenceBasis: "b" }));
+  assert.ok(!inferenceNoSource.ok && inferenceNoSource.failures.some((f) => f.code === "insufficient_sources"));
 });
 
 test("GR3: persisted report provenance holds no message content", async () => {
