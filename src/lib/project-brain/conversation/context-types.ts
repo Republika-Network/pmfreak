@@ -77,6 +77,13 @@ export type ProjectBrainContextSource = {
   /** Bounded plain-text content. */
   content: string;
   reference: ProjectBrainSourceReference;
+  /**
+   * PB-EXEC-01 — INTERNAL, server-derived revision marker of the underlying row, where
+   * the family has a trustworthy one (evidence_items: { version, evidenceHash }). Used
+   * only for the execution brief's `sourceContextDigest` (execution-brief/assemble.ts).
+   * Never model-writable, never part of `reference`, never serialized into the prompt.
+   */
+  revisionMarker?: Readonly<Record<string, string | number>>;
 };
 
 export type ProjectBrainHistoryMessage = {

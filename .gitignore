@@ -67,6 +67,9 @@ uploads/
 /artifacts/pb-chat-01/
 # CHAT-SHELL-01 conversation-first shell browser screenshots (tests/e2e/chat-shell-01-conversation-first.spec.ts).
 /artifacts/chat-shell-01/
+# PB-EXEC-01 execution-brief browser screenshots, stub log and local certification output
+# (tests/e2e/pb-exec-01-*.spec.ts, scripts/pb-exec-01/certify-execution-brief.ts).
+/artifacts/pb-exec-01/
 /test-results/
 /playwright-report/
 /.playwright/

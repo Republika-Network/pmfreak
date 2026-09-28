@@ -47,7 +47,10 @@ export function deriveAnswerDisclosure(brain: ProjectBrainMessageView["brain"]):
   const statements = brain?.statements ?? [];
   const sources = brain?.sources ?? [];
   const reported = statements.filter((s) => s.reportedTurnIds.length > 0);
-  const reportTurnCount = new Set(reported.flatMap((s) => s.reportedTurnIds)).size;
+  // PB-EXEC-01: a brief reply has no statements; the chat turns it relies on are its own
+  // provenance.reports (never labelled Evidence).
+  const briefReports = brain?.executionBrief?.provenance.reports.length ?? 0;
+  const reportTurnCount = brain?.executionBrief ? briefReports : new Set(reported.flatMap((s) => s.reportedTurnIds)).size;
 
   const cautions: AnswerCaution[] = [];
   if (statements.some((s) => s.epistemicType === "CONTRADICTION")) cautions.push("conflict");

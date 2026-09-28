@@ -1026,8 +1026,11 @@ test("R-F2e: entitlement never widens access — project read and project_brain.
   assert.ok(at.every((i) => i >= 0), `every step is present: ${JSON.stringify(at)}`);
   assert.deepEqual([...at].sort((a, b) => a - b), at, "auth → governance → rate limit → entitlement → turn");
   // The body can carry nothing that affects entitlement: only these fields are read.
+  // PB-EXEC-01 adds `intent` and `targetRef` — operation selection only, validated as
+  // closed shapes, read after nothing that decides access or entitlement.
   const bodyReads = [...post.matchAll(/body\.([a-zA-Z]+)/g)].map((m) => m[1]);
-  assert.deepEqual([...new Set(bodyReads)].sort(), ["clientMessageId", "retry", "text"]);
+  assert.deepEqual([...new Set(bodyReads)].sort(), ["clientMessageId", "intent", "retry", "targetRef", "text"]);
+  assert.doesNotMatch(post, /body\.(generativeEntitled|entitled|plan|renderFor|metadata|workspaceId|projectId)/);
   // GET reports availability as provider configured AND entitled — never the key alone.
   assert.match(route, /generativeAvailable: providerConfigured && access\.entitled/);
 });

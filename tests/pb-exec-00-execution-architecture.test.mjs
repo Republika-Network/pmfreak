@@ -19,12 +19,26 @@ const GOVERNANCE_CORE = readFileSync(
   "utf8",
 );
 
-test("the execution doc declares the three PB-EXEC levels and marks them not implemented", () => {
+test("the execution doc declares the three PB-EXEC levels: PB-EXEC-01 implemented, PB-EXEC-02/03 not", () => {
   for (const level of ["PB-EXEC-01", "PB-EXEC-02", "PB-EXEC-03"]) {
     assert.ok(EXECUTION_DOC.includes(level), `${level} missing`);
   }
-  assert.match(EXECUTION_DOC, /Status: \*\*architecture and contract only\.\*\*/);
-  assert.match(CONVERSATION_DOC, /None of PB-EXEC-01\/02\/03 is implemented\./);
+  // PB-EXEC-01 implemented the brief; the status line says so and nothing more.
+  assert.match(EXECUTION_DOC, /Status: \*\*PB-EXEC-00 is architecture and contract; PB-EXEC-01 \(brief generation and manual\s+handoff\) is implemented\*\*/);
+  assert.match(EXECUTION_DOC, /PB-EXEC-02 and PB-EXEC-03 are\s+not implemented: nothing delegates, executes, reads a repository or integrates with Claude Code\s+or Codex\./);
+  assert.match(CONVERSATION_DOC, /PB-EXEC-01 is implemented\. PB-EXEC-02 and PB-EXEC-03 are not implemented/);
+  for (const overclaim of [/delegated execution (?:is )?implemented/i, /PB-EXEC-02 (?:is )?implemented/i, /repository integration (?:is )?implemented/i, /(?:Claude|Codex) integration (?:is )?implemented/i]) {
+    assert.doesNotMatch(EXECUTION_DOC, overclaim);
+    assert.doesNotMatch(CONVERSATION_DOC, overclaim);
+  }
+});
+
+test("P3 cleanup: a persisted brief turn writes both transcript rows and usage; digest staleness is stated per family", () => {
+  assert.match(EXECUTION_DOC, /its only writes are the user transcript row\s+\(with its operation identity\), the assistant transcript row \(with the brief in metadata\) and\s+`ai_usage_events`/);
+  assert.doesNotMatch(EXECUTION_DOC, /its only writes are the assistant transcript row/);
+  const fp = section("### 9.8 Identity, content hash, context fingerprint and versioning");
+  assert.match(fp, /\*\*without\*\* an independent revision marker, the digest\s+changes only when the consumed representation changes/);
+  assert.match(fp, /\*\*with\*\* a trustworthy revision marker[\s\S]*may conservatively go stale even when the edited content lay outside the\s+consumed excerpt/);
 });
 
 test("an Execution Brief is declared not to be an authorization to execute", () => {

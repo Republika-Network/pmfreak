@@ -380,7 +380,7 @@ grounding and API files) and browser scenarios P1–P5 in
 ## Execution boundary (PB-EXEC)
 
 Architecture: [`project-brain-execution.md`](project-brain-execution.md) (PB-EXEC-00 —
-documentation only; no runtime change).
+architecture and contract; PB-EXEC-01 — implemented as described below).
 
 - **Project Brain reasoning remains read-only.** Project Brain is a governed conversational
   reasoning surface — not an Agent Definition, not an Agent Run, never a requester or an
@@ -390,17 +390,36 @@ documentation only; no runtime change).
   PMFreak governance (policy, human approval, single-use execution grants) — never in a prompt,
   a brief, a chat report or repository content. `reason < prepare < delegate < merge < deploy`:
   each step is a separate command with separate authority.
-- **PB-EXEC-01 (next) produces briefs only:** a canonical, executor-neutral Execution Brief
-  generated on explicit request for an explicitly referenced target (never a model-guessed
-  "it"), with stable provenance (no per-turn `S*`/`R*` aliases), displayed and copied for manual
-  handoff. It does not use the agent execution runtime. An Execution Brief is
-  not an authorization to execute and nothing runs.
+- **PB-EXEC-01 (implemented) prepares briefs only — reason → prepare.** Each RECOMMENDATION
+  of a generative answer carries a "Prepare execution brief" control bound to its exact
+  `{ assistantTurnId, statementId }`. `POST /brain/turns` accepts `intent: "execution_brief"`
+  and a closed `targetRef`; an explicit target is validated from persisted rows before anything
+  is written (`400 invalid_execution_target`), a typed "prepare it for Claude" resolves only
+  when the latest generative answer has exactly one recommendation and otherwise returns
+  `needs_target` with nothing persisted and no model call. A brief turn runs the dedicated
+  `project_brain.execution_brief` operation *instead of* the answer inference (one call),
+  and persists a canonical, executor-neutral `ExecutionBriefV1` in the reply's
+  `metadata.projectBrain.executionBrief` — stable source ids and user-turn ids only (no
+  `S*`/`R*` alias), `contextFingerprint` + `briefContentHash`, server-computed readiness, and
+  a constant handoff (`manual`, `executionAuthorized: false`, `delegationEligible: false`).
+  The user row stores its operation identity (`metadata.projectBrainRequest`); a reused
+  `clientMessageId` with another operation or target is a `409`. The brief card renders the
+  same canonical brief as Generic, Claude Code or Codex text **in the browser** (no request, no
+  model call, no write) and copies it after a credential check. There is no execute, delegate,
+  PR, merge or deploy control. It does not use the agent execution runtime. It reads no
+  repository and calls no SCM. An Execution Brief is not an authorization to execute and nothing runs.
+  Module: `src/lib/project-brain/execution-brief/`. Pinned by
+  `tests/pb-exec-01-execution-brief.test.ts`, `tests/pb-exec-01-brief-presentation.test.mjs`,
+  `tests/e2e/pb-exec-01-brief-card.spec.ts` and `tests/e2e/pb-exec-01-project-brain.spec.ts`;
+  certified against the real provider by `scripts/pb-exec-01/certify-execution-brief.ts`.
 - **PB-EXEC-02 (future) will delegate** to an external executor under an explicit human grant,
   after repository binding, an executor adapter and the runtime prerequisites exist.
 - **PB-EXEC-03 (future) will address governed autonomy**, and requires a new ADR revisiting
   ADR-PMF-027/030.
 
-None of PB-EXEC-01/02/03 is implemented.
+PB-EXEC-01 is implemented. PB-EXEC-02 and PB-EXEC-03 are not implemented: there is no delegated
+execution, no repository integration and no Claude Code or Codex integration — the product
+prepares and copies text only.
 
 ## Degraded mode
 

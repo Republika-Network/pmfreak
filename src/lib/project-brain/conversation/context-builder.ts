@@ -208,6 +208,18 @@ function onboardingCandidates(scope: ProjectContextScope, project: Row | null): 
   return out;
 }
 
+/**
+ * PB-EXEC-01: evidence_items carries a trustworthy revision marker — editing unfrozen
+ * evidence bumps `version` and recomputes `evidence_hash` (compute_evidence_hash) —
+ * while its `recordedAt` is `created_at`. Internal only (see context-types.ts).
+ */
+function evidenceRevision(row: Row): { revisionMarker?: Record<string, string | number> } {
+  const version = typeof row.version === "number" ? row.version : null;
+  const evidenceHash = str(row.evidence_hash);
+  if (version === null && !evidenceHash) return {};
+  return { revisionMarker: { ...(version !== null ? { version } : {}), ...(evidenceHash ? { evidenceHash } : {}) } };
+}
+
 const EVIDENCE_SOURCE_TYPES = new Set<EvidenceItemSourceType>(["manual_note", "email", "meeting_minutes", "ticket", "conversation", "document_reference"]);
 
 function evidenceCandidates(scope: ProjectContextScope, summary: OperationalSummary): Candidate[] {
@@ -222,7 +234,7 @@ function evidenceCandidates(scope: ProjectContextScope, summary: OperationalSumm
       str(row.content),
     ]);
     const trust: ProjectBrainTrust = sample ? "UNVERIFIED" : "RECORD";
-    const base = candidate(scope, "EVIDENCE", trust, "evidence_items", row, label, content);
+    const base = { ...candidate(scope, "EVIDENCE", trust, "evidence_items", row, label, content), ...evidenceRevision(row) };
     if (!sample && sourceType && EVIDENCE_SOURCE_TYPES.has(sourceType)) {
       // Reuse the Sprint 0 adapter so evidence authority stays centrally defined
       // (a manual note is secondary, meeting minutes are primary, …).

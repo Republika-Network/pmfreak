@@ -162,9 +162,9 @@ function clip(text: string, max: number): string {
  * lowers a claim to an assumption — the conservative direction. Identifier codes
  * match in any case (MPP-07, mpp-07, Pb-Exec-01) and compare after lowercasing.
  */
-type ReferenceKind = "code" | "pr" | "branch" | "percent" | "date";
+export type ReferenceKind = "code" | "pr" | "branch" | "percent" | "date";
 
-const REFERENCE_PATTERNS: Array<{ kind: ReferenceKind; pattern: RegExp }> = [
+export const REFERENCE_PATTERNS: ReadonlyArray<{ kind: ReferenceKind; pattern: RegExp }> = [
   { kind: "code", pattern: /\b[a-z][a-z0-9]{1,9}(?:-[a-z][a-z0-9]{0,9})*-\d{1,5}\b/gi }, // MPP-04, pb-exec-01, JIRA-123
   { kind: "pr", pattern: /(?<![\w&])#\d{1,6}\b/g }, // PR / issue numbers
   { kind: "branch", pattern: /\b(?:feat|feature|fix|bugfix|hotfix|chore|release)\/[\w.\/-]*\w/gi }, // branch names
@@ -172,11 +172,11 @@ const REFERENCE_PATTERNS: Array<{ kind: ReferenceKind; pattern: RegExp }> = [
   { kind: "date", pattern: /\b\d{4}-\d{2}-\d{2}\b/g }, // ISO dates
 ];
 
-const normalizeReference = (value: string) => value.toLowerCase().replace(/\s+/g, " ").replace(/ %/g, "%");
+export const normalizeReference = (value: string) => value.toLowerCase().replace(/\s+/g, " ").replace(/ %/g, "%");
 
-type Reference = { token: string; kind: ReferenceKind };
+export type Reference = { token: string; kind: ReferenceKind };
 
-function extractTypedReferences(text: string): Reference[] {
+export function extractTypedReferences(text: string): Reference[] {
   const found = new Map<string, Reference>();
   for (const { kind, pattern } of REFERENCE_PATTERNS) {
     for (const match of text.matchAll(pattern)) {
@@ -200,16 +200,19 @@ const codeFamily = (token: string) => token.replace(/-\d+$/, "");
  * reference the model invented once cannot become "supplied" on the next turn.
  * Compared as exact tokens, so MPP-1 is not vouched for by MPP-10.
  */
-function suppliedReferences(context: ProjectBrainContext, question: string, generatedAt: string): { tokens: Set<string>; codeFamilies: Set<string> } {
-  const refs = extractTypedReferences(
-    [
-      context.projectName,
-      generatedAt.slice(0, 10),
-      question,
-      ...context.sources.flatMap((s) => [s.label, s.content, s.reference.recordedAt.slice(0, 10)]),
-      ...context.history.filter((m) => m.role === "user").map((m) => m.content),
-    ].join("\n"),
-  );
+export function suppliedReferenceText(context: ProjectBrainContext, question: string, generatedAt: string): string {
+  return [
+    context.projectName,
+    generatedAt.slice(0, 10),
+    question,
+    ...context.sources.flatMap((s) => [s.label, s.content, s.reference.recordedAt.slice(0, 10)]),
+    ...context.history.filter((m) => m.role === "user").map((m) => m.content),
+  ].join("\n");
+}
+
+/** PB-EXEC-01 reuses this exact notion of "supplied" for execution briefs (execution-brief/ground.ts). */
+export function suppliedReferences(context: ProjectBrainContext, question: string, generatedAt: string): { tokens: Set<string>; codeFamilies: Set<string> } {
+  const refs = extractTypedReferences(suppliedReferenceText(context, question, generatedAt));
   return {
     tokens: new Set(refs.map((ref) => ref.token)),
     codeFamilies: new Set(refs.filter((ref) => ref.kind === "code").map((ref) => codeFamily(ref.token))),
@@ -228,6 +231,9 @@ function projectShaped(ref: Reference, codeFamilies: Set<string>): boolean {
   if (ref.kind === "code") return codeFamilies.has(codeFamily(ref.token));
   return false;
 }
+
+/** How a cited alias ("s3", " R2 ") is looked up in this turn's alias maps. Shared with execution-brief/ground.ts. */
+export const normalizeCitationAlias = (id: string) => id.trim().toUpperCase();
 
 /**
  * Pure. Resolves citations, applies deterministic downgrades, and returns
@@ -262,13 +268,13 @@ export function groundProjectBrainOutput(input: {
   unsupportedIn(output.reply, output.statements.length === 0);
 
   const resolve = (id: string): ProjectBrainContextSource | null => {
-    const source = byAlias.get(id.trim().toUpperCase());
+    const source = byAlias.get(normalizeCitationAlias(id));
     if (!source) citations.rejectedCitations += 1;
     return source ?? null;
   };
 
   const resolveReport = (id: string): ProjectBrainContextReport | null => {
-    const report = byReportAlias.get(id.trim().toUpperCase());
+    const report = byReportAlias.get(normalizeCitationAlias(id));
     if (!report) citations.rejectedReports = (citations.rejectedReports ?? 0) + 1;
     return report ?? null;
   };

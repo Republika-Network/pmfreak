@@ -28,6 +28,7 @@
  */
 
 import { redactSecretLikeValues } from "@/lib/security/redaction";
+import { EXPORT_SECRET_VALUE_PATTERNS } from "@/lib/security/credential-patterns";
 import type { LineageStepKind } from "@/lib/operational-flow/types";
 import { REDACTION_MARKER } from "./types";
 
@@ -155,52 +156,11 @@ export function isExportRedactedKey(key: string): boolean {
 /**
  * ── Value-based credential detection ────────────────────────────────────────────────────
  *
- * `redactSecretLikeValues()` matches secret-SHAPED values (Stripe keys, JWTs, `Bearer …`,
- * `service_role…`) but does not recognize a credential-bearing URI. A credential stored
- * under a NEUTRAL key — `{ "value": "postgresql://user:password@db/pmfreak" }` — therefore
- * survived both the key sweep (the key is innocuous) and the shared walker (the value is
- * not a shape it knows), while REDACTED_CATEGORIES claims connection strings and provider
- * credentials are never emitted.
- *
- * These patterns close that gap and nothing wider. They are bounded, enumerable and
- * anchored on structure a credential must have, so ordinary URLs and business prose are
- * untouched: `https://example.com/report` has no userinfo, and prose mentioning "postgres"
- * is not a URI. This is NOT a general secret detector and must not grow into one.
+ * EXPORT_SECRET_VALUE_PATTERNS (credential-bearing URIs, PostgreSQL connection strings and
+ * the provider credential shapes the shared walker does not recognize) lives, unchanged, in
+ * src/lib/security/credential-patterns.ts so the PB-EXEC-01 Execution Brief credential guard
+ * reuses the same data instead of copying it. It is still NOT a general secret detector.
  */
-const EXPORT_SECRET_VALUE_PATTERNS: RegExp[] = [
-  /**
-   * Any URI carrying userinfo credentials: `scheme://user:password@host/…`. The userinfo
-   * must sit before the first path/query/fragment separator, so a `@` inside a path does
-   * not make an ordinary URL look like a credential. Mirrors the established
-   * CONNECTION_STRING_WITH_CREDENTIALS_PATTERN in
-   * src/features/pmfreak-integrations/aoc-governance-request-client/
-   * pmfreak-aoc-evidence-requirement-handoff-redaction.ts, restated because that constant
-   * is module-private to a feature the export layer does not depend on.
-   */
-  /\b[a-z][a-z0-9+.-]*:\/\/[^\s/?#@"'()<>]+(?::[^\s/?#@"'()<>]*)?@[^\s"'()<>]+/gi,
-  /**
-   * PostgreSQL connection strings, credentials or not. These are the connection-string
-   * schemes this repository actually uses (SUPABASE_DB_URL / FRESH_DB_URL in .env.example,
-   * docs/release/database-bootstrap-runbook.md, tests/fresh-db-migrations-safety-guard);
-   * no other scheme has repository evidence, and any other scheme carrying credentials is
-   * already covered by the userinfo pattern above.
-   */
-  /\b(?:postgresql|postgres):\/\/[^\s"'()<>]+/gi,
-  /**
-   * Provider credential shapes claimed by REDACTED_CATEGORIES that the shared walker does
-   * not match by value. Each is bounded to a provider this repository configures:
-   * OPENAI_API_KEY (`sk-…`, which also covers `sk-ant-…`), GITHUB_TOKEN (`ghp_…`,
-   * `github_pat_…`), and the Basic counterpart of the `Bearer …` authorization header.
-   *
-   * The Basic credential additionally requires a digit or base64 punctuation, so the phrase
-   * "Basic characterization…" in ordinary prose is not mistaken for an encoded credential.
-   */
-  /\bsk-[A-Za-z0-9_-]{20,}/g,
-  /\bgh[pousr]_[A-Za-z0-9]{20,}/g,
-  /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
-  /\bBasic\s+(?=[A-Za-z0-9+/=]*[0-9+/=])[A-Za-z0-9+/=]{20,}/g,
-];
-
 /** Applies the export's value-based credential patterns to one string. */
 function redactExportSecretValues(value: string): string {
   let result = value;

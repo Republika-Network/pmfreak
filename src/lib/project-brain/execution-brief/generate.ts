@@ -1,0 +1,117 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Execution Brief — the dedicated operation (PB-EXEC-01, §13 option D). SERVER ONLY.
+//
+// Runs INSTEAD of the ordinary answer inference for a turn whose operation is
+// `execution_brief`: exactly one provider call (operation
+// `project_brain.execution_brief`), zero extra calls anywhere else.
+//
+//   entitlement?  no → degraded, no provider call
+//   prompt        buildExecutionBriefMessages (same context, same aliases)
+//   infer         ONE call; strict JSON schema; idempotency key from the user turn
+//   parse         strict; malformed → degraded (no partial brief)
+//   ground        stable ids, whole-item removal, credential boundary 1
+//   assemble      server fields, hashes, readiness, credential boundary 2
+//
+// Logs carry identifiers, stages, counts and guard CATEGORIES only — never model
+// content, prompts, source text or a matched credential.
+// ─────────────────────────────────────────────────────────────────────────────
+
+import type { InferenceRequest, InferenceResponse } from "@/lib/ai/inference/types";
+import type { ProjectBrainContext } from "../conversation/context-types";
+import type { ProjectContextScope } from "../types";
+import { assembleExecutionBrief, ExecutionBriefAssemblyError } from "./assemble";
+import { groundExecutionBrief, reportTextsOf } from "./ground";
+import { buildExecutionBriefMessages } from "./prompt";
+import { extractReportedRepositoryContext } from "./repository-context";
+import { EXECUTION_BRIEF_INFERENCE, EXECUTION_BRIEF_MODEL_SCHEMA, parseExecutionBriefModelOutput } from "./schema";
+import { EXECUTION_BRIEF_OPERATION, type ExecutionBriefV1, type ResolvedExecutionBriefTargetRef } from "./types";
+
+export type ExecutionBriefGenerationInput = {
+  scope: ProjectContextScope;
+  userId: string;
+  moduleId: string;
+  conversationId: string;
+  userMessage: { id: string; content: string; created_at: string };
+  /** The turn context WITH its report map. */
+  context: ProjectBrainContext;
+  targetRef: ResolvedExecutionBriefTargetRef;
+  recommendationText: string | null;
+  generatedAt: string;
+  /** True for an explicit retry of a degraded brief turn. */
+  retry: boolean;
+  infer(request: InferenceRequest): Promise<InferenceResponse>;
+  newBriefId(): string;
+};
+
+export type ExecutionBriefGenerationResult =
+  | { ok: true; brief: ExecutionBriefV1; provider: string; model: string }
+  | { ok: false; stage: "schema" | "assembly"; failure?: string };
+
+/** Deterministic, server-written reply sentence. No instructions live here — they live in the brief. */
+export function executionBriefReplyContent(brief: Pick<ExecutionBriefV1, "readiness" | "targetRef">): string {
+  if (brief.readiness === "needs_input") return "I prepared a draft execution brief, but it needs additional input before handoff.";
+  return brief.targetRef.kind === "current_user_request"
+    ? "I prepared an execution brief for the work you described."
+    : "I prepared an execution brief for this recommendation.";
+}
+
+export async function generateExecutionBrief(input: ExecutionBriefGenerationInput): Promise<ExecutionBriefGenerationResult> {
+  const { scope, context, userMessage } = input;
+  const response = await input.infer({
+    moduleId: input.moduleId,
+    workspaceId: scope.workspaceId,
+    projectId: scope.projectId,
+    actorId: input.userId,
+    actorType: "user",
+    dataSensitivity: "confidential",
+    chainDepth: 0,
+    messages: buildExecutionBriefMessages({ context, question: userMessage.content, targetRef: input.targetRef, recommendationText: input.recommendationText, asOf: input.generatedAt }),
+    responseFormat: { type: "json_schema", jsonSchema: EXECUTION_BRIEF_MODEL_SCHEMA },
+    temperature: EXECUTION_BRIEF_INFERENCE.temperature,
+    maxTokens: EXECUTION_BRIEF_INFERENCE.maxTokens,
+    timeoutMs: EXECUTION_BRIEF_INFERENCE.timeoutMs,
+    maxAttempts: EXECUTION_BRIEF_INFERENCE.maxAttempts,
+    retryDelayMs: EXECUTION_BRIEF_INFERENCE.retryDelayMs,
+    operationName: EXECUTION_BRIEF_OPERATION,
+    idempotencyKey: `project-brain:${userMessage.id}:brief:${input.retry ? "retry" : "first"}`,
+  });
+  if (response.finishReason === "length") {
+    console.warn(JSON.stringify({ event: "project_brain.execution_brief.output_truncated", projectId: scope.projectId, maxTokens: EXECUTION_BRIEF_INFERENCE.maxTokens }));
+  }
+
+  const parsed = parseExecutionBriefModelOutput({ parsedJson: response.parsedJson, content: response.content });
+  if (!parsed) return { ok: false, stage: "schema" };
+
+  try {
+    const grounded = groundExecutionBrief({ output: parsed, context, question: userMessage.content, generatedAt: input.generatedAt, targetRef: input.targetRef });
+    const reportTexts = reportTextsOf(context, userMessage.content).map((r) => ({ turnId: r.report.reference.turnId, text: r.text }));
+    const repositoryContext = extractReportedRepositoryContext(reportTexts);
+    const reportCreatedAt = new Map((context.reports ?? []).map((r) => [r.reference.turnId, r.reference.createdAt] as const));
+    const brief = assembleExecutionBrief({
+      grounded,
+      briefId: input.newBriefId(),
+      workspaceId: scope.workspaceId,
+      projectId: scope.projectId,
+      conversationId: input.conversationId,
+      requestTurnId: userMessage.id,
+      generatedAt: input.generatedAt,
+      provider: response.provider,
+      model: response.model,
+      targetRef: input.targetRef,
+      repositoryContext,
+      reportCreatedAt,
+    });
+    return { ok: true, brief, provider: response.provider, model: response.model };
+  } catch (error) {
+    // Fail closed: a guard error, a credential in a server-owned field or an invalid
+    // assembled brief degrades the whole turn. Only the reason and field:category.
+    const failure = error instanceof ExecutionBriefAssemblyError ? error.reason : "assembly_error";
+    console.warn(JSON.stringify({
+      event: "project_brain.execution_brief.refused",
+      projectId: scope.projectId,
+      failure,
+      detail: error instanceof ExecutionBriefAssemblyError ? error.detail.slice(0, 20) : [],
+    }));
+    return { ok: false, stage: "assembly", failure };
+  }
+}

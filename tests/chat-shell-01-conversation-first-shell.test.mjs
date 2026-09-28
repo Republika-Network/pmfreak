@@ -357,7 +357,9 @@ test("the send path, idempotency and API are untouched by the new layout", () =>
   const source = code("src/components/pmfreak/project-brain/project-brain-conversation.tsx");
   assert.equal((source.match(/\/api\/projects\/\$\{encodeURIComponent\((?:forProject|projectId)\)\}\/brain\/turns/g) ?? []).length, 2, "one read, one post");
   assert.match(source, /clientMessageId: newClientMessageId\(\)/);
-  assert.match(source, /submit\(\{ clientMessageId: question\.clientMessageId, text: question\.content, retry: true \}\)/);
+  // A retry is the SAME turn: same client id, same text. PB-EXEC-01: it also resends the
+  // turn's own operation identity, or the server would refuse it as another operation (409).
+  assert.match(source, /submit\(\{\s*clientMessageId: question\.clientMessageId,\s*text: question\.content,\s*retry: true,\s*\.\.\.\(request\?\.operation === "execution_brief" \? \{ intent: "execution_brief" as const, targetRef: request\.targetRef \} : \{\}\),\s*\}\)/);
   assert.equal((source.match(/const submit = useCallback/g) ?? []).length, 1, "one submit implementation for both layouts");
   assert.match(source, /if \(event\.key === "Enter" && !event\.shiftKey\)/, "Enter still sends, Shift+Enter still breaks a line");
 });
@@ -456,9 +458,11 @@ test("the conversation route authorizes exactly as Project Home did — before a
 test("the project_brain.converse boundary and the PB-CHAT API are not touched", { skip: BASE_REF ? false : "no origin/main in this checkout" }, () => {
   // prompt.ts and turn-service.ts were frozen here for CHAT-SHELL-01 only; PB-REASON-01
   // deliberately changes them (reasoning guidance, as_of date) and is pinned by its own
-  // suite. The route, entitlement and authorization boundary stay frozen.
+  // suite. Likewise the turn route: PB-EXEC-01 deliberately extends its body (intent /
+  // targetRef) and is pinned by its own suite and by the PB-CHAT-01 R-F2e order check
+  // (auth → governance → rate limit → entitlement). The entitlement and authorization
+  // boundary stay frozen.
   for (const file of [
-    "src/app/api/projects/[id]/brain/turns/route.ts",
     "src/lib/project-brain/conversation/generative-access.ts",
     "src/lib/aoc/runtime/governance-actions.ts",
     "src/lib/security/server-authorization.ts",
