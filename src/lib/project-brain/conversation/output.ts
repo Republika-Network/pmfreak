@@ -17,6 +17,15 @@
 // token (milestone code, PR number, branch name, percentage, ISO date) that
 // appears nowhere in what this turn supplied is counted, and a statement carrying
 // one cannot stay evidence-backed — it is shown as an assumption.
+//
+// PB-REASON-02 adds report grounding: `reportIds` (R*) resolve ONLY against the
+// server-built report map (reported-context.ts) — authenticated user turns of this
+// conversation — and never against sources, nor sources against reports. A report
+// supports a REPORTED claim (reportedBy is forced to "user"); it may be the basis of
+// a RECOMMENDATION / ASSUMPTION / OPEN_QUESTION; it never supports FACT, INFERENCE
+// or CONTRADICTION. A FACT citing any valid report becomes REPORTED, and an
+// INFERENCE / CONTRADICTION / UNKNOWN citing one becomes ASSUMPTION — with or
+// without sources, so a report is never laundered into evidence nor dropped.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { PROJECT_BRAIN_CONSTITUTION_VERSION } from "../constitution";
@@ -25,14 +34,15 @@ import {
   EPISTEMIC_TYPES,
   type ContradictingClaim,
   type EpistemicType,
+  type ProjectBrainReportReference,
   type ProjectBrainResponse,
   type ProjectBrainSourceReference,
   type ProjectBrainStatement,
   type ProjectContextScope,
   type QualitativeConfidenceLevel,
 } from "../types";
-import type { ProjectBrainContext, ProjectBrainContextSource } from "./context-types";
-import { MAX_CONTEXT_SOURCES, PROJECT_BRAIN_OUTPUT_LIMITS as LIMITS } from "./context-budget";
+import type { ProjectBrainContext, ProjectBrainContextReport, ProjectBrainContextSource } from "./context-types";
+import { MAX_CONTEXT_SOURCES, MAX_HISTORY_MESSAGES, PROJECT_BRAIN_OUTPUT_LIMITS as LIMITS } from "./context-budget";
 
 export const MAX_REPLY_CHARS = LIMITS.replyChars;
 export const MAX_STATEMENTS = LIMITS.statements;
@@ -42,6 +52,8 @@ export type RawModelStatement = {
   text: string;
   epistemicType: EpistemicType;
   sourceIds: string[];
+  /** PB-REASON-02. Required by the strict schema; absent in pre-PB-REASON-02 fixtures = none. */
+  reportIds?: string[];
   confidence: QualitativeConfidenceLevel;
   inferenceBasis: string | null;
   reportedBy: string | null;
@@ -76,6 +88,9 @@ export function parseProjectBrainModelOutput(input: { parsedJson?: unknown; cont
     const s = entry as Record<string, unknown>;
     if (!isString(s.text) || !isString(s.epistemicType) || !EPISTEMIC_SET.has(s.epistemicType)) return null;
     if (!Array.isArray(s.sourceIds) || !s.sourceIds.every(isString)) return null;
+    // Absent reportIds = no report support (the conservative direction); present
+    // but malformed = the whole answer is not the contract.
+    if (s.reportIds !== undefined && (!Array.isArray(s.reportIds) || !s.reportIds.every(isString))) return null;
     if (!isString(s.confidence) || !CONFIDENCE_LEVELS.has(s.confidence)) return null;
     if (!nullableString(s.inferenceBasis) || !nullableString(s.reportedBy)) return null;
     const claims = Array.isArray(s.contradictingClaims) ? s.contradictingClaims : [];
@@ -90,6 +105,7 @@ export function parseProjectBrainModelOutput(input: { parsedJson?: unknown; cont
       text: s.text,
       epistemicType: s.epistemicType as EpistemicType,
       sourceIds: s.sourceIds as string[],
+      reportIds: (s.reportIds as string[] | undefined) ?? [],
       confidence: s.confidence as QualitativeConfidenceLevel,
       inferenceBasis: s.inferenceBasis as string | null,
       reportedBy: s.reportedBy as string | null,
@@ -102,6 +118,12 @@ export function parseProjectBrainModelOutput(input: { parsedJson?: unknown; cont
 export type CitationReport = {
   /** Source ids the model cited that this turn never supplied (invented, foreign or malformed). */
   rejectedCitations: number;
+  /**
+   * PB-REASON-02: report ids the model cited that this turn's report map does not
+   * contain (invented, a source id used as a report, beyond the per-statement cap).
+   * Absent on rows written before PB-REASON-02.
+   */
+  rejectedReports?: number;
   /** Statements whose epistemic type or confidence was lowered to match their valid sources. */
   downgradedStatements: number;
   /** Statements dropped because they were empty or beyond the statement limit. */
@@ -124,6 +146,8 @@ export type GroundedOutput = {
 };
 
 const EVIDENCE_DERIVED = new Set<EpistemicType>(["FACT", "REPORTED", "INFERENCE", "CONTRADICTION"]);
+/** Types that may keep report support (mirrors guardrails.ts). */
+const REPORT_BEARING = new Set<EpistemicType>(["REPORTED", "RECOMMENDATION", "ASSUMPTION", "OPEN_QUESTION"]);
 const SECONDARY_BASIS = "Derived from the cited project records, which are not all authoritative.";
 const GENERIC_BASIS = "Derived from the cited project records.";
 
@@ -221,7 +245,8 @@ export function groundProjectBrainOutput(input: {
   const { output, context, generatedAt } = input;
   const scope: ProjectContextScope = context.scope;
   const byAlias = new Map<string, ProjectBrainContextSource>(context.sources.map((s) => [s.alias, s]));
-  const citations: CitationReport = { rejectedCitations: 0, downgradedStatements: 0, droppedStatements: 0, unsupportedReferences: 0 };
+  const byReportAlias = new Map<string, ProjectBrainContextReport>((context.reports ?? []).map((r) => [r.alias, r]));
+  const citations: CitationReport = { rejectedCitations: 0, rejectedReports: 0, downgradedStatements: 0, droppedStatements: 0, unsupportedReferences: 0 };
   const supplied = suppliedReferences(context, input.question ?? "", generatedAt);
   const unsupported = new Set<string>();
   const unsupportedIn = (text: string, onlyProjectShaped = false): boolean => {
@@ -240,6 +265,12 @@ export function groundProjectBrainOutput(input: {
     const source = byAlias.get(id.trim().toUpperCase());
     if (!source) citations.rejectedCitations += 1;
     return source ?? null;
+  };
+
+  const resolveReport = (id: string): ProjectBrainContextReport | null => {
+    const report = byReportAlias.get(id.trim().toUpperCase());
+    if (!report) citations.rejectedReports = (citations.rejectedReports ?? 0) + 1;
+    return report ?? null;
   };
 
   const statements: GroundedStatement[] = [];
@@ -261,6 +292,18 @@ export function groundProjectBrainOutput(input: {
         sources.push(source.reference);
       }
     }
+    const reports: ProjectBrainReportReference[] = [];
+    const seenReports = new Set<string>();
+    const rawReportIds = raw.reportIds ?? [];
+    const citedReports = rawReportIds.slice(0, LIMITS.reportIdsPerStatement);
+    citations.rejectedReports = (citations.rejectedReports ?? 0) + rawReportIds.length - citedReports.length;
+    for (const id of citedReports) {
+      const report = resolveReport(id);
+      if (report && !seenReports.has(report.alias)) {
+        seenReports.add(report.alias);
+        reports.push(report.reference);
+      }
+    }
 
     const original = raw.epistemicType;
     let type: EpistemicType = original;
@@ -275,7 +318,17 @@ export function groundProjectBrainOutput(input: {
     // same holds for a claim naming a reference nothing this turn supplied — a
     // cited record cannot vouch for a milestone code or PR number it never contains.
     const inventsReference = unsupportedIn(text);
-    if ((EVIDENCE_DERIVED.has(type) && sources.length === 0) || (inventsReference && (EVIDENCE_DERIVED.has(type) || type === "RECOMMENDATION"))) {
+    // A claim the model says rests on a VALID user report (resolved above — an
+    // invented R999 is not support) is never left as an evidence-only type, whatever
+    // sources it also cites: an incidental record must not launder a report into
+    // evidence, nor may the report be silently dropped. FACT → REPORTED;
+    // INFERENCE / CONTRADICTION / UNKNOWN → ASSUMPTION. The report stays attached.
+    if (reports.length > 0 && !REPORT_BEARING.has(type)) {
+      type = type === "FACT" ? "REPORTED" : "ASSUMPTION";
+      if (type === "ASSUMPTION") confidence = "low";
+    }
+    const reportBacked = type === "REPORTED" && reports.length > 0;
+    if ((EVIDENCE_DERIVED.has(type) && sources.length === 0 && !reportBacked) || (inventsReference && (EVIDENCE_DERIVED.has(type) || type === "RECOMMENDATION"))) {
       type = "ASSUMPTION";
       confidence = "low";
     }
@@ -291,16 +344,23 @@ export function groundProjectBrainOutput(input: {
       else type = "INFERENCE";
     }
     if (type === "FACT" && !hasPrimary) type = "INFERENCE";
+    // Report-backed: the server knows exactly who said it — an authenticated user —
+    // and never lets the model name a stakeholder role it cannot know.
+    if (type === "REPORTED" && reports.length > 0) reportedBy = "user";
     if (type === "REPORTED" && !reportedBy) type = "INFERENCE";
     if (type === "INFERENCE" && !inferenceBasis) inferenceBasis = hasPrimary ? GENERIC_BASIS : SECONDARY_BASIS;
     if (EVIDENCE_DERIVED.has(type) && confidence === "high" && !hasPrimary) confidence = "medium";
     if (type === "OPEN_QUESTION" && confidence === "high") confidence = "medium";
+    // What a user said is never high-confidence, even beside a primary source.
+    if (reports.length > 0 && confidence === "high") confidence = "medium";
     if (type === "UNKNOWN") {
       sources.length = 0;
       confidence = "unknown";
     }
     if (type !== "INFERENCE") inferenceBasis = null;
     if (type !== "REPORTED") reportedBy = null;
+    // Unreachable after the normalization above; kept as a defensive invariant.
+    if (!REPORT_BEARING.has(type)) reports.length = 0;
 
     const downgraded = type !== original || confidence !== raw.confidence;
     if (downgraded) citations.downgradedStatements += 1;
@@ -312,6 +372,7 @@ export function groundProjectBrainOutput(input: {
       text,
       confidence: { kind: "qualitative", level: confidence },
       sources,
+      ...(reports.length > 0 ? { reports } : {}),
       ...(reportedBy ? { reportedBy: clip(reportedBy, LIMITS.reportedByChars) } : {}),
       ...(inferenceBasis ? { inferenceBasis: clip(inferenceBasis, LIMITS.inferenceBasisChars) } : {}),
       ...(contradictingClaims ? { contradictingClaims } : {}),
@@ -356,12 +417,15 @@ export function groundProjectBrainOutput(input: {
 export function worstCaseProjectBrainOutput(): RawModelOutput {
   const longestType = [...EPISTEMIC_TYPES].sort((a, b) => b.length - a.length)[0];
   const alias = `S${MAX_CONTEXT_SOURCES}`;
+  // Every history message a user turn, plus the current one.
+  const reportAlias = `R${MAX_HISTORY_MESSAGES + 1}`;
   return {
     reply: "x".repeat(LIMITS.replyChars),
     statements: Array.from({ length: LIMITS.statements }, () => ({
       text: "x".repeat(LIMITS.statementChars),
       epistemicType: longestType,
       sourceIds: Array.from({ length: LIMITS.sourceIdsPerStatement }, () => alias),
+      reportIds: Array.from({ length: LIMITS.reportIdsPerStatement }, () => reportAlias),
       confidence: "unknown" as QualitativeConfidenceLevel,
       inferenceBasis: "x".repeat(LIMITS.inferenceBasisChars),
       reportedBy: "x".repeat(LIMITS.reportedByChars),

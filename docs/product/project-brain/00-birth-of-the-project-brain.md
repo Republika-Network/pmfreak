@@ -17,7 +17,7 @@ reasoning. It implemented the *contract* such reasoning will later use.
 
 ### 1. The Constitution (`constitution.ts`)
 
-A versioned (`PROJECT_BRAIN_CONSTITUTION_VERSION`, currently `1.0.0`), data-only
+A versioned (`PROJECT_BRAIN_CONSTITUTION_VERSION`, `1.0.0` at birth; `1.1.0` since PB-REASON-02), data-only
 object: identity/voice, five non-negotiable principles (evidence before
 assertion, never fabricate, express uncertainty explicitly, clearly separate
 knowledge types, always preserve provenance), the fabrication blocklist, the

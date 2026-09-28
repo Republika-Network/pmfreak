@@ -65,6 +65,8 @@ export const PROJECT_BRAIN_OUTPUT_LIMITS = {
   statements: 6,
   statementChars: 280,
   sourceIdsPerStatement: 4,
+  /** PB-REASON-02: user-report ids (R*) per statement. */
+  reportIdsPerStatement: 3,
   inferenceBasisChars: 280,
   reportedByChars: 80,
   contradictingClaims: 2,
@@ -76,7 +78,7 @@ export const PROJECT_BRAIN_OUTPUT_LIMITS = {
  *
  *   worst-case legal output  = JSON of a reply and statements with EVERY field at its
  *                              limit above (measured by worstCaseProjectBrainOutput()
- *                              in output.ts: ≈ 9.1k characters)
+ *                              in output.ts: ≈ 9.3k characters, PB-REASON-02's reportIds included)
  *   tokens                  ≤ characters / OUTPUT_CHARS_PER_TOKEN_FLOOR
  *                              (3: a conservative floor for Latin-script prose and
  *                              JSON punctuation/keys; typical English is ≈ 4)
@@ -93,7 +95,7 @@ export const OUTPUT_TOKEN_SAFETY_MARGIN = 1.2;
 /** Inference parameters for a conversational turn. */
 export const PROJECT_BRAIN_INFERENCE = {
   temperature: 0.2,
-  maxTokens: 3700,
+  maxTokens: 3800,
   timeoutMs: 20_000,
   maxAttempts: 2,
   retryDelayMs: 500,

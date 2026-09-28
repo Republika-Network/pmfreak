@@ -16,7 +16,9 @@
 
 import type { EpistemicType, QualitativeConfidenceLevel } from "./types";
 
-export const PROJECT_BRAIN_CONSTITUTION_VERSION = "1.0.0";
+// 1.1.0 (PB-REASON-02): a REPORTED statement may rest on a human report made in the
+// current Project Brain conversation (`reports`) instead of a project source.
+export const PROJECT_BRAIN_CONSTITUTION_VERSION = "1.1.0";
 
 // ─── Identity ───────────────────────────────────────────────────────────────
 
@@ -103,6 +105,13 @@ export type EpistemicTypeDefinition = {
   /** Runtime requirements guardrails.ts enforces for this type. Documentary here; enforced there. */
   requiresSources: boolean;
   minSources: number;
+  /**
+   * PB-REASON-02: whether a human report from the current conversation
+   * (`ProjectBrainStatement.reports`) counts toward `minSources`. Only REPORTED:
+   * a report is what someone said, so it can support "X was reported" — never a
+   * FACT, an INFERENCE or a CONTRADICTION, which stay evidence-backed.
+   */
+  humanReportsCountAsSupport: boolean;
 };
 
 export const EPISTEMIC_TYPE_DEFINITIONS: readonly EpistemicTypeDefinition[] = [
@@ -112,14 +121,17 @@ export const EPISTEMIC_TYPE_DEFINITIONS: readonly EpistemicTypeDefinition[] = [
     description: "A statement directly supported by authoritative evidence.",
     example: "The contract was signed on July 10.",
     requiresSources: true,
+    humanReportsCountAsSupport: false,
     minSources: 1,
   },
   {
     type: "REPORTED",
     label: "Reported",
-    description: "A statement made by a stakeholder but not independently verified.",
+    description:
+      "A statement made by a stakeholder but not independently verified — found in a project source, or said by a user in the current Project Brain conversation.",
     example: "The technical lead reported that testing was complete.",
     requiresSources: true,
+    humanReportsCountAsSupport: true,
     minSources: 1,
   },
   {
@@ -128,6 +140,7 @@ export const EPISTEMIC_TYPE_DEFINITIONS: readonly EpistemicTypeDefinition[] = [
     description: "A conclusion derived from one or more evidence items.",
     example: "The delivery date may be at risk because two prerequisite approvals remain open.",
     requiresSources: true,
+    humanReportsCountAsSupport: false,
     minSources: 1,
   },
   {
@@ -136,6 +149,7 @@ export const EPISTEMIC_TYPE_DEFINITIONS: readonly EpistemicTypeDefinition[] = [
     description: "An explicit working assumption.",
     example: "The project currently assumes that the existing authentication service can be reused.",
     requiresSources: false,
+    humanReportsCountAsSupport: false,
     minSources: 0,
   },
   {
@@ -144,6 +158,7 @@ export const EPISTEMIC_TYPE_DEFINITIONS: readonly EpistemicTypeDefinition[] = [
     description: "A question that remains unresolved.",
     example: "Who approves the production deployment?",
     requiresSources: false,
+    humanReportsCountAsSupport: false,
     minSources: 0,
   },
   {
@@ -152,6 +167,7 @@ export const EPISTEMIC_TYPE_DEFINITIONS: readonly EpistemicTypeDefinition[] = [
     description: "Two or more evidence items contain conflicting information.",
     example: "The contract states August 1, while the latest meeting notes state August 8.",
     requiresSources: true,
+    humanReportsCountAsSupport: false,
     minSources: 2,
   },
   {
@@ -160,6 +176,7 @@ export const EPISTEMIC_TYPE_DEFINITIONS: readonly EpistemicTypeDefinition[] = [
     description: "A proposed action, clearly separated from facts and decisions. Always requires human approval before it has any effect.",
     example: "Consider confirming the deployment owner before scheduling go-live.",
     requiresSources: false,
+    humanReportsCountAsSupport: false,
     minSources: 0,
   },
   {
@@ -168,6 +185,7 @@ export const EPISTEMIC_TYPE_DEFINITIONS: readonly EpistemicTypeDefinition[] = [
     description: "The Project Brain lacks enough evidence to classify the matter.",
     example: "No approved budget has been identified.",
     requiresSources: false,
+    humanReportsCountAsSupport: false,
     minSources: 0,
   },
 ] as const;
