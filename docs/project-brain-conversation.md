@@ -236,7 +236,8 @@ change. What changed is what the model is told and what it can see:
 - **Future execution boundary.** PB-REASON-01 answers *what* should happen next and *why*,
   and the prompt forbids implementation steps (branches, files, commands) unless asked for and
   supported by the records. Packaging a next target for an execution agent is a separate,
-  not-yet-built increment; it would consume this reasoning, not replace it.
+  not-yet-built increment; it would consume this reasoning, not replace it (see
+  [Execution boundary (PB-EXEC)](#execution-boundary-pb-exec)).
 
 Verification: `tests/pb-reason-01-intent-first-reasoning.test.ts` (deterministic behaviour on
 the shared fixtures in `tests/fixtures/pb-reason-01-projects.ts`) and
@@ -375,6 +376,29 @@ AI token/cost delta is zero. Pinned by `tests/pb-present-01-progressive-disclosu
 (real renders via `tests/pb-present-01-harness.tsx`, plus a diff guard over the reasoning,
 grounding and API files) and browser scenarios P1–P5 in
 `tests/e2e/pb-chat-01-project-brain.spec.ts`.
+
+## Execution boundary (PB-EXEC)
+
+Architecture: [`project-brain-execution.md`](project-brain-execution.md) (PB-EXEC-00 —
+documentation only; no runtime change).
+
+- **Project Brain reasoning remains read-only.** Project Brain is a governed conversational
+  reasoning surface — not an Agent Definition, not an Agent Run, never a requester or an
+  authority for execution. `project_brain.converse` stays human-only, `agentCompatible: false`,
+  low risk; `/brain/turns` never becomes an execution endpoint.
+- **PB-EXEC creates a separate governed execution boundary.** Execution authority lives only in
+  PMFreak governance (policy, human approval, single-use execution grants) — never in a prompt,
+  a brief, a chat report or repository content. `reason < prepare < delegate < merge < deploy`:
+  each step is a separate command with separate authority.
+- **PB-EXEC-01 (next) produces briefs only:** a canonical, executor-neutral Execution Brief
+  generated on explicit request, displayed and copied for manual handoff. An Execution Brief is
+  not an authorization to execute and nothing runs.
+- **PB-EXEC-02 (future) will delegate** to an external executor under an explicit human grant,
+  after repository binding, an executor adapter and the runtime prerequisites exist.
+- **PB-EXEC-03 (future) will address governed autonomy**, and requires a new ADR revisiting
+  ADR-PMF-027/030.
+
+None of PB-EXEC-01/02/03 is implemented.
 
 ## Degraded mode
 
