@@ -97,14 +97,14 @@ test("P2-1: a prior recommendation is targeted by an explicit stable reference, 
   }
   assert.match(target, /The earlier Recommendation \*\*identifies\*\* the target; it is \*\*not\*\* a source\./);
   assert.match(target, /execution-selection metadata/);
-  assert.match(section("## 20. PB-EXEC-01 implementation plan"), /accepts `intent`, `targetRef` and `renderFor`/);
+  assert.match(section("## 20. PB-EXEC-01 implementation plan"), /accepts `intent` and `targetRef` \(closed shapes, §13\); \*\*no `renderFor`\*\*/);
 });
 
 test("P2-1: an ambiguous 'it' is never model-guessed", () => {
   const target = section("### 9.2 Target selection");
   assert.match(target, /must not be resolved by letting a model decide what "it" is/);
   assert.match(target, /\*\*Exactly one\*\* → it becomes the target/);
-  assert.match(target, /\*\*Zero or more than one\*\* → no provider call; a deterministic `needs_input` brief/);
+  assert.match(target, /\*\*Zero or more than one\*\* → \*\*no `ExecutionBriefV1` is produced\*\*/);
   assert.match(EXECUTION_DOC, /never a model guess/);
 });
 
@@ -142,7 +142,7 @@ test("P2-2: the persisted canonical brief carries stable ids and no S*/R* alias"
 
 test("P2-2: contextFingerprint is built from stable context identifiers only", () => {
   const fp = section("### 9.8 Identity, content hash, context fingerprint and versioning");
-  assert.match(fp, /sources:\s+sorted \[ \{ evidenceId, recordedAt \} \]/);
+  assert.match(fp, /sources: sorted \[ \{ evidenceId, sourceContextDigest \} \]/);
   assert.match(fp, /reportedTurnIds: sorted/);
   assert.match(fp, /target: \{ kind, assistantTurnId\?, statementId\? \}/);
   assert.match(fp, /It never contains an alias \(`S\*`\/`R\*`\), model prose \(`target\.title`/);
@@ -206,4 +206,130 @@ test("requester ≠ approver is marked proposed, not ratified", () => {
     }
   }
   assert.doesNotMatch(EXECUTION_DOC, /requester ≠ approver, which the current runtime does not yet\s+enforce/);
+});
+
+// ─── PR #631 final remediation (F1 … F8) ──────────────────────────────────────
+
+const subsection = (heading) => {
+  const start = EXECUTION_DOC.indexOf(heading);
+  assert.ok(start >= 0, `subsection ${heading} missing`);
+  const end = EXECUTION_DOC.slice(start + heading.length).search(/\n#{2,4} /);
+  return end < 0 ? EXECUTION_DOC.slice(start) : EXECUTION_DOC.slice(start, start + heading.length + end);
+};
+const fenced = (text, lang) => {
+  const open = text.indexOf("```" + lang);
+  assert.ok(open >= 0, `no ${lang} block`);
+  const body = open + 3 + lang.length;
+  return text.slice(body, text.indexOf("```", body));
+};
+const renderers = () => {
+  const r = subsection("### 9.10 Renderers");
+  const claudeAt = r.indexOf("**Claude Code** (illustrative");
+  const codexAt = r.indexOf("**Codex** (illustrative");
+  assert.ok(claudeAt > 0 && codexAt > claudeAt);
+  return { rules: r.slice(0, claudeAt), claude: fenced(r.slice(claudeAt, codexAt), "text"), codex: fenced(r.slice(codexAt), "text") };
+};
+
+test("F1: the credential boundary is layered, and the existing helpers are not documented as sufficient", () => {
+  const guard = subsection("#### 9.5.1 Credential detection boundary");
+  assert.match(guard, /The existing helpers are \*\*not\*\* sufficient by themselves/);
+  assert.match(guard, /src\/lib\/security\/redaction\.ts/);
+  assert.match(guard, /src\/lib\/audit-export\/redaction\.ts/);
+  for (const layer of [/Existing value patterns, reused/, /Sensitive-key rules/, /PEM \/ private-key blocks/, /Provider credential formats/, /Bounded opaque-token rule/]) {
+    assert.match(guard, layer);
+  }
+  assert.match(guard, /not a home-grown universal regex/);
+  assert.match(guard, /on the assembled canonical brief \*\*before persistence\*\*/);
+  assert.match(guard, /on the rendered text \*\*before display and before copy\*\*/);
+  assert.match(guard, /The matched value is never\s+stored, logged/);
+  assert.match(EXECUTION_DOC, /Detected credential content never enters `ExecutionBriefV1`\./);
+  assert.match(subsection("### 15.3 Secrets"), /are \*\*one layer\*\* of it and\s+are not sufficient on their own/);
+});
+
+test("F2: unsupported execution-shaped references never survive in any renderer-bound field", () => {
+  const grounding = subsection("### 9.5 Grounding and fake-precision enforcement");
+  assert.match(grounding, /no unsupported\s+execution-shaped reference may survive as an unqualified instruction in any field that reaches\s+an executor renderer/);
+  for (const field of ["`objective.text`", "`scope.inScope[]`", "`scope.outOfScope[]`", "`constraints[].text`", "`acceptanceCriteria[].text`", "`verificationPlan[].step`", "`assumptions[].text`"]) {
+    assert.ok(grounding.includes(field), `${field} not covered`);
+  }
+  assert.match(grounding, /\*\*removed whole\*\* and\s+replaced by an `unknowns` entry/);
+  assert.match(grounding, /\*\*without echoing the unsupported token\*\*/);
+  assert.match(grounding, /The server never excises tokens from model\s+prose/);
+  assert.match(grounding, /Counting alone is never the response/);
+});
+
+test("F3: the context fingerprint tracks the consumed source content, not recordedAt", () => {
+  const fp = subsection("### 9.8 Identity, content hash, context fingerprint and versioning");
+  assert.match(fp, /`recordedAt` is \*\*not\*\* a revision marker for every family/);
+  assert.match(fp, /sourceContextDigest = sha256/);
+  assert.match(fp, /label, content,\s+\/\/ the post-budget text actually placed in <project_context>/);
+  assert.match(fp, /sources: sorted \[ \{ evidenceId, sourceContextDigest \} \]/);
+  assert.doesNotMatch(fp, /\{ evidenceId, recordedAt \}\s+for every source/);
+  // The fact that motivates the fix must stay true in code, or the document must be revisited.
+  const sourceReference = readFileSync(new URL("../src/lib/project-brain/source-reference.ts", import.meta.url), "utf8");
+  assert.match(sourceReference, /sourceSystem: "evidence_items",[\s\S]{0,120}recordedAt: row\.created_at/);
+});
+
+test("F4: the turn operation identity prevents cross-operation replay; renderFor is not part of it", () => {
+  const decision = section("## 13. PB-EXEC-01 model-call decision");
+  assert.match(decision, /metadata\.projectBrainRequest = \{ operation: "answer" \| "execution_brief",\s+targetRef: ExecutionBriefTargetRef \| null \}/);
+  assert.match(decision, /client_message_id_reused_with_different_operation/);
+  assert.match(decision, /\*answer vs execution_brief\* conflicts, and \*execution_brief with a different\s+`targetRef`\* conflicts/);
+  assert.match(decision, /\*\*`renderFor` is not part of the turn — decided\.\*\*/);
+  assert.match(decision, /changing it issues no request, causes no inference, writes nothing and never changes the canonical\s+brief/);
+  const plan = section("## 20. PB-EXEC-01 implementation plan");
+  assert.match(plan, /same `clientMessageId` with `answer` vs `execution_brief` → 409, with a different `targetRef` → 409, never a wrong replay/);
+  assert.match(plan, /switching renderer on the same brief → same canonical brief and hash, no request, no inference/);
+});
+
+test("F5: the objective carries structured provenance and gates readiness", () => {
+  const schema = section("### 9.4 Canonical schema");
+  assert.match(schema, /objective: \{[\s\S]*?origin: Exclude<BriefOrigin, "policy">;[\s\S]*?sourceIds: string\[\]; reportedTurnIds: string\[\];/);
+  assert.doesNotMatch(schema, /objective: string;/);
+  assert.match(section("### 9.7 Readiness"), /\*\*`objective\.origin` is `project_record` or `reported`\*\* with valid support/);
+  const brief = JSON.parse(fenced(subsection("### 9.9 Illustrative canonical brief"), "json"));
+  assert.equal(typeof brief.objective, "object");
+  assert.equal(brief.objective.origin, "project_record");
+  assert.ok(brief.objective.sourceIds.length > 0);
+  const { claude, codex } = renderers();
+  assert.match(claude, /OBJECTIVE\s+\[project record\]/);
+  assert.match(codex, /Goal \[project record\]:/);
+});
+
+test("F6: every executor renderer keeps the AI-generated / manual-handoff / not-authorization banner", () => {
+  const { rules, claude, codex } = renderers();
+  assert.match(rules, /\*\*Authorship and authority banner at the top of the rendered text\*\*/);
+  for (const [name, text] of [["claude", claude], ["codex", codex]]) {
+    const top = text.trim().split("\n").slice(0, 2).join("\n");
+    assert.match(top, /AI-generated/, `${name}: AI-generated label missing at the top`);
+    assert.match(top, /manual handoff/, `${name}: manual handoff missing at the top`);
+    assert.match(top, /not an authorization to execute, merge or deploy/i, `${name}: authority disclaimer missing`);
+  }
+});
+
+test("F7: renderers change formatting, never epistemic authority", () => {
+  const { rules, claude, codex } = renderers();
+  assert.match(rules, /\*\*Renderers may change formatting\. They may not change epistemic authority\.\*\*/);
+  const brief = JSON.parse(fenced(subsection("### 9.9 Illustrative canonical brief"), "json"));
+  const suggested = brief.acceptanceCriteria.filter((c) => c.origin === "suggested");
+  assert.ok(suggested.length > 0, "the example must exercise a suggested criterion");
+  for (const [name, text] of [["claude", claude], ["codex", codex]]) {
+    assert.match(text, /\[suggested\][^\n]*empty period|empty period[^\n]*\[suggested\]/, `${name}: suggested criterion unmarked`);
+    assert.match(text, /\[project record\][^\n]*voided invoices|voided invoices[^\n]*\[project record\]/, `${name}: record criterion unmarked`);
+    assert.match(text, /reported · unverified|reported in chat, not verified/, `${name}: reported context unmarked`);
+    assert.match(text, /\[policy\]/, `${name}: policy items unmarked`);
+  }
+});
+
+test("F8: an ambiguous target is resolved before the turn, persists nothing and never mislabels brain_mode", () => {
+  const ambiguous = subsection("#### 9.2.1 Ambiguous target");
+  assert.match(ambiguous, /\*\*Decision: option B — target\s+resolution happens before the turn is persisted\.\*\*/);
+  assert.match(ambiguous, /\*\*No user row, no assistant row, no\s+provider call, no `ai_usage_events` row\.\*\*/);
+  assert.match(ambiguous, /can never\s+look pending/);
+  assert.match(ambiguous, /\*\*PB-EXEC-01 needs no migration for this\*\*/);
+  assert.match(ambiguous, /labelling\s+the result `generative` or `degraded` — both would be false/);
+  const schema = section("### 9.4 Canonical schema");
+  assert.doesNotMatch(schema, /mode: "deterministic"/);
+  assert.doesNotMatch(schema, /kind: "unresolved"/);
+  assert.doesNotMatch(section("## 23. Open questions"), /stores the deterministic ambiguous-target reply/);
 });
