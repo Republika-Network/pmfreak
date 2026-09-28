@@ -391,7 +391,9 @@ documentation only; no runtime change).
   a brief, a chat report or repository content. `reason < prepare < delegate < merge < deploy`:
   each step is a separate command with separate authority.
 - **PB-EXEC-01 (next) produces briefs only:** a canonical, executor-neutral Execution Brief
-  generated on explicit request, displayed and copied for manual handoff. An Execution Brief is
+  generated on explicit request for an explicitly referenced target (never a model-guessed
+  "it"), with stable provenance (no per-turn `S*`/`R*` aliases), displayed and copied for manual
+  handoff. It does not use the agent execution runtime. An Execution Brief is
   not an authorization to execute and nothing runs.
 - **PB-EXEC-02 (future) will delegate** to an external executor under an explicit human grant,
   after repository binding, an executor adapter and the runtime prerequisites exist.

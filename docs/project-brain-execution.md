@@ -187,7 +187,7 @@ Outcome.
 | **Execution Brief** | A structured, bounded, provenance-carrying **instruction artifact** describing prepared work for an executor | No. Not an Agent Proposal (§8) | Project Brain surface (generation); the human (use) | PB-EXEC-01: in the assistant turn's metadata (§9) | No — never authorization | None | No (generation); yes before any use in PB-EXEC-02 | PB-EXEC-01 |
 | **Executor** | The system that actually performs the work: Claude Code, Codex, a GitHub-native coding agent, an internal PMFreak agent, a human | No. Internal agents are Agent Definitions; external executors are replaceable infrastructure | Infrastructure (outside PMFreak authority) | Identity recorded on the request (PB-EXEC-02) | No | Yes — its whole purpose | — | PB-EXEC-02 |
 | **Executor Adapter** | PMFreak's port implementation for one executor: `prepare / dispatch / status / result / cancel` | No. Structural precedent: the tool-adapter seam (`runAgentToolAdapter` → `generateAdapterOutput`) and the AI Model Provider port | Integration layer (ACL) | Config only | No | Yes (dispatch, cancel) | Grant required | PB-EXEC-02 (not now — §7) |
-| **Execution Request** | The governed, persisted request that a specific brief version be executed by a specific executor under a specific scope | **Yes — `agent_execution_requests`** (Agent Execution Request Runtime); canonical command shape `RequestAgentRun` | Agent Orchestration | Yes | It is the lifecycle record, not the authority | None by itself | Preflight decides | PB-EXEC-02 |
+| **Execution Request** | The governed, persisted request that a specific brief version be executed by a specific executor under a specific scope | **Partly.** Canonical command shape `RequestAgentRun`. `agent_execution_requests` is the preferred existing lifecycle substrate and reuse candidate, but it is **not executor-compatible as-is** (`tool_key NOT NULL`, tool-existence preflight — §10.1); the final persistence shape is decided by the PB-EXEC-02 ADR | Agent Orchestration | Yes (shape: PB-EXEC-02 ADR) | It is the lifecycle record, not the authority | None by itself | Preflight decides | PB-EXEC-02 |
 | **Execution Grant / Authority** | The explicit, scoped, time-bound permission to perform named operations | **Yes — `governance_execution_grants`** (+ signed capability claim), `governance_delegations`, `ai_agent_scopes`, tool approvals | PMFreak governance runtime | Yes | **Yes — the only authority** | None by itself | Issued only after human approval (or, in PB-EXEC-03, a ratified standing policy) | PB-EXEC-02 |
 | **Execution Attempt** | One dispatch of a request to an executor | **Yes (design) — `agent_execution_dispatch_attempts`** (table exists, code in-memory) | Agent Orchestration | Must be persisted in PB-EXEC-02 | No | Yes | Covered by grant | PB-EXEC-02 |
 | **Execution Result** | What the executor *reports* happened (status + claims + artifact references) | **Yes (design) — `agent_execution_results`** (in-memory today) | Agent Orchestration | PB-EXEC-02 | **No — a claim** | None | No | PB-EXEC-02 |
@@ -258,7 +258,7 @@ conversation ──► Project Brain reasoning ──► Execution Target (RECOM
 ══════════════════════ separate surface, separate authority ═════════════════════════════
                                               │  human: "run it with Claude" (explicit command)
                                               ▼
-            Execution Request (agent_execution_requests)  ── preflight ── approval ── Execution Grant
+            Execution Request (persistence: PB-EXEC-02 ADR, §10.1) ── preflight ── approval ── Execution Grant
                                               │                                         (single-use, scoped)
                                               ▼   boundary: after authorization, before first side effect (ADR-PMF-076 §2)
                                    Executor Adapter ──► Executor (Claude Code / Codex / …)   ◄── PB-EXEC-02
@@ -379,183 +379,318 @@ prose alone (§13).
 4. **Honest gaps beat plausible detail.** Missing execution context becomes an `unknowns` entry
    with how to resolve it; it is never filled in.
 
-### 9.2 Schema
+### 9.2 Target selection — an explicit target reference, never a guess
+
+"Prepare it for Claude" must not be resolved by letting a model decide what "it" is. A single
+answer can carry several RECOMMENDATION statements and a thread can carry many answers. The
+target is therefore selected by **execution-selection metadata** on the request — which is
+not authority, grants nothing, and only says *which* work the brief is about.
+
+```ts
+// PB-EXEC-01 request field (conceptual; the exact wire name is fixed by PB-EXEC-01).
+type ExecutionBriefTargetRef =
+  | { kind: "project_brain_recommendation"; assistantTurnId: string; statementId: string }
+  | { kind: "current_user_request" };
+```
+
+Stable identifiers this relies on (verified in code): an assistant turn is a
+`context_messages` row; a persisted statement id is `"<user turn id>:<index>"` assigned by the
+server during grounding (`groundProjectBrainOutput`, `statementIdPrefix: userMessage.id`,
+`conversation/output.ts:369`, `turn-service.ts:202`) and stored in that row's
+`metadata.projectBrain.statements`. There is at most one generative reply per user turn
+(`unique(reply_to_message_id, brain_mode)`), so `(assistantTurnId, statementId)` is unique and
+survives reload and replay.
+
+**Validation of `project_brain_recommendation`** — all server-side, from persisted rows, before
+any inference and before the brief request is written; any failure refuses the request with a
+`400 invalid_execution_target` (an inaccessible project stays the ordinary `403`) and no model
+call:
+
+1. The row `assistantTurnId` exists in `context_messages`.
+2. It belongs to **this** conversation — the project conversation resolved from the route's
+   project id (`context_conversations.context_type = 'project'`), so it is in the same workspace
+   and the same project; the workspace is `projects.workspace_id`, never the body.
+3. `role = 'assistant'` and `brain_mode` is non-null — i.e. a Project Brain reply written by the
+   service-role writer (members cannot insert such rows, per the PB-CHAT-01 RLS). In practice
+   only `generative` replies carry model statements.
+4. `metadata.projectBrain` parses, and it contains a statement whose `id = statementId`.
+5. That statement's `epistemicType` is `RECOMMENDATION` and its `scope` equals
+   `{ workspaceId, projectId }` of the route.
+
+The earlier Recommendation **identifies** the target; it is **not** a source. Its text is passed
+to brief generation as *prior AI output* and must be re-grounded against the **current** sources
+and reports. If the current records no longer support it, the brief says so (`needs_input`,
+with the reason in `unknowns`); the stored statement is never copied into `knownContext`.
+
+**`current_user_request`** — the human describes the work in this turn ("Prepare a brief to add
+CSV export for invoices"). The target is grounded from the current turn (a report) plus the
+current project context. A message that is only a deictic reference with no work described
+("prepare it for Claude", "make the Codex prompt") is **not** a current-user-request target.
+
+**Deterministic resolution rule** (the only one; no model participates):
+
+| Request | Resolution |
+| --- | --- |
+| `targetRef.kind = project_brain_recommendation` (UI control on a specific recommendation) | Validate (1–5) → that statement is the target |
+| `targetRef.kind = current_user_request` and the turn describes the work | The current turn is the target |
+| `targetRef.kind = current_user_request` but the turn is only a deictic reference | Treated as *no target reference* (next row) |
+| No `targetRef` — brief intent came from the phrase matcher (§13) | Candidates = the RECOMMENDATION statements of the **most recent generative assistant turn** in this conversation. **Exactly one** → it becomes the target, recorded as `resolvedBy: "single_candidate"`. **Zero or more than one** → no provider call; a deterministic `needs_input` brief whose `unknowns` says which target is meant, presented with one "Prepare execution brief" control per candidate (each carrying its exact `targetRef`). Older turns are never searched — they require the explicit control. |
+
+### 9.3 Model output vs canonical brief — aliases never persist
+
+The model sees request-local aliases (`S1…`, `R1…`) exactly as in ordinary turns. Those aliases
+are **not** durable identifiers: the same record gets a different alias on another turn. So there
+are two distinct shapes:
+
+| | Model output (transient, never stored) | Canonical brief (server-assembled, persisted) |
+| --- | --- | --- |
+| Source provenance | `sourceAliases: string[]` (`S*`) | `sourceIds: string[]` — the stable `ProjectBrainSourceReference.evidenceId`, e.g. `project_milestones:<uuid>`, `evidence_items:<uuid>` (`context-builder.ts:121,244`) |
+| Report provenance | `reportAliases: string[]` (`R*`) | `reportedTurnIds: string[]` — `context_messages.id` of the user turn (`ProjectBrainReportReference.turnId`) |
+| Who writes it | The model, under a strict schema | The server, after resolution |
+
+The server resolves each alias against **this request's** alias maps (invented, foreign and
+cross-namespace aliases are rejected and counted exactly as today), translates it to the stable id,
+and discards the alias. **No field of a persisted brief contains an `S*` or `R*` alias**, so the
+brief's provenance stays meaningful after reload, replay, a new inference turn or a different alias
+assignment. Full source references (title, system, recorded date) are kept once, deduplicated, in
+`provenance.sources`, keyed by the same `evidenceId`.
+
+### 9.4 Canonical schema
 
 ```ts
 // NEAR-NORMATIVE for PB-EXEC-01. Names may be adjusted; semantics may not.
+// sourceIds       = stable ProjectBrainSourceReference.evidenceId values ("<system>:<row id>")
+// reportedTurnIds = context_messages.id of authenticated USER turns
 type BriefOrigin = "project_record" | "reported" | "policy" | "suggested";
-// project_record: cites ≥1 RECORD source (S*)       reported: cites ≥1 chat report (R*)
-// policy: injected by the server, never by the model suggested: model-generated technique, not a project fact
+// project_record: cites ≥1 RECORD source      reported: cites ≥1 reported turn
+// policy: injected by the server, never the model   suggested: model-generated technique, not a project fact
 
 interface ExecutionBriefV1 {
   schema: "pmfreak.execution-brief";
   version: 1;
 
   identity: {                                  // server
-    briefId: string;                           // uuid
+    briefId: string;                           // uuid; a brief is immutable
     workspaceId: string;
     projectId: string;
     conversationId: string;
     requestTurnId: string;                     // the user turn that asked for the brief
     generatedAt: string;                       // server clock
-    contextFingerprint: string;                // §9.6
-    generator: { provider: string; model: string; operation: "project_brain.execution_brief" };
+    contextFingerprint: string;                // §9.8 — what context was used
+    briefContentHash: string;                  // §9.8 — exact canonical content
+    generator:
+      | { mode: "generative"; provider: string; model: string; operation: "project_brain.execution_brief" }
+      | { mode: "deterministic" };             // e.g. the ambiguous-target needs_input brief (§9.2)
   };
 
   capability: "code";                          // v1 closed enum; server-set
   capabilityFit: "fits" | "not_code" | "unclear"; // model; "not_code" ⇒ readiness needs_input
 
-  target: {                                    // model, grounded
+  targetRef:                                   // server; execution-selection metadata, not authority
+    | { kind: "project_brain_recommendation"; assistantTurnId: string; statementId: string;
+        resolvedBy: "explicit" | "single_candidate" }
+    | { kind: "current_user_request" }
+    | { kind: "unresolved"; candidateStatementIds: string[] };   // needs_input only
+  target: {                                    // model, re-grounded against CURRENT context
     title: string;                             // ≤ 120
     statement: string;                         // ≤ 400
-    origin: "prior_recommendation" | "user_request";
-    sourceIds: string[]; reportIds: string[];
+    sourceIds: string[]; reportedTurnIds: string[];
   };
   objective: string;                           // ≤ 600, the outcome of the work, not the steps
-  whyNow: { text: string; sourceIds: string[]; reportIds: string[] }; // ≤ 400
+  whyNow: { text: string; sourceIds: string[]; reportedTurnIds: string[] }; // ≤ 400
 
-  knownContext:    Array<{ text: string; sourceIds: string[] }>;                    // ≤ 6; origin project_record ONLY
-  reportedContext: Array<{ text: string; reportIds: string[]; executionSensitive: boolean }>; // ≤ 6
-  assumptions:     Array<{ text: string }>;                                         // ≤ 4
+  knownContext:    Array<{ text: string; sourceIds: string[] }>;                          // ≤ 6; project_record ONLY
+  reportedContext: Array<{ text: string; reportedTurnIds: string[]; executionSensitive: boolean }>; // ≤ 6
+  assumptions:     Array<{ text: string }>;                                               // ≤ 4
   unknowns:        Array<{ fact: string; why: string;
                            resolveBy: "user" | "project_record" | "repository_binding";
-                           blocking: boolean }>;                                   // ≤ 8
+                           blocking: boolean }>;                                         // ≤ 8
 
-  scope: { inScope: string[]; outOfScope: string[] };                              // ≤ 8 each
+  scope: { inScope: string[]; outOfScope: string[] };                                    // ≤ 8 each
   areasToInspect: Array<{ text: string; origin: "project_record" | "reported";
-                          sourceIds: string[]; reportIds: string[] }>;             // ≤ 6; never "suggested"
-  constraints:        Array<{ text: string; origin: BriefOrigin; sourceIds: string[]; reportIds: string[] }>; // model ≤ 6 + policy
-  acceptanceCriteria: Array<{ text: string; origin: Exclude<BriefOrigin, "policy">; sourceIds: string[]; reportIds: string[] }>; // ≤ 8
-  verificationPlan:   Array<{ step: string;
+                          sourceIds: string[]; reportedTurnIds: string[] }>;             // ≤ 6; never "suggested"
+  constraints:        Array<{ text: string; origin: BriefOrigin; sourceIds: string[]; reportedTurnIds: string[] }>; // model ≤ 6 + policy
+  acceptanceCriteria: Array<{ text: string; origin: Exclude<BriefOrigin, "policy">; sourceIds: string[]; reportedTurnIds: string[] }>; // ≤ 8
+  verificationPlan:   Array<{ step: string;                                              // WHAT to verify — always allowed
                               kind: "test" | "build" | "lint" | "review" | "manual_check" | "other";
-                              command: string | null;
-                              commandBasis: "reported" | "suggested" | null;  // "observed" | "policy" reserved for PB-EXEC-02
-                              reportIds: string[] }>;                          // ≤ 8
+                              command: string | null;                                    // §9.5 rule 4: only when supplied
+                              commandBasis: "project_record" | "reported" | null;        // "observed" | "policy" reserved for PB-EXEC-02
+                              sourceIds: string[]; reportedTurnIds: string[] }>;         // ≤ 8
 
   repositoryContext:                            // server
     | { status: "not_established"; note: string }
     | { status: "reported";                     // user said it in chat; NEVER verified in v1
         provider: string | null; repository: string | null;
-        baseRef: string | null; baseSha: string | null; reportIds: string[] };
+        baseRef: string | null; baseSha: string | null; reportedTurnIds: string[] };
 
   handoff: {                                    // server constants in v1
     mode: "manual";
     executionAuthorized: false;
     delegationEligible: false;
     gitPolicy: string[];                        // §15.1
+    forbiddenOperations: string[];              // §9.5 rule 4 — merge, deploy, migrate, force-push, …
     stopConditions: string[];                   // e.g. "baseline differs from the brief"
     finalReport: string[];                      // what the executor must report back
   };
 
-  readiness: "handoff_ready" | "needs_input";   // server, §9.5
+  readiness: "handoff_ready" | "needs_input";   // server, §9.7
   provenance: {                                 // server
-    sources: ProjectBrainSourceReference[];     // resolved S* (identity/scope, as today)
-    reports: Array<{ turnId: string; createdAt: string; reportedBy: "user" }>;
-    citations: CitationReport;                  // reused, incl. unsupportedReferences
+    sources: ProjectBrainSourceReference[];     // deduplicated, keyed by evidenceId
+    reports: Array<{ turnId: string; createdAt: string; reportedBy: "user" }>; // turnId = context_messages.id
+    citations: CitationReport;                  // reused counters, incl. unsupportedReferences
     groundingAdjusted: boolean;
-    aiGenerated: true;
+    aiGenerated: boolean;                       // false only for a deterministic brief
   };
 }
 ```
 
 Field notes:
 
-- **identity** makes the brief addressable and auditable; `requestTurnId` ties it to the
-  explicit human request; `generator` records which model wrote the narrative fields.
+- **identity** makes the brief addressable and auditable; `requestTurnId` ties it to the explicit
+  human request; `generator` records which model (if any) wrote the narrative fields.
 - **capability / capabilityFit**: v1 supports `code` only. A target that is not software work is
   not forced into a coding brief; the model says `not_code` and the brief becomes `needs_input`
-  with an explanation. Other capabilities are added by extending the enum and the policy
-  constants, not the shape.
-- **target** carries its origin. When it comes from an earlier Project Brain answer, that answer
-  is *prior AI output*, not a source: the brief re-grounds it against the current records and
-  reports (earlier assistant turns never count as supplied, as in PB-REASON-01).
+  with an explanation. Other capabilities extend the enum and the policy constants, not the shape.
+- **targetRef / target**: `targetRef` records *how the target was selected* (§9.2); `target` is the
+  re-grounded description. Earlier assistant turns never count as supplied context, as in
+  PB-REASON-01.
 - **knownContext** accepts only statements that cite at least one RECORD source. A candidate
   without one is moved to `assumptions` or `unknowns` — never kept as known.
-- **reportedContext** carries `executionSensitive: true` for anything that would control a
-  write or destructive behaviour if trusted ("P13 merged", "branch is clean", "migration is safe",
-  "deploy succeeded"). Renderers must print these under *verify before acting* (§9.4).
+- **reportedContext** carries `executionSensitive: true` for anything that would control a write
+  or destructive behaviour if trusted ("P13 merged", "branch is clean", "migration is safe",
+  "deploy succeeded"). Renderers print these under *verify before acting* (§9.6).
 - **areasToInspect** cannot be `suggested`: a file or directory is either in the records, or the
-  user said it, or it is an unknown. This is where fake repo precision would otherwise appear.
-- **verificationPlan** separates *what to verify* (always allowed) from *which command*: a
-  command is `reported` (the user said the repo uses it) or `suggested` (rendered as "if the repo
-  has it — confirm first"). `observed` (read from a bound repository) and `policy` (mandated by
-  PMFreak/project policy) are reserved for PB-EXEC-02.
+  user said it, or it is an unknown. This is where fake repository precision would otherwise appear.
+- **verificationPlan** separates *what to verify* (always allowed, e.g. "run the project's full
+  test suite") from *which command*: see §9.5 rule 4. `observed` (read from a bound repository) and
+  `policy` (mandated by PMFreak/project policy) are reserved for PB-EXEC-02.
 - **repositoryContext** is always `not_established` unless the user stated repository facts in
-  chat, in which case they are `reported`, unverified, and cited. Project Brain never infers it.
+  chat, in which case they are `reported`, unverified, and cited by turn id. Project Brain never
+  infers it.
 - **handoff** is constant in v1 and says, in data, that nothing is authorized.
 
-### 9.3 Grounding and fake-precision enforcement
+### 9.5 Grounding and fake-precision enforcement
 
 Same machinery as ordinary turns, applied per field:
 
-1. `sourceIds` / `reportIds` resolve against this request's own alias maps; invented, foreign or
-   cross-namespace ids are stripped and counted (`rejectedCitations`, `rejectedReports`).
-2. Origin checks: `project_record` without a valid `S*` → demoted to `suggested` (instructions)
-   or moved to `assumptions` (context); `reported` without a valid `R*` → same.
-3. **Invented references**, extended for execution: the existing `REFERENCE_PATTERNS` (codes,
-   PR numbers, branches, percentages, dates) plus, for PB-EXEC-01, file paths, commit-SHA-shaped
-   hex, URLs and command lines. A token not present in the supplied records, reports or question:
-   - in `knownContext`, `areasToInspect`, `target`, `repositoryContext` → the item is dropped and
-     an `unknowns` entry is added;
-   - in `verificationPlan.command` → allowed only with `commandBasis: "suggested"`;
+1. **Alias resolution then translation** (§9.3): `sourceAliases` / `reportAliases` resolve against
+   this request's own maps; invented, foreign or cross-namespace aliases are stripped and counted
+   (`rejectedCitations`, `rejectedReports`); valid ones become `sourceIds` / `reportedTurnIds`.
+2. **Origin checks:** `project_record` without a valid source → demoted to `suggested`
+   (instructions) or moved to `assumptions` (context); `reported` without a valid report → same.
+3. **Invented references**, extended for execution: the existing `REFERENCE_PATTERNS` (codes, PR
+   numbers, branches, percentages, dates) plus, for PB-EXEC-01, file paths, commit-SHA-shaped hex,
+   URLs and command lines. A token not present in the supplied records, reports or question:
+   - in `knownContext`, `areasToInspect`, `target`, `repositoryContext` → the item is dropped and an
+     `unknowns` entry is added;
    - anywhere → counted in `citations.unsupportedReferences` (raises the grounding caution).
-4. Server-injected content (`handoff`, policy constraints, `repositoryContext.status`) is never
-   model-writable; the strict output schema does not contain those fields.
-5. **Secret scan** before persistence and before render: `redactSecretLikeValues` /
+4. **Commands (v1 hardening).** PB-EXEC-01 has no repository read, so a generated command is false
+   precision. Rules:
+   - `command` is non-null **only** when a supplied project record (`commandBasis: "project_record"`)
+     or a user turn (`commandBasis: "reported"`) contains that exact command text; otherwise the
+     server sets `command = null`, `commandBasis = null`, and the renderer says to discover and
+     confirm the project's actual command. There is no `suggested` command in v1.
+   - A supplied command is still screened with a small fixed token list (not a shell parser):
+     anything naming a merge, push, force-push, deploy, release, migration, database reset/drop,
+     remote-fetch-and-execute (`curl … | sh`), recursive delete, or production/shared environment
+     is **not** placed in `verificationPlan`; it becomes an `unknowns` entry ("a command that would
+     change shared state was mentioned; it is outside this brief's scope").
+   - The safety boundary is therefore not the label: it is (a) no model-authored commands at all,
+     (b) the screen above, (c) the constant `handoff.forbiddenOperations` and git policy every
+     renderer must print, and (d) — for PB-EXEC-02 — the grant and sandbox, which bind regardless
+     of any text in the brief.
+5. **Server-injected content** (`identity`, `targetRef`, `handoff`, policy constraints,
+   `repositoryContext.status`, `readiness`, `provenance`) is never model-writable; the model's
+   strict schema does not contain those fields.
+6. **Secret scan** before persistence and before render: `redactSecretLikeValues` /
    `SECRET_VALUE_PATTERNS` (`src/lib/security/redaction.ts`). A hit fails closed: the field is
-   replaced by an `unknowns` entry ("a credential appeared in the input; provide it to the
-   executor through its own secret mechanism") and the brief is marked `groundingAdjusted`.
-6. Any output that does not parse under the strict schema, or fails guardrails, degrades the
-   turn exactly like an ordinary turn — no partial brief is shown.
+   replaced by an `unknowns` entry ("a credential appeared in the input; provide it to the executor
+   through its own secret mechanism") and the brief is marked `groundingAdjusted`.
+7. Output that does not parse under the strict schema, or fails guardrails, degrades the turn
+   exactly like an ordinary turn — no partial brief is shown.
 
-### 9.4 Reported context and execution
+### 9.6 Reported context and execution
 
 REPORTED may shape a *draft* brief (it is often the freshest information: "P13 merged this
 morning"). It may never become an execution precondition:
 
-- In the brief it stays in `reportedContext`, labelled "Reported in chat · not verified".
+- In the brief it stays in `reportedContext`, labelled "Reported in chat · not verified", cited by
+  `reportedTurnIds`.
 - If it is `executionSensitive`, every renderer emits it under **VERIFY BEFORE ACTING** and adds a
   stop condition ("If X is not true in the repository, stop and report").
 - In PB-EXEC-02, preflight treats every execution-sensitive report as **unverified**: it must be
-  confirmed canonically (repository binding / CI / deployment status read by PMFreak) or
-  explicitly re-asserted by the authorizing human at grant time, and the grant records which.
-  A report can never, on its own, satisfy a precondition for a write, merge, migration or deploy.
+  confirmed canonically (repository binding / CI / deployment status read by PMFreak) or explicitly
+  re-asserted by the authorizing human at grant time, and the grant records which. A report can
+  never, on its own, satisfy a precondition for a write, merge, migration or deploy.
 
-### 9.5 Readiness
+### 9.7 Readiness
 
 Two values; no more are justified in v1:
 
-- `handoff_ready` — the target, objective and acceptance criteria are grounded, and no
-  `blocking` unknown remains other than repository context, which a manual executor can resolve
-  locally (the brief tells it how: verify the baseline and stop if it differs).
-- `needs_input` — the target is unclear, `capabilityFit` is not `fits`, or a blocking unknown
-  makes the brief unsafe to act on even manually. The brief lists exactly what to provide.
+- `handoff_ready` — the target, objective and acceptance criteria are grounded, and no `blocking`
+  unknown remains other than repository context, which a manual executor can resolve locally (the
+  brief tells it how: verify the baseline and stop if it differs).
+- `needs_input` — the target is ambiguous or unsupported by current records, `capabilityFit` is not
+  `fits`, or a blocking unknown makes the brief unsafe to act on even manually. The brief lists
+  exactly what to provide.
 
 "Delegation blocked" is not a readiness value: in v1 delegation is structurally impossible
-(`handoff.delegationEligible: false`). PB-EXEC-02 computes delegation eligibility separately,
-from repository binding, grant and freshness — never from the brief's own claim.
+(`handoff.delegationEligible: false`). PB-EXEC-02 computes delegation eligibility separately, from
+repository binding, grant and freshness — never from the brief's own claim.
 
-### 9.6 Versioning and context fingerprint
+### 9.8 Identity, content hash, context fingerprint and versioning
 
-- Each generated brief is immutable. A new request produces a new `briefId`.
-- `contextFingerprint = sha256(canonical JSON of { schema, version, workspaceId, projectId,
-  sorted [sourceAlias → (record id, recorded_at)] actually cited, sorted cited report turn ids,
-  target.title, repositoryContext })`. It is stored and shown in abbreviated form in the detail
-  panel. In PB-EXEC-01 it only identifies what the brief was built from. In PB-EXEC-02 a
-  mismatch at request time — a cited record changed, or the bound repository's base moved —
-  makes the brief **stale**: dispatch is blocked until the brief is regenerated or the human
-  re-confirms against the new fingerprint.
-- **Human edits** (PB-EXEC-02, when an editor exists): an edited brief is a new version with
-  `provenance.editedBy` and a new content hash. It is then a *human-authored instruction derived
-  from a Project Brain draft*; the AI label stays on the unchanged generated parts (approval and
-  edits change authority, not authorship — `07-ai-memory-and-intelligence-experience.md`).
-  Authorization always binds to the exact content hash that was approved. In PB-EXEC-01, text a
-  user edits after copying is outside PMFreak and carries no PMFreak provenance.
+Two hashes with two different jobs:
 
-### 9.7 Illustrative canonical brief
+```text
+contextFingerprint = WHAT CONTEXT WAS USED          → a change means the brief is STALE
+briefContentHash   = EXACTLY WHAT THE BRIEF SAYS    → a change means a DIFFERENT brief/version
+```
 
-> **Fictional example.** Every identifier below (project, P13/P14, repository, SHA) is
-> illustrative, chosen to show the four zones and the unknown-handling. It is not project data.
+**`contextFingerprint`** — `sha256` over canonical JSON (sorted keys, sorted arrays) of stable
+inputs only:
+
+```text
+{ schema, version,
+  workspaceId, projectId,
+  sources:  sorted [ { evidenceId, recordedAt } ]  for every source the brief cites
+                                                   (recordedAt = the row's updated_at/recorded_at/created_at
+                                                    marker the context builder already derives),
+  reportedTurnIds: sorted,
+  target: { kind, assistantTurnId?, statementId? },   // the target REFERENCE, never model prose
+  repositoryContext: { provider, repository, baseRef, baseSha } | null }
+```
+
+It never contains an alias (`S*`/`R*`), model prose (`target.title`, objective, …), `briefId` or
+`generatedAt`. Two briefs built from the same records, reports, target and repository context have
+the same fingerprint even if the model phrased them differently.
+
+**`briefContentHash`** — `sha256` over canonical JSON of the complete canonical brief **excluding**
+`identity.briefContentHash` itself (no circularity). Everything else — identity (including
+`briefId`, `generatedAt`, `contextFingerprint`), target, narrative fields, handoff, readiness,
+provenance — is included, so it pins exactly the artifact a human saw. Computed by the server once,
+at assembly, and included in `ExecutionBriefV1` now because briefs are immutable and the grant,
+idempotency and audit design all bind to it.
+
+**Versioning.** A brief is immutable: new request → new `briefId`. `schema`/`version` version the
+contract. Staleness (PB-EXEC-02): at request time the server recomputes the fingerprint from the
+*current* rows (and the bound repository's current base); a mismatch blocks dispatch until the brief
+is regenerated or the human re-confirms against the new fingerprint. **Binding:** a future execution
+grant binds to `(briefId, briefContentHash, contextFingerprint)` — content hash for "this exact text
+was approved", fingerprint for "and the world it describes has not moved".
+
+**Human edits** (PB-EXEC-02, when an editor exists): an edited brief is a new brief with a new
+`briefId` and `briefContentHash`, `provenance.editedBy`, and a link to the brief it derives from. It
+is then a *human-authored instruction derived from a Project Brain draft*; the AI label stays on the
+unchanged generated parts (approval and edits change authority, not authorship —
+`07-ai-memory-and-intelligence-experience.md`). In PB-EXEC-01, text a user edits after copying is
+outside PMFreak and carries no PMFreak provenance.
+
+### 9.9 Illustrative canonical brief
+
+> **Fictional example.** Every identifier below (project, P13/P14, record ids, turn ids, SHA) is
+> illustrative, chosen to show the four zones, stable provenance and unknown-handling. It is not
+> project data. Note that no field contains an `S*`/`R*` alias.
 
 ```json
 {
@@ -563,25 +698,27 @@ from repository binding, grant and freshness — never from the brief's own clai
   "version": 1,
   "identity": {
     "briefId": "7d3e…", "workspaceId": "…", "projectId": "…", "conversationId": "…",
-    "requestTurnId": "…", "generatedAt": "2026-10-02T09:14:00Z",
+    "requestTurnId": "c1a0…", "generatedAt": "2026-10-02T09:14:00Z",
     "contextFingerprint": "sha256:4be1…",
-    "generator": { "provider": "openai", "model": "…", "operation": "project_brain.execution_brief" }
+    "briefContentHash": "sha256:91c7…",
+    "generator": { "mode": "generative", "provider": "openai", "model": "…", "operation": "project_brain.execution_brief" }
   },
   "capability": "code",
   "capabilityFit": "fits",
+  "targetRef": { "kind": "project_brain_recommendation", "assistantTurnId": "a9f2…", "statementId": "5e40…:2", "resolvedBy": "explicit" },
   "target": {
     "title": "Implement P14 — invoice export",
     "statement": "Build the invoice CSV export described in milestone P14.",
-    "origin": "prior_recommendation", "sourceIds": ["S3"], "reportIds": ["R2"]
+    "sourceIds": ["project_milestones:0c2d…"], "reportedTurnIds": ["b77e…"]
   },
   "objective": "Users can export the invoices of one billing period as CSV from the billing page.",
-  "whyNow": { "text": "P14 is the first milestone not completed; P13, its prerequisite, was reported merged this morning.", "sourceIds": ["S3"], "reportIds": ["R2"] },
+  "whyNow": { "text": "P14 is the first milestone not completed; P13, its prerequisite, was reported merged this morning.", "sourceIds": ["project_milestones:0c2d…"], "reportedTurnIds": ["b77e…"] },
   "knownContext": [
-    { "text": "Milestone P14 'Invoice export' is in progress and due 2026-10-15.", "sourceIds": ["S3"] },
-    { "text": "An open decision record requires exports to exclude voided invoices.", "sourceIds": ["S7"] }
+    { "text": "Milestone P14 'Invoice export' is in progress and due 2026-10-15.", "sourceIds": ["project_milestones:0c2d…"] },
+    { "text": "An open decision record requires exports to exclude voided invoices.", "sourceIds": ["operational_decision_records:8a11…"] }
   ],
   "reportedContext": [
-    { "text": "P13 (billing-period model) was merged this morning.", "reportIds": ["R2"], "executionSensitive": true }
+    { "text": "P13 (billing-period model) was merged this morning.", "reportedTurnIds": ["b77e…"], "executionSensitive": true }
   ],
   "assumptions": [ { "text": "The export runs on demand; scheduled exports are not required." } ],
   "unknowns": [
@@ -594,28 +731,34 @@ from repository binding, grant and freshness — never from the brief's own clai
   },
   "areasToInspect": [],
   "constraints": [
-    { "text": "Voided invoices must never appear in an export.", "origin": "project_record", "sourceIds": ["S7"], "reportIds": [] }
+    { "text": "Voided invoices must never appear in an export.", "origin": "project_record", "sourceIds": ["operational_decision_records:8a11…"], "reportedTurnIds": [] }
   ],
   "acceptanceCriteria": [
-    { "text": "Exporting a period with voided invoices produces a CSV without them.", "origin": "project_record", "sourceIds": ["S7"], "reportIds": [] },
-    { "text": "An empty period produces a CSV with only the header row.", "origin": "suggested", "sourceIds": [], "reportIds": [] }
+    { "text": "Exporting a period with voided invoices produces a CSV without them.", "origin": "project_record", "sourceIds": ["operational_decision_records:8a11…"], "reportedTurnIds": [] },
+    { "text": "An empty period produces a CSV with only the header row.", "origin": "suggested", "sourceIds": [], "reportedTurnIds": [] }
   ],
   "verificationPlan": [
-    { "step": "Add automated tests for voided-invoice exclusion and the empty period", "kind": "test", "command": null, "commandBasis": null, "reportIds": [] },
-    { "step": "Run the project's full test suite", "kind": "test", "command": null, "commandBasis": null, "reportIds": [] }
+    { "step": "Add automated tests for voided-invoice exclusion and the empty period", "kind": "test", "command": null, "commandBasis": null, "sourceIds": [], "reportedTurnIds": [] },
+    { "step": "Run the project's full test suite", "kind": "test", "command": null, "commandBasis": null, "sourceIds": [], "reportedTurnIds": [] }
   ],
   "repositoryContext": { "status": "not_established", "note": "No repository is connected to this project. Establish the repository and base commit locally before making changes." },
   "handoff": {
     "mode": "manual", "executionAuthorized": false, "delegationEligible": false,
-    "gitPolicy": ["…§15.1…"], "stopConditions": ["The repository baseline contradicts this brief", "P13 is not present on the base branch"],
+    "gitPolicy": ["…§15.1…"],
+    "forbiddenOperations": ["merge", "deploy", "run migrations against shared environments", "force push", "rewrite history", "commit to the default branch"],
+    "stopConditions": ["The repository baseline contradicts this brief", "P13 is not present on the base branch"],
     "finalReport": ["base commit", "branch", "files changed", "tests run with their actual output", "what was not done", "open risks"]
   },
   "readiness": "handoff_ready",
-  "provenance": { "sources": ["…S3, S7…"], "reports": [{ "turnId": "…", "createdAt": "…", "reportedBy": "user" }], "citations": { "…": "…" }, "groundingAdjusted": false, "aiGenerated": true }
+  "provenance": {
+    "sources": [ { "evidenceId": "project_milestones:0c2d…", "…": "…" }, { "evidenceId": "operational_decision_records:8a11…", "…": "…" } ],
+    "reports": [ { "turnId": "b77e…", "createdAt": "…", "reportedBy": "user" } ],
+    "citations": { "…": "…" }, "groundingAdjusted": false, "aiGenerated": true
+  }
 }
 ```
 
-### 9.8 Renderers (non-normative; renderer output ≠ canonical data)
+### 9.10 Renderers (non-normative; renderer output ≠ canonical data)
 
 A renderer is a pure, deterministic function `render(brief, target) → string`. It adds framing
 suited to an executor; it cannot add facts. The same brief renders to:
@@ -706,7 +849,7 @@ Both renderings carry the same facts, the same unknowns and the same prohibition
 drop the *verify before acting*, *not established*, *do not merge/deploy* or *AI-generated* parts
 — PB-EXEC-01 pins that with tests.
 
-### 9.9 Non-software example (architecture proof only — not implemented)
+### 9.11 Non-software example (architecture proof only — not implemented)
 
 ```text
 Execution Capability : document
@@ -733,10 +876,10 @@ the implementation · DO NOT USE = not a fit for PB-EXEC.
 | --- | --- | --- | --- | --- | --- |
 | Project Brain conversation (`/brain/turns`, turn service) | Read-only grounded conversation | **REUSE** | 01: brief requests are turns | Explicit brief intent + dedicated operation (§13) | Low; diff guards in PB-PRESENT-01/B4 tests must be updated deliberately |
 | Project Brain sources / reports (context builder, `reported-context.ts`, grounding) | Grounded context, R*/S* resolution, invented-reference check | **REUSE / EXTEND** | 01 | Export helpers for the brief grounder; add path/SHA/URL/command patterns for briefs only | Medium: must not change ordinary-turn behaviour |
-| Execution request lifecycle (`agent_execution_requests/_events`) | Governed request lifecycle | **EXTEND** | 02 | Idempotency key + unique index; CAS transitions; reachable `executing` / `cancel_requested`; write `approved_by/at`; requester ≠ approver; actor from session only; store redacted payload; brief reference + fingerprint; executor + binding ids; cost fields (expand-only migration) | High if reused without the fixes |
+| Execution request lifecycle (`agent_execution_requests/_events`) | Governed **tool** request lifecycle | **Preferred reuse candidate — NOT executor-compatible as-is** (§10.1) | 02 (only after the ADR chooses) | Either generalize it (Option A) or build on the canonical Agent Run model (Option B), decided by the PB-EXEC-02 ADR. Either way: idempotency key + unique index; CAS transitions; reachable `executing` / `cancel_requested`; write `approved_by/at`; actor from session only; store the redacted payload; brief reference + content hash + fingerprint; executor + binding ids; cost fields | High if reused without the ADR and the fixes |
 | Tool registry (`agent_tools`) | PMFreak-internal tool catalogue | **REUSE (unchanged) + taxonomy EXTEND** | 02 | Executors are not tools; add an explicit side-effect class (read-only / write-adjacent / dangerous) so executor operations and tools share one taxonomy (`mutatesState` alone cannot express "external") | Medium |
 | Tool approvals (`agent_tool_requests/_approvals`) | Per-tool human approval | **REUSE** for internal tools; **not** the grant for delegation | 02 | None; delegation uses execution grants | Low |
-| Tool adapters | Static dry-run/draft outputs | **DO NOT USE** for executors | — | The executor adapter is a new port at the same seam; tool adapters remain for internal drafts (e.g. §9.9) | Low |
+| Tool adapters | Static dry-run/draft outputs | **DO NOT USE** for executors | — | The executor adapter is a new port at the same seam; tool adapters remain for internal drafts (e.g. §9.11) | Low |
 | Dispatch gate (finalization, readiness, confirmation) | Pre-dispatch gate | **ADAPT** | 02 | Persist on existing tables; fix readiness field mismatch; real checks instead of `true`; confirmer ≠ requester | High |
 | Dispatch idempotency | Replay protection | **ADAPT** | 02 | Persist with the existing `unique(workspace_id, idempotency_key)`; fingerprint comparison ⇒ `conflict` | High |
 | Dispatch locks | Mutual exclusion | **ADAPT** | 02 | Persist with the existing `unique(workspace_id, lock_key)` or `pg_advisory_xact_lock` inside an RPC (repo pattern); lease + expiry; key on repository binding + branch | High |
@@ -754,14 +897,55 @@ the implementation · DO NOT USE = not a fit for PB-EXEC.
 | Capability grants / agent scopes | Agent permission scopes | **EXTEND** | 02 | Executor identity with run-scoped, requester-bounded scope (ADR-PMF-050 rule 2); the `ai_agent_scopes.permission` check constraint does not match the permissions code inserts — reconcile first | Medium |
 | AI usage accounting (`ai_usage_events`) | Model cost | **REUSE** | 01 | Brief generation uses its own `operationName` | Low |
 
-**Where the runtime stops today:** `generateAdapterOutput` in
+### 10.1 `agent_execution_requests` cannot represent an executor delegation as-is
+
+The architecture keeps *Executor ≠ Agent Tool* (§6). The current request runtime is built around
+tools, so using it unchanged would mean pretending Claude Code or Codex is a tool — which this
+architecture rejects, and which no one may paper over with an invented tool key. Exact
+incompatibilities:
+
+| Incompatibility | Where |
+| --- | --- |
+| `tool_key text not null` — every request must name a tool | `supabase/migrations/20260730000000_agent_execution_request_runtime.sql:13` (indexed with `workspace_id` at `:55`) |
+| `AgentExecutionRequestRecord.toolKey: string` (required) | `src/lib/agents/agent-execution-types.ts:77` |
+| Preflight calls `getAgentToolByKey(workspaceId, record.toolKey)` and fails with `tool_not_found` when no `agent_tools` row exists | `src/lib/agents/agent-execution-service.ts:133-141` |
+| Tool-oriented modes and dispatch: `dry_run` / `draft_only` / `approval_required` / `approved_execution` describe a tool call; dispatch maps `tool → adapter`, its idempotency key embeds `{tool}`, and adapters refuse anything but `dry_run`/`draft_only` | `agent-execution-dispatch-validation.ts:236-251`, `agent-tool-adapter-service.ts:277-298` |
+| Naming and ownership: `agent_*` tables in Agent Orchestration keyed to Agent tools and agent types; `scopeType` / `sourceType` enums have no executor, repository binding or brief | `agent-execution-types.ts:29-45` |
+
+So, precisely:
+
+```text
+agent_execution_requests = preferred existing lifecycle substrate / reuse candidate
+                         = NOT executor-compatible as-is
+                         = final persistence shape decided by the PB-EXEC-02 ADR
+```
+
+**Decision space the PB-EXEC-02 ADR must choose from explicitly** (PB-EXEC-00 does not choose;
+no ratified architecture makes either mandatory):
+
+- **Option A — generalize the existing runtime.** Add `execution_kind in ('tool','executor')`,
+  make `tool_key` nullable, add `executor_key` (+ binding id, brief id, content hash, fingerprint),
+  with a check invariant `(execution_kind = 'tool') = (tool_key is not null)` and
+  `(execution_kind = 'executor') = (executor_key is not null)` (XOR). Preflight branches: tool
+  execution keeps the tool-existence check; executor execution runs executor / binding / grant /
+  freshness checks. Expand-only migration per ADR-PMF-044. Pro: reuses the one persisted,
+  RLS-protected lifecycle and its event log. Con: carries the §2.3 defects and tool-shaped
+  assumptions that must be fixed anyway.
+- **Option B — build on the canonical Agent Run model** (`agent_runs`, `agent_tool_invocations`,
+  `agent_run_costs`, `05-memory-knowledge-ai-persistence.md`), or another canonical execution
+  persistence model the ADR justifies. Pro: aligns with ratified target architecture and its
+  command names (`RequestAgentRun`, `CancelAgentRun`). Con: new tables; the executor is still not
+  an Agent Definition, so the ADR must state how an external executor run maps onto it.
+
+Until that ADR exists, nothing in PB-EXEC may write an executor delegation into
+`agent_execution_requests`, and **PB-EXEC-01 neither reads nor writes the agent execution runtime**.
+
+### 10.2 Where the runtime stops today
+
+`generateAdapterOutput` in
 `src/lib/agents/agent-tool-adapter-service.ts:60-139`. PB-EXEC-02 adds the executor adapter at
 that position and everything in the EXTEND/ADAPT rows above; it does not build a parallel
-runtime. Whether PB-EXEC-02 persists on the current `agent_execution_*` generation or on the
-canonical Agent Run model (`agent_runs`, `agent_tool_invocations`, `agent_run_costs` in
-`05-memory-knowledge-ai-persistence.md`) is its ADR's first decision (§18); the recommendation is
-to extend the current, already-persisted request tables expand-only and adopt the canonical
-command names.
+lifecycle without first recording, in its ADR, why Option A or Option B (§10.1) was chosen.
 
 ---
 
@@ -847,7 +1031,8 @@ Action names are conceptual here; PB-EXEC-02's ADR fixes them.
 
 ### 12.3 Approval matrix
 
-Danger classes are the canonical ones (*04-AI* §6). "Grant" = covered by the explicit,
+Danger classes are the canonical ones (*04-AI* §6). "Per-op" and "forbidden by default" entries
+are **proposed** PB-EXEC-02 defaults, not ratified rules (§12.4). "Grant" = covered by the explicit,
 single-use delegation grant a human approved for this brief version; "Per-op" = requires its own
 explicit confirmation and grant even inside a delegated run.
 
@@ -880,6 +1065,30 @@ the default branch.
 
 ---
 
+### 12.4 Ratified rules vs proposed PB-EXEC-02 policy
+
+PB-EXEC-00 introduces no new authority rule. It relies on ratified rules and **proposes**
+stricter defaults that become authoritative only if the PB-EXEC-02 ADR ratifies them. The
+documents were audited for a two-person / four-eyes, segregation-of-duties or
+requester-≠-approver rule: none exists in `docs/adr/` or `docs/product-architecture/` for humans.
+
+| Rule | Status | Basis |
+| --- | --- | --- |
+| Dangerous operations (any external side effect) require explicit human confirmation in addition to review | **Ratified** | ADR-PMF-027 rule 4; *04-AI* §6; ADR-PMF-066 rule 6 |
+| Human authority separates Recommendation / Decision / Action / Outcome; no composite endpoint; one control, one step | **Ratified** | ADR-PMF-030; ADR-PMF-071 rule 7 |
+| An Agent identity may not approve (Recommendation, Decision, Action, Outcome, Memory, Knowledge); for `ApproveAgentProposal` the canonical documents disagree (open question 2) | **Ratified** (with the noted contradiction) | ADR-PMF-050 rule 3; `06-command-catalog.md` |
+| Agent scope ≤ requester scope; one workspace per run | **Ratified** | *04-CAA* authorization; ADR-PMF-050 rule 2; *04-AI* §12 |
+| Deleting records and unconfirmed external communication are out of scope for agents | **Ratified** | *04-AI* §14 |
+| An **executor** identity may never approve anything | **Proposed** (extends the ratified Agent-identity rule to executors) | PB-EXEC-02 ADR |
+| **Requester ≠ approver** (four-eyes) for delegation, merge and production deploy | **Proposed** | PB-EXEC-02 ADR |
+| Merge / deploy / migration each need their own per-operation grant, even inside a delegated run | **Proposed** (a stricter reading of the ratified Dangerous-class rule) | PB-EXEC-02 ADR |
+| Production deploy, shared-environment migration, force push, history rewrite and default-branch work forbidden by default for executors | **Proposed** | PB-EXEC-02 ADR (changing it for autonomy: PB-EXEC-03 ADR) |
+
+The approval matrix (§12.3) and threat model (§18) state the proposed defaults as the design
+target; wherever they say "forbidden by default", "per-op" or "requester ≠ approver", read
+"proposed for ratification by the PB-EXEC-02 ADR". The current runtime enforces none of the
+proposed rules (§2.3).
+
 ## 13. PB-EXEC-01 model-call decision
 
 Options evaluated:
@@ -889,7 +1098,7 @@ Options evaluated:
 | A. Extend the ordinary turn to emit briefs | Mixed — one schema doing two jobs | Raises every turn's tokens | Schema grows for all turns | Harder to pin | High | Poor |
 | B. Dedicated brief operation on explicit request | Best | One call per explicit request | Own strict schema | Own operation name, own tests | Controlled | Good |
 | C. Deterministic template from structured turn output | Low — cannot synthesize scope/acceptance | Zero | n/a | Excellent | Lowest | Good |
-| **D. Hybrid (chosen)** | Best | One call per explicit request, zero otherwise | Model schema contains only narrative fields | Server owns identity/policy/repo/readiness/provenance | Enforced per field (§9.3) | Good |
+| **D. Hybrid (chosen)** | Best | One call per explicit request, zero otherwise | Model schema contains only narrative fields | Server owns identity/policy/repo/readiness/provenance | Enforced per field (§9.5) | Good |
 
 **Decision: D.** When — and only when — the human explicitly asks for a brief, that turn runs a
 dedicated operation `project_brain.execution_brief` **instead of** the ordinary answer inference:
@@ -903,13 +1112,22 @@ Retry and idempotency are the turn's own (`clientMessageId`, idempotency key
 `buildReportedContext`, plus the prior RECOMMENDATION statement of the thread (as prior AI
 output, not a source).
 
-**Intent detection is architectural, not prompt wording.** The POST body gains an explicit,
-closed `intent: "answer" | "execution_brief"` (default `answer`) and an optional
-`renderFor: "generic" | "claude_code" | "codex"` that affects rendering only. The UI sets them
-from an explicit control ("Prepare execution brief") on an answer that carries a
-RECOMMENDATION. A deterministic phrase matcher (no model call) may map a small closed set of
-utterances ("prepare it for Claude", "give me the execution brief", "make the Codex prompt") to
-the same intent; anything ambiguous is an ordinary answer. Delegate/merge/deploy phrases are
+**Intent and target are architectural, not prompt wording.** The POST body gains three
+explicit, closed fields:
+
+- `intent: "answer" | "execution_brief"` (default `answer`);
+- `targetRef: ExecutionBriefTargetRef` (§9.2) — **which** work the brief is about;
+- `renderFor: "generic" | "claude_code" | "codex"` — rendering only.
+
+The UI sets all three from an explicit "Prepare execution brief" control attached to **one
+specific** RECOMMENDATION statement, sending its exact `{ assistantTurnId, statementId }`. A
+deterministic phrase matcher (no model call) may map a small closed set of utterances
+("prepare it for Claude", "give me the execution brief", "make the Codex prompt") to
+`intent = execution_brief` **without** a target reference; the target is then resolved only by
+the deterministic rule in §9.2 (exactly one candidate on the most recent generative answer, or
+a deterministic `needs_input` brief — never a model guess). Anything else ambiguous is an
+ordinary answer. `targetRef` is execution-selection metadata: it grants nothing and is
+validated like any other untrusted input. Delegate/merge/deploy phrases are
 recognized deterministically only to answer that Project Brain cannot do that — never to act.
 
 ---
@@ -921,9 +1139,14 @@ recognized deterministically only to answer that Project Brain cannot do that �
   creates an execution request, grant, branch, commit, PR, deploy or project write. The PB-CHAT-01
   no-write-back pins remain true.
 - Delegated execution (PB-EXEC-02) uses an explicit execution surface. The existing
-  `/api/agents/execution/requests` family is the natural home — create, preflight, approve,
-  cancel — but only after the defects in §2.3 are fixed (session-derived actor, role checks,
-  self-approval, idempotency). Merge and deploy are separate commands, not flags on a request.
+  `/api/agents/execution/requests` family is the natural *candidate* — create, preflight,
+  approve, cancel — but it cannot accept an executor delegation today (§10.1: `tool_key` is
+  required and preflight demands an `agent_tools` row). Its use for executors depends on the
+  PB-EXEC-02 ADR's persistence choice **and** on the defects in §2.3 being fixed first
+  (session-derived actor, role checks, idempotency). Merge and deploy are separate commands, not
+  flags on a request.
+- PB-EXEC-01 does not call, read or write any `/api/agents/**` route or `src/lib/agents/**`
+  module.
 - No composite endpoint: "generate brief and run" or "run and merge" is forbidden (ADR-PMF-030).
 
 PB-EXEC-01 remains read-only because: brief generation is inference over already-authorized
@@ -947,10 +1170,9 @@ these defaults, never widen them.
 ### 15.2 Merge, deploy, migration
 
 Separate governed actions, each with its own per-operation confirmation and single-use grant,
-approved by a human who is not the executor and — for merge and production deploy — not the
-requester of the delegation (requester ≠ approver, which the current runtime does not yet
-enforce). Production deploy and shared-environment migrations are forbidden by default until a
-PB-EXEC-03 ADR says otherwise.
+approved by a human — never by the executor. Whether that human must also differ from the
+requester (four-eyes) and whether production deploy and shared-environment migrations are
+forbidden by default are **proposed** PB-EXEC-02 ADR decisions, not current rules — see §12.4.
 
 ### 15.3 Secrets
 
@@ -960,7 +1182,7 @@ database") and, from PB-EXEC-02, a *secret reference* resolved by the executor a
 sandbox, scoped to the grant, never echoed back. Enforcement reuses the repository's redaction
 vocabulary — `SECRET_VALUE_PATTERNS` / `REDACTED_KEY_FRAGMENTS` / `redactSecretLikeValues`
 (`src/lib/security/redaction.ts`) and the agent modules' 14-key list — with fail-closed behaviour
-(§9.3). PB-EXEC-02 prerequisite: the execution request must store the redacted payload, not the
+(§9.5). PB-EXEC-02 prerequisite: the execution request must store the redacted payload, not the
 raw one.
 
 ### 15.4 Prompt injection
@@ -1022,7 +1244,7 @@ fingerprint ⇒ `ConflictError`. Dispatch idempotency persists on the existing
 **Concurrency.** One active delegation per (binding, target branch): persisted lease on
 `agent_execution_dispatch_locks` (`unique(workspace_id, lock_key)`) or `pg_advisory_xact_lock`
 inside an RPC (the pattern used throughout recent migrations), with expiry. State transitions use
-compare-and-set. A stale base SHA (binding head ≠ brief base) blocks dispatch (§9.6).
+compare-and-set. A stale base SHA (binding head ≠ brief base) blocks dispatch (§9.8).
 
 **Cancellation.** Before dispatch: `cancelled`, no side effects. While running: `cancel_requested`
 → adapter `cancel()` → final state records which side effects already exist (branch pushed, PR
@@ -1078,7 +1300,7 @@ request (fields to be added; none exist today), alongside the canonical `agent_r
 | Production deployment | — | Brief forbids deploy | Separate action; per-op; forbidden by default |
 | Duplicate execution | — | Turn idempotency | Persisted idempotency + locks + single-use grants |
 | Forged success result | — | — | Results writable only by the adapter/service; verification independent of executor |
-| Executor self-approval | — | — | Executor identity cannot call approval commands (ADR-PMF-050 rule 3 extended to executors); requester ≠ approver check added |
+| Executor self-approval | — | — | Executor identity cannot call approval commands (proposed extension of ADR-PMF-050 rule 3 to executors, §12.4); requester ≠ approver as a proposed PB-EXEC-02 ADR policy |
 | Laundering a chat report into a precondition | — | Report stays REPORTED; *verify before acting* | Execution-sensitive reports unverified at preflight until canonically confirmed or re-asserted at grant time |
 
 ---
@@ -1091,14 +1313,17 @@ request (fields to be added; none exist today), alongside the canonical `agent_r
   `project_brain.converse` (`agentCompatible: false`) and PB-CHAT-01.
 - A read-only brief with no side effects (PB-EXEC-01) is covered by ADR-PMF-027/030/066/071:
   no mutation, AI-labelled, no authority.
+- Every stricter authority default in this document (§12.4 "Proposed" rows) is a **proposal**,
+  not a decision; it has no authority until an ADR ratifies it.
 
 Future ADRs are required, and are listed as prerequisites rather than written now:
 
 - **PB-EXEC-02** introduces a governing decision the ADRs do not cover — an *external* executor
   acting on a *customer repository* through a new SCM integration, with its own governance
-  actions (delegate / merge / deploy / migrate), executor identity and the choice between the
-  current `agent_execution_*` tables and the canonical Agent Run model. It must open an ADR
-  before implementation.
+  actions (delegate / merge / deploy / migrate), executor identity, the **persistence
+  generalization** (§10.1 Option A vs Option B — PB-EXEC-00 does not choose) and the **proposed
+  authority rules** of §12.4 (four-eyes, executor may never approve, per-operation grants,
+  forbidden-by-default operations). It must open an ADR before implementation.
 - **PB-EXEC-03** (standing-policy execution without a per-run human approval) is explicitly out of
   scope "without a future ADR that revisits ADR-PMF-027/ADR-PMF-030" (*04-AI* §14). It must open
   that ADR.
@@ -1114,13 +1339,14 @@ re-auditing `docs/adr/`.
 | --- | --- |
 | New module | `src/lib/project-brain/execution-brief/`: `types.ts` (ExecutionBriefV1), `schema.ts` (strict model schema of narrative fields + limits), `prompt.ts` (dedicated system prompt: data-not-instructions, four zones, no invented repo facts), `ground.ts` (per-field origin checks, extended reference patterns, secret scan), `assemble.ts` (server fields, readiness, fingerprint), `render.ts` (generic / claude_code / codex, pure) |
 | Reuse | `loadProjectBrainContext`, `buildReportedContext`, alias resolution and `extractTypedReferences` / `suppliedReferences` from `conversation/output.ts` (export, do not fork), `validateResponse` guardrails for statement-shaped parts, `runInference`, `resolveProjectBrainGenerativeAccess`, `assistant-message-writer.ts` |
-| Integration point | `POST /brain/turns` accepts `intent` and `renderFor` (closed enums); `runProjectBrainTurn` branches to the brief operation when `intent = execution_brief`. Governance unchanged: `project_brain.converse`. No new route. |
+| Integration point | `POST /brain/turns` accepts `intent`, `targetRef` and `renderFor` (closed shapes, §13). `targetRef` is validated server-side from persisted rows before anything is written or inferred (§9.2 rules 1–5; failure → `400 invalid_execution_target`, no model call). Without `targetRef`, the deterministic single-candidate rule applies; zero or several candidates → deterministic `needs_input` brief with one control per candidate, no provider call. `runProjectBrainTurn` branches to the brief operation when `intent = execution_brief`. Governance unchanged: `project_brain.converse`. No new route. |
+| Agent runtime | **None.** PB-EXEC-01 imports nothing from `src/lib/agents/**`, calls no `/api/agents/**` route, and creates no `agent_execution_*` row. |
 | Model calls | One per explicit brief request (`operationName: project_brain.execution_brief`), none extra on ordinary turns; `maxTokens` derived from the worst-case legal brief, as for turns |
-| Persistence | Brief stored in the assistant turn's `projectBrain` metadata as an optional `executionBrief` (metadata version stays 1, additive like PB-REASON-02). No table, no migration. Replay returns the stored brief without inference. |
+| Persistence | Canonical brief (§9.4 — stable `sourceIds` / `reportedTurnIds`, no `S*`/`R*` alias anywhere) stored in the assistant turn's `projectBrain` metadata as an optional `executionBrief` (metadata version stays 1, additive like PB-REASON-02), with server-computed `contextFingerprint` and `briefContentHash` (§9.8). No table, no migration. Replay returns the stored brief without inference. How the deterministic ambiguous-target reply is stored must fit the existing `brain_mode` constraint (`generative` \| `degraded`) or be justified in PB-EXEC-01 — it is never labelled AI-generated. |
 | Limited mode | Not entitled / provider unavailable → deterministic reply that a brief needs generative mode; no partial brief |
 | Presentation | Answer first (a short reply sentence), then a brief card: title, readiness, "AI-generated · manual handoff · not executed", sections in the four zones; unknowns and *verify before acting* visible while collapsed; provenance inside the existing "Sources & verification" disclosure (PB-PRESENT-01) |
 | Copy | New client-only `CopyBriefButton` (no clipboard component exists in `src/`): renders with the selected renderer and writes to `navigator.clipboard`; no request, no analytics, no persistence of copy events; accessible label and success status |
-| Tests | Schema/limits; grounding per zone; REPORTED never in knownContext; invented paths/SHAs/URLs/commands rejected or demoted; `repositoryContext` always `not_established` without a report; secret scan fail-closed; renderers keep the mandatory parts (AI label, not-authorized, verify-before-acting, do-not-merge/deploy) for all three targets; exactly one inference per turn and none on ordinary turns; brief turns write no project state; `/brain/turns` still refuses body scope fields; delegate/merge/deploy phrases never produce an execution artifact; replay idempotency; browser scenario for card + copy |
+| Tests | Schema/limits; target validation (each of §9.2 rules 1–5 refused: missing turn, other conversation/project, user-authored row, unknown statement id, non-RECOMMENDATION); ambiguous "prepare it" with 0/1/2+ candidates → deterministic outcome and **no** provider call for 0/2+; the persisted brief contains no `S\d+`/`R\d+` alias and its ids survive a replay and a second turn with different aliases; `contextFingerprint` unchanged by rephrasing and changed by a cited record's `recordedAt`; `briefContentHash` changes with any content change and excludes itself; commands only when supplied, and screened commands moved to unknowns; grounding per zone; REPORTED never in knownContext; invented paths/SHAs/URLs/commands rejected or demoted; `repositoryContext` always `not_established` without a report; secret scan fail-closed; renderers keep the mandatory parts (AI label, not-authorized, verify-before-acting, do-not-merge/deploy) for all three targets; exactly one inference per turn and none on ordinary turns; brief turns write no project state; `/brain/turns` still refuses body scope fields; delegate/merge/deploy phrases never produce an execution artifact; replay idempotency; browser scenario for card + copy |
 | Security tests | Injection text in records and reports cannot alter `handoff`; a report claiming "deploy approved" stays REPORTED and execution-sensitive; cross-project source ids rejected |
 | Existing guards to update deliberately | `tests/pb-present-01-progressive-disclosure.test.mjs` (unchanged-file guard over turn-service/output/route…), `tests/pb-chat-01-project-brain-conversation.test.ts` B4 (files using `project_brain.converse`), `tests/pb-reason-0{1,2}` single-`deps.infer(` checks |
 | Cost | One call per explicit request, visible in `ai_usage_events`; zero otherwise |
@@ -1136,10 +1362,22 @@ re-auditing `docs/adr/`.
 4. Governance actions for delegate / merge / deploy-preview / deploy-production / migrate, each
    with its approval rule; single-use grants bound to the brief content hash and fingerprint.
 5. Tool-taxonomy extension: explicit side-effect class shared by tools and executor operations.
-6. Secret reference model; redacted-payload storage fixed.
-7. Execution request fixes: idempotency, CAS transitions, reachable `executing` /
-   `cancel_requested`, `approved_by/at`, session-derived actor, requester ≠ approver.
-8. Dispatch gate persisted on the existing tables, readiness bug fixed, real lock/idempotency.
+6. Secret reference model.
+7. **Existing runtime defects — hard prerequisites, all deferred from PB-EXEC-00** (§2.3):
+   - **Security hardening: the raw request payload is persisted instead of the redacted safe
+     payload** (`agent-execution-registry.ts:153-154`; `redactExecutionPayload` result discarded
+     at `agent-execution-service.ts:58-60,90`). This must be fixed before any brief, repository
+     context or executor input is stored on a request.
+   - body-supplied `requestedBy` (`requests/route.ts:63`) and approval `actorId`
+     (`requests/[id]/approve/route.ts:27`) → derive from the session;
+   - `approved_by` / `approved_at` never written;
+   - no requester-vs-approver protection (needed if the ADR ratifies four-eyes, §12.4);
+   - no compare-and-set state transition; no request idempotency; unreachable `executing` state;
+   - dispatch registry in memory; readiness field mismatch; hard-coded dispatch checks;
+   - results and outcomes in memory.
+8. Persistence decision (§10.1 Option A or B) implemented: an executor delegation must be
+   representable without a fake `tool_key`; dispatch gate persisted with real
+   lock/idempotency.
 9. Results with claimed vs verified; verification service reading SCM/CI; evidence promotion only
    via Evidence Management.
 10. Audit correlation across request → attempt → result → outcome; cost fields.
@@ -1165,18 +1403,23 @@ is reliable. Learning signals may inform such a policy; they never become one.
 
 ## 23. Open questions
 
-1. PB-EXEC-02 persistence: extend `agent_execution_*` or adopt the canonical `agent_runs` model?
-   (recommendation in §10; decided by the PB-EXEC-02 ADR).
+1. PB-EXEC-02 persistence: generalize `agent_execution_requests` (Option A: `execution_kind`,
+   nullable `tool_key`, `executor_key`, XOR check) or build on the canonical Agent Run model
+   (Option B)? Decided by the PB-EXEC-02 ADR (§10.1); PB-EXEC-00 deliberately does not choose.
 2. The canonical documents disagree on whether an Agent identity may call
    `ApproveAgentProposal` (ADR-PMF-050 rule 2 vs `06-command-catalog.md` / *04-AI* §10). PB-EXEC
    adopts the stricter reading for executors: **no executor identity may approve anything**.
 3. `ai_agent_scopes.permission` check constraint vs the permissions code inserts — reconcile before
    executor identities rely on scopes.
-4. Which capabilities after `code` (document is the obvious second — §9.9)?
+4. Which capabilities after `code` (document is the obvious second — §9.11)?
 5. Should a brief be regenerable against a newer context in place ("refresh brief"), or always
    as a new turn? (v1: new turn.)
 6. SCM provider order (GitHub first is likely, not assumed).
 7. Retention of briefs in transcripts once briefs carry larger content.
+8. Should four-eyes (requester ≠ approver) apply to every delegation or only to merge and
+   production deploy? (Proposed in §12.4; PB-EXEC-02 ADR.)
+9. How PB-EXEC-01 stores the deterministic ambiguous-target reply within the current
+   `brain_mode` constraint.
 
 ## 24. Deferred work
 
@@ -1184,3 +1427,19 @@ Everything in §21–22; brief editor; executor-specific renderers beyond Claude
 non-code capabilities; repository inspection; cost fields; memory promotion of execution
 results (PB-CHAT-03); attachments (PB-CHAT-02). The runtime defects recorded in §2.3 are
 reported, not fixed, by PB-EXEC-00.
+
+## 25. Decision register
+
+| # | Decision | Status |
+| --- | --- | --- |
+| D1 | Project Brain is a governed, read-only reasoning surface — not an Agent, never requester or authority (§4) | Decided (consistent with ratified code/ADRs) |
+| D2 | Execution Brief ≠ authorization and ≠ Agent Proposal (§8, §9) | Decided |
+| D3 | PB-EXEC-01 target is selected by an explicit `targetRef` validated from persisted rows; an ambiguous "it" is never model-guessed (§9.2) | Decided |
+| D4 | Persisted briefs use stable `sourceIds` (`evidenceId`) and `reportedTurnIds` (`context_messages.id`); `S*`/`R*` aliases never persist (§9.3) | Decided |
+| D5 | `contextFingerprint` (stable inputs, what was used) ≠ `briefContentHash` (exact content, excluding itself); both in `ExecutionBriefV1` (§9.8) | Decided |
+| D6 | PB-EXEC-01: one dedicated inference per explicit request, hybrid assembly, deterministic renderers; commands only when supplied (§9.5, §13) | Decided |
+| D7 | PB-EXEC-01 stores the brief in turn metadata; no table, no migration; never touches the agent execution runtime (§20) | Decided |
+| D8 | Capability = kind of work; Executor ≠ Agent Tool; executor operations are grant allowlists (§6) | Decided |
+| D9 | `agent_execution_requests` is the preferred reuse candidate but NOT executor-compatible as-is; generalize (A) vs canonical Agent Run (B) | **Deferred to the PB-EXEC-02 ADR** (§10.1) |
+| D10 | Four-eyes, executor-never-approves, per-operation grants, forbidden-by-default operations | **Proposed** — PB-EXEC-02 ADR (§12.4) |
+| D11 | Autonomous (standing-policy) execution | **Requires** an ADR revisiting ADR-PMF-027/030 (§22) |
