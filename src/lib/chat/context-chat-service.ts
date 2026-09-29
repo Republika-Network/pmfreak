@@ -6,6 +6,7 @@ import {
   type ContextMessageRow,
 } from "@/lib/db/database-contract";
 import { contextIdFor, type ContextScope } from "@/lib/context/context-scope";
+import type { ProjectBrainRequestIdentity } from "@/lib/project-brain/execution-brief/types";
 
 const CONVERSATION_COLUMNS = CONTEXT_CONVERSATION_SELECTABLE_COLUMNS.join(", ");
 const MESSAGE_COLUMNS = CONTEXT_MESSAGE_SELECTABLE_COLUMNS.join(", ");
@@ -154,9 +155,32 @@ export async function findUserMessageByClientId(input: {
 }
 
 /**
+ * PB-EXEC-01: the ONLY metadata a Project Brain user turn may carry — the bounded,
+ * server-built operation identity. Never client-supplied metadata, never
+ * `brain_mode`, never assistant-origin metadata.
+ */
+export type ProjectBrainUserTurnMetadata = { projectBrainRequest: ProjectBrainRequestIdentity };
+
+function userTurnMetadata(metadata: ProjectBrainUserTurnMetadata | undefined): ProjectBrainUserTurnMetadata | null {
+  if (!metadata) return null;
+  const { operation, targetRef } = metadata.projectBrainRequest;
+  if (operation !== "answer" && operation !== "execution_brief") throw new Error("Invalid Project Brain request identity.");
+  const target =
+    targetRef === null
+      ? null
+      : targetRef.kind === "current_user_request"
+        ? { kind: "current_user_request" as const }
+        : { kind: "project_brain_recommendation" as const, assistantTurnId: String(targetRef.assistantTurnId), statementId: String(targetRef.statementId) };
+  return { projectBrainRequest: { operation, targetRef: target } };
+}
+
+/**
  * Idempotent insert of one user turn. A concurrent or replayed insert of the same
  * (conversation, clientMessageId) collides on the partial unique index and is
  * reported as `conflict` so the caller re-reads the row that won.
+ *
+ * Still written with the caller's request-scoped client (RLS proves authorship);
+ * `metadata` is rebuilt from known keys only (userTurnMetadata).
  */
 export async function insertUserTurn(input: {
   conversationId: string;
@@ -164,6 +188,7 @@ export async function insertUserTurn(input: {
   clientMessageId: string;
   content: string;
   userId: string;
+  metadata?: ProjectBrainUserTurnMetadata;
 }): Promise<{ row: ContextMessageRow } | { conflict: true }> {
   const supabase = await createSupabaseServerClient();
   const { data, error } = await supabase
@@ -173,7 +198,7 @@ export async function insertUserTurn(input: {
       workspace_id: input.workspaceId,
       role: "user",
       content: input.content,
-      metadata: null,
+      metadata: userTurnMetadata(input.metadata),
       created_by_user_id: input.userId,
       client_message_id: input.clientMessageId,
     })
@@ -182,6 +207,25 @@ export async function insertUserTurn(input: {
   if (error?.code === UNIQUE_VIOLATION) return { conflict: true };
   if (error || !data) throw new Error(`Unable to append message: ${error?.message ?? "unknown"}`);
   return { row: data as unknown as ContextMessageRow };
+}
+
+/**
+ * PB-EXEC-01: one row of THIS conversation in THIS workspace, by id — for explicit
+ * execution-target validation. Read-only; RLS applies (request-scoped client).
+ */
+export async function findMessageById(input: { conversationId: string; workspaceId: string; messageId: string }): Promise<ContextMessageRow | null> {
+  // A non-UUID id cannot name a row; answering "not found" keeps the caller's 400 path.
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.messageId)) return null;
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("context_messages")
+    .select(MESSAGE_COLUMNS)
+    .eq("conversation_id", input.conversationId)
+    .eq("workspace_id", input.workspaceId)
+    .eq("id", input.messageId)
+    .maybeSingle();
+  if (error) throw new Error(`Unable to load message: ${error.message}`);
+  return (data as unknown as ContextMessageRow | null) ?? null;
 }
 
 /** The Project Brain replies (at most one per mode) that answer a user turn. */

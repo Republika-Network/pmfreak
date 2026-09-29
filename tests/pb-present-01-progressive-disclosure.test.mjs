@@ -383,22 +383,57 @@ const BASE_REF = (() => {
   }
 })();
 
+/**
+ * The files PB-PRESENT-01 declared unchanged. PB-EXEC-01 (execution briefs) deliberately
+ * extends some of them — output.ts (exported grounding helpers), turn-service.ts (the
+ * `execution_brief` operation), transcript-view.ts (validated brief view), context-types.ts
+ * / context-builder.ts (internal revision marker) and the turn route (intent/targetRef) —
+ * and pins those changes in tests/pb-exec-01-execution-brief.test.ts. So the guard is split:
+ * PB-PRESENT-01's OWN merge must have left every file untouched (permanent proof that it was
+ * presentation-only), and the files no later increment has had reason to change stay frozen.
+ */
+const PB_PRESENT_01_FROZEN = [
+  "src/lib/project-brain/conversation/prompt.ts",
+  "src/lib/project-brain/conversation/output.ts",
+  "src/lib/project-brain/conversation/turn-service.ts",
+  "src/lib/project-brain/conversation/transcript-view.ts",
+  "src/lib/project-brain/conversation/context-types.ts",
+  "src/lib/project-brain/conversation/context-builder.ts",
+  "src/lib/project-brain/conversation/reported-context.ts",
+  "src/lib/project-brain/conversation/assistant-message-writer.ts",
+  "src/lib/project-brain/conversation/generative-access.ts",
+  "src/lib/project-brain/conversation/degraded.ts",
+  "src/lib/project-brain/guardrails.ts",
+  "src/lib/project-brain/constitution.ts",
+  "src/app/api/projects/[id]/brain/turns/route.ts",
+];
+const CHANGED_BY_PB_EXEC_01 = new Set([
+  "src/lib/project-brain/conversation/output.ts",
+  "src/lib/project-brain/conversation/turn-service.ts",
+  "src/lib/project-brain/conversation/transcript-view.ts",
+  "src/lib/project-brain/conversation/context-types.ts",
+  "src/lib/project-brain/conversation/context-builder.ts",
+  "src/app/api/projects/[id]/brain/turns/route.ts",
+]);
+const PB_PRESENT_01_MERGE = "20e1532b";
+const hasCommit = (ref) => {
+  try {
+    execFileSync("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+test("presentation only: PB-PRESENT-01's own merge changed no reasoning, grounding, contract, persistence or turn-API file", { skip: hasCommit(PB_PRESENT_01_MERGE) ? false : "PB-PRESENT-01 merge commit not in this checkout" }, () => {
+  for (const file of PB_PRESENT_01_FROZEN) {
+    const diff = execFileSync("git", ["diff", "--name-only", `${PB_PRESENT_01_MERGE}^1`, PB_PRESENT_01_MERGE, "--", file], { encoding: "utf8" }).trim();
+    assert.equal(diff, "", `${file} must be unchanged by PB-PRESENT-01`);
+  }
+});
+
 test("presentation only: reasoning, grounding, contract, persistence and the turn API are unchanged", { skip: BASE_REF ? false : "no origin/main in this checkout" }, () => {
-  for (const file of [
-    "src/lib/project-brain/conversation/prompt.ts",
-    "src/lib/project-brain/conversation/output.ts",
-    "src/lib/project-brain/conversation/turn-service.ts",
-    "src/lib/project-brain/conversation/transcript-view.ts",
-    "src/lib/project-brain/conversation/context-types.ts",
-    "src/lib/project-brain/conversation/context-builder.ts",
-    "src/lib/project-brain/conversation/reported-context.ts",
-    "src/lib/project-brain/conversation/assistant-message-writer.ts",
-    "src/lib/project-brain/conversation/generative-access.ts",
-    "src/lib/project-brain/conversation/degraded.ts",
-    "src/lib/project-brain/guardrails.ts",
-    "src/lib/project-brain/constitution.ts",
-    "src/app/api/projects/[id]/brain/turns/route.ts",
-  ]) {
+  for (const file of PB_PRESENT_01_FROZEN.filter((f) => !CHANGED_BY_PB_EXEC_01.has(f))) {
     assert.ok(existsSync(file), `${file} exists`);
     const diff = execFileSync("git", ["diff", "--name-only", BASE_REF, "--", file], { encoding: "utf8" }).trim();
     assert.equal(diff, "", `${file} must be unchanged by PB-PRESENT-01`);

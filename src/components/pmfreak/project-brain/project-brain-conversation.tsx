@@ -6,7 +6,10 @@ import type {
   ProjectBrainSourceChip,
   ProjectBrainStatementView,
 } from "@/lib/project-brain/conversation/transcript-view";
+import { classifyComposerRequest } from "@/lib/project-brain/execution-brief/target";
+import type { ExecutionBriefRenderer, ExecutionBriefTargetCandidate, ExecutionBriefTargetRef } from "@/lib/project-brain/execution-brief/types";
 import { ANSWER_DETAILS_LABEL, CAUTION_LABEL, deriveAnswerDisclosure } from "./answer-disclosure";
+import { ExecutionBriefCard } from "./execution-brief-card";
 
 /**
  * PB-CHAT-01 — the ONE Project Brain conversation for a project.
@@ -40,6 +43,14 @@ import { ANSWER_DETAILS_LABEL, CAUTION_LABEL, deriveAnswerDisclosure } from "./a
  * is material stays visible while closed: a record conflict, claims that need
  * review, reliance on reported chat context, limited mode and the general-answer
  * note. The panel holds structured claims and provenance — never model reasoning.
+ *
+ * PB-EXEC-01 — reason → PREPARE, never execute. Each RECOMMENDATION of a generative
+ * answer gets its own "Prepare execution brief" control carrying that statement's
+ * exact { assistantTurnId, statementId } — the server never guesses. A brief reply
+ * renders the Execution Brief card (renderer choice + copy, client-side only). A
+ * typed "prepare it for Claude" is sent as an execution-brief request WITHOUT a
+ * target; if the server answers `needs_target`, the candidates are offered here and
+ * a choice is a NEW request with a new client id. No control executes anything.
  */
 
 type Variant = "dark" | "light";
@@ -56,14 +67,36 @@ const STARTER_QUESTIONS = [
 ];
 
 type TurnResponse = {
-  status?: "completed" | "pending";
+  status?: "completed" | "pending" | "needs_target";
   messages?: Array<ProjectBrainMessageView | null>;
+  candidates?: ExecutionBriefTargetCandidate[];
   retryAfterMs?: number;
   retryFailed?: boolean;
   error?: string;
 };
 
-type OutgoingTurn = { clientMessageId: string; text: string; retry?: boolean };
+type OutgoingTurn = {
+  clientMessageId: string;
+  text: string;
+  retry?: boolean;
+  intent?: "answer" | "execution_brief";
+  targetRef?: ExecutionBriefTargetRef | null;
+  /** Local UI preference only — never sent, stored or hashed. */
+  renderer?: ExecutionBriefRenderer | null;
+};
+
+/** The user-visible text of a request made from a recommendation's control. Carries no model text. */
+const PREPARE_FROM_RECOMMENDATION_TEXT = "Prepare an execution brief for the selected recommendation.";
+
+/** The POST body: closed fields only. The renderer preference is deliberately absent. */
+function turnBody(turn: OutgoingTurn): Record<string, unknown> {
+  return {
+    clientMessageId: turn.clientMessageId,
+    text: turn.text,
+    ...(turn.retry ? { retry: true } : {}),
+    ...(turn.intent === "execution_brief" ? { intent: "execution_brief", ...(turn.targetRef ? { targetRef: turn.targetRef } : {}) } : {}),
+  };
+}
 
 const STYLES: Record<Variant, Record<string, string>> = {
   dark: {
@@ -323,19 +356,56 @@ type AnswerProps = {
   /** Present only when a limited-mode answer can be retried with Project Brain. */
   onRetry?: () => void;
   retryDisabled?: boolean;
+  /** PB-EXEC-01: prepare a brief for ONE specific recommendation of this answer. */
+  onPrepareBrief?: (statement: ProjectBrainStatementView) => void;
+  prepareDisabled?: boolean;
+  /** PB-EXEC-01: renderer preselected from the request phrase (local only). */
+  initialRenderer?: ExecutionBriefRenderer;
 };
+
+/**
+ * PB-EXEC-01 — one control per RECOMMENDATION, each bound to that statement's exact id.
+ * Visible without opening the details; it only asks Project Brain to PREPARE a brief.
+ */
+function PrepareBriefActions({ statements, onPrepare, disabled, styles }: { statements: ProjectBrainStatementView[]; onPrepare: (s: ProjectBrainStatementView) => void; disabled: boolean; styles: Record<string, string> }) {
+  if (statements.length === 0) return null;
+  return (
+    <div className="mt-3 space-y-1.5 whitespace-normal" data-testid="project-brain-prepare-actions">
+      {statements.map((statement) => (
+        <div key={statement.id} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+          {statements.length > 1 ? <span className={`min-w-0 text-xs [overflow-wrap:anywhere] ${styles.muted}`}>{statement.text}</span> : null}
+          <button
+            type="button"
+            className={`rounded-md border px-2 py-0.5 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 disabled:cursor-not-allowed disabled:opacity-50 ${styles.badge}`}
+            onClick={() => onPrepare(statement)}
+            disabled={disabled}
+            aria-label={`Prepare execution brief for: ${statement.text}`}
+            data-testid="project-brain-prepare-brief"
+            data-statement-id={statement.id}
+          >
+            Prepare execution brief
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 /**
  * One assistant turn. PB-PRESENT-01: the answer dominates; everything structured about it
  * sits behind one disclosure row, except what is material — which stays in view.
  */
-export function ProjectBrainAnswer({ message, variant = "dark", layout = "panel", onRetry, retryDisabled = false }: AnswerProps) {
+export function ProjectBrainAnswer({ message, variant = "dark", layout = "panel", onRetry, retryDisabled = false, onPrepareBrief, prepareDisabled = false, initialRenderer }: AnswerProps) {
   const styles = STYLES[variant];
   const brain = message.brain;
   // Only a generative answer is model-written; limited mode and legacy replies are deterministic.
   // A generative answer is either conversational-only (labelled in its note) or has claims
-  // (labelled in its disclosure row) — so every one carries the label exactly once.
-  const aiLabel = brain?.mode === "generative";
+  // (labelled in its disclosure row) — so every one carries the label exactly once. A brief
+  // reply is labelled once, on the brief card itself.
+  const brief = brain?.executionBrief ?? null;
+  const aiLabel = brain?.mode === "generative" && !brief;
+  const recommendations =
+    brain?.mode === "generative" && brain.operation === "answer" && onPrepareBrief ? brain.statements.filter((s) => s.epistemicType === "RECOMMENDATION") : [];
   const hasDetails = brain ? deriveAnswerDisclosure(brain).hasDetails : false;
   return (
     <div
@@ -357,6 +427,13 @@ export function ProjectBrainAnswer({ message, variant = "dark", layout = "panel"
           <span data-testid="project-brain-synthesis-label">{AI_GENERATED_LABEL}</span> · General answer — not linked to this project&apos;s records.
         </p>
       ) : null}
+      {brief ? <ExecutionBriefCard brief={brief} variant={variant} initialRenderer={initialRenderer} /> : null}
+      {brain?.briefUnavailable ? (
+        <p className={`mt-2 whitespace-normal text-xs ${styles.reported}`} data-testid="execution-brief-unavailable">
+          This execution brief could not be displayed. Ask Project Brain to prepare it again.
+        </p>
+      ) : null}
+      {onPrepareBrief ? <PrepareBriefActions statements={recommendations} onPrepare={onPrepareBrief} disabled={prepareDisabled} styles={styles} /> : null}
       {brain ? <AnswerDetails brain={brain} aiLabel={aiLabel && !brain.conversationalOnly} styles={styles} /> : null}
       {/* Nothing to open, yet claims were adjusted: the caution cannot hide in a panel that is not there. */}
       {brain?.groundingAdjusted && !hasDetails ? (
@@ -433,6 +510,9 @@ function ProjectThread({ projectId, projectName, variant = "dark", layout = "pan
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<{ message: string; turn: OutgoingTurn } | null>(null);
   const [draft, setDraft] = useState("");
+  // PB-EXEC-01: a pre-turn target selection (nothing was persisted) and local renderer preferences.
+  const [needsTarget, setNeedsTarget] = useState<{ text: string; renderer: ExecutionBriefRenderer | null; candidates: ExecutionBriefTargetCandidate[] } | null>(null);
+  const [preferredRenderers, setPreferredRenderers] = useState<Record<string, ExecutionBriefRenderer>>({});
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const activeProject = useRef(projectId);
@@ -497,6 +577,11 @@ function ProjectThread({ projectId, projectName, variant = "dark", layout = "pan
       const forProject = projectId;
       setSending(true);
       setSendError(null);
+      setNeedsTarget(null);
+      if (turn.renderer) {
+        const renderer = turn.renderer;
+        setPreferredRenderers((current) => ({ ...current, [turn.clientMessageId]: renderer }));
+      }
       if (!turn.retry) {
         setMessages((current) =>
           current.some((m) => m.clientMessageId === turn.clientMessageId)
@@ -522,11 +607,17 @@ function ProjectThread({ projectId, projectName, variant = "dark", layout = "pan
           const res = await fetch(`/api/projects/${encodeURIComponent(forProject)}/brain/turns`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(turn),
+            body: JSON.stringify(turnBody(turn)),
           });
           const data = (await res.json().catch(() => ({}))) as TurnResponse;
           if (activeProject.current !== forProject) return;
           if (!res.ok) throw new Error(data.error ?? "Project Brain could not answer just now.");
+          if (data.status === "needs_target") {
+            // Nothing was persisted: drop the optimistic bubble and ask which work is meant.
+            setMessages((current) => current.filter((m) => m.id !== `local:${turn.clientMessageId}`));
+            setNeedsTarget({ text: turn.text, renderer: turn.renderer ?? null, candidates: data.candidates ?? [] });
+            return;
+          }
           const incoming = (data.messages ?? []).filter((m): m is ProjectBrainMessageView => m !== null);
           setMessages((current) => mergeMessages(current, incoming));
           if (data.status !== "pending") {
@@ -553,13 +644,54 @@ function ProjectThread({ projectId, projectName, variant = "dark", layout = "pan
     const text = draft.trim();
     if (!text || sending) return;
     setDraft("");
-    void submit({ clientMessageId: newClientMessageId(), text });
+    // PB-EXEC-01: a closed, deterministic phrase set only. Anything else is an ordinary answer.
+    const kind = classifyComposerRequest(text);
+    void submit(
+      kind.intent === "execution_brief"
+        ? { clientMessageId: newClientMessageId(), text, intent: "execution_brief", targetRef: kind.targetRef, renderer: kind.renderer }
+        : { clientMessageId: newClientMessageId(), text },
+    );
   };
 
   const retryDegraded = (reply: ProjectBrainMessageView) => {
     const question = messages.find((m) => m.id === reply.replyToMessageId);
     if (!question?.clientMessageId || sending) return;
-    void submit({ clientMessageId: question.clientMessageId, text: question.content, retry: true });
+    // The SAME operation identity as the original turn, or the server refuses (409).
+    const request = question.request;
+    void submit({
+      clientMessageId: question.clientMessageId,
+      text: question.content,
+      retry: true,
+      ...(request?.operation === "execution_brief" ? { intent: "execution_brief" as const, targetRef: request.targetRef } : {}),
+    });
+  };
+
+  const prepareBrief = (reply: ProjectBrainMessageView, statement: ProjectBrainStatementView, renderer: ExecutionBriefRenderer | null = null, text = PREPARE_FROM_RECOMMENDATION_TEXT) => {
+    if (sending) return;
+    void submit({
+      clientMessageId: newClientMessageId(),
+      text,
+      intent: "execution_brief",
+      targetRef: { kind: "project_brain_recommendation", assistantTurnId: reply.id, statementId: statement.id },
+      renderer,
+    });
+  };
+
+  const chooseCandidate = (candidate: ExecutionBriefTargetCandidate) => {
+    if (!needsTarget || sending) return;
+    // A NEW request: new client id, the same text, the exact target.
+    void submit({
+      clientMessageId: newClientMessageId(),
+      text: needsTarget.text,
+      intent: "execution_brief",
+      targetRef: { kind: "project_brain_recommendation", assistantTurnId: candidate.assistantTurnId, statementId: candidate.statementId },
+      renderer: needsTarget.renderer,
+    });
+  };
+
+  const rendererFor = (reply: ProjectBrainMessageView): ExecutionBriefRenderer | undefined => {
+    const question = messages.find((m) => m.id === reply.replyToMessageId);
+    return question?.clientMessageId ? preferredRenderers[question.clientMessageId] : undefined;
   };
 
   const applyStarter = (question: string) => {
@@ -622,6 +754,9 @@ function ProjectThread({ projectId, projectName, variant = "dark", layout = "pan
               : undefined
           }
           retryDisabled={sending}
+          onPrepareBrief={message.brain?.mode === "generative" ? (statement) => prepareBrief(message, statement) : undefined}
+          prepareDisabled={sending}
+          initialRenderer={rendererFor(message)}
         />
       ),
     )
@@ -659,8 +794,48 @@ function ProjectThread({ projectId, projectName, variant = "dark", layout = "pan
     </>
   );
 
+  const targetChooser = needsTarget ? (
+    <div className={`whitespace-normal rounded-xl border p-3 text-sm ${styles.panel}`} data-testid="project-brain-needs-target" role="group" aria-label="Choose the work for the execution brief">
+      <p className={`text-xs ${styles.muted}`}>
+        You asked: &ldquo;{needsTarget.text}&rdquo;
+      </p>
+      {needsTarget.candidates.length === 0 ? (
+        <p className="mt-1 text-xs" data-testid="project-brain-needs-target-empty">
+          I can&apos;t tell which work to prepare: the latest answer has no recommendation. Ask what to work on next, or describe the work — for example &ldquo;Prepare an
+          execution brief to add CSV export for invoices&rdquo;.
+        </p>
+      ) : (
+        <>
+          <p className="mt-1 text-xs font-medium">Which recommendation should the execution brief cover?</p>
+          <ul className="mt-2 space-y-1.5">
+            {needsTarget.candidates.map((candidate) => (
+              <li key={`${candidate.assistantTurnId}:${candidate.statementId}`} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="min-w-0 text-xs [overflow-wrap:anywhere]">{candidate.text}</span>
+                <button
+                  type="button"
+                  className={`rounded-md border px-2 py-0.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 disabled:opacity-50 ${styles.badge}`}
+                  onClick={() => chooseCandidate(candidate)}
+                  disabled={sending}
+                  aria-label={`Prepare execution brief for: ${candidate.text}`}
+                  data-testid="project-brain-needs-target-choice"
+                  data-statement-id={candidate.statementId}
+                >
+                  Prepare execution brief
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      <button type="button" className={`mt-2 ${styles.link}`} onClick={() => setNeedsTarget(null)}>
+        Dismiss
+      </button>
+    </div>
+  ) : null;
+
   const status = (
     <>
+      {targetChooser}
       {sending ? <p className={`text-xs ${styles.muted}`} data-testid="project-brain-thinking">Project Brain is thinking…</p> : null}
       {sendError ? (
         <p className={styles.error}>

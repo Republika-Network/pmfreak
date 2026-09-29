@@ -11,18 +11,10 @@
  * production-safe string with no stack trace.
  */
 
-const SECRET_VALUE_PATTERNS: RegExp[] = [
-  /sk_live_[a-zA-Z0-9]{10,}/g,
-  /sk_test_[a-zA-Z0-9]{10,}/g,
-  /pk_live_[a-zA-Z0-9]{10,}/g,
-  /whsec_[a-zA-Z0-9]{10,}/g,
-  /rk_live_[a-zA-Z0-9]{10,}/g,
-  /eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}/g, // JWT-shaped
-  /Bearer\s+[a-zA-Z0-9._-]{10,}/gi,
-  /service_role[a-zA-Z0-9._-]{0,60}/gi,
-];
+import { REDACTED_KEY_FRAGMENTS, SECRET_VALUE_PATTERNS } from "./credential-patterns";
 
-const REDACTED_KEY_FRAGMENTS = ["secret", "token", "password", "authorization", "cookie", "service_role", "servicerole", "webhook", "hmac", "apikey", "api_key", "privatekey", "private_key"];
+// Pattern data lives in ./credential-patterns (shared with the audit export and the
+// PB-EXEC-01 Execution Brief credential guard); behaviour here is unchanged.
 
 function isSecretLikeKey(key: string): boolean {
   const lower = key.toLowerCase();

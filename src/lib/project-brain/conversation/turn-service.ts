@@ -4,7 +4,7 @@
 // A turn is identified by (conversation, clientMessageId). The state of a turn is
 // read entirely from persisted rows — no workflow table, no mutable status:
 //
-//   user row only, younger than TURN_PENDING_WINDOW_MS   → PENDING (another
+//   user row only, younger than its pending window       → PENDING (another
 //        request is generating; answer 202, never run the model again)
 //   user row only, older                                  → UNANSWERED: the
 //        request that owned it died after persisting the question; a replay
@@ -24,6 +24,16 @@
 // Everything I/O is injected, so the idempotency semantics are testable without
 // a database or a provider. This module performs NO project-state write and
 // calls NO memory store: its only writes are the two transcript rows.
+//
+// PB-EXEC-01 — a turn has an OPERATION: `answer` (default, unchanged) or
+// `execution_brief`. The user row stores the requested operation identity
+// (`metadata.projectBrainRequest`); a replay whose identity differs is a 409, never a
+// replay of another operation's answer. A brief request resolves its target BEFORE
+// anything is written (execution-brief/target.ts): an invalid explicit target is
+// refused (ProjectBrainExecutionTargetError → 400) and an ambiguous one returns
+// `needs_target` — no conversation, user row, reply, provider call or usage row.
+// A brief turn runs the dedicated `project_brain.execution_brief` operation INSTEAD
+// of the answer inference (execution-brief/generate.ts): still one call per turn.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { ContextConversationRow, ContextMessageBrainMode, ContextMessageRow } from "@/lib/db/database-contract";
@@ -36,6 +46,17 @@ import { buildDegradedReply, type DegradedReason } from "./degraded";
 import { groundProjectBrainOutput, parseProjectBrainModelOutput, type CitationReport, type GroundedStatement } from "./output";
 import { buildProjectBrainMessages, PROJECT_BRAIN_OUTPUT_SCHEMA } from "./prompt";
 import { buildReportedContext } from "./reported-context";
+import { canonicalJson } from "../execution-brief/canonical-json";
+import { EXECUTION_BRIEF_PENDING_WINDOW_MS, executionBriefLeaseAllowsInference } from "../execution-brief/schema";
+import { executionBriefReplyContent, generateExecutionBrief } from "../execution-brief/generate";
+import { requestIdentityMetadata, resolveExecutionTarget, storedRequestIdentity, type TargetResolution } from "../execution-brief/target";
+import {
+  ANSWER_REQUEST_IDENTITY,
+  type ExecutionBriefTargetCandidate,
+  type ExecutionBriefV1,
+  type ProjectBrainOperation,
+  type ProjectBrainRequestIdentity,
+} from "../execution-brief/types";
 
 export const PROJECT_BRAIN_MODULE_ID = "project-brain";
 export const PROJECT_BRAIN_METADATA_VERSION = 1;
@@ -45,7 +66,22 @@ export type ProjectBrainTurnStore = {
   getOrCreateConversation(): Promise<ContextConversationRow>;
   listMessages(conversationId: string): Promise<ContextMessageRow[]>;
   findUserMessage(conversationId: string, clientMessageId: string): Promise<ContextMessageRow | null>;
-  insertUserMessage(conversationId: string, clientMessageId: string, content: string): Promise<{ row: ContextMessageRow } | { conflict: true }>;
+  /**
+   * `metadata` is built HERE, server-side, and is only ever the bounded operation
+   * identity `{ projectBrainRequest }` — never client-supplied metadata.
+   */
+  insertUserMessage(
+    conversationId: string,
+    clientMessageId: string,
+    content: string,
+    metadata?: { projectBrainRequest: ProjectBrainRequestIdentity },
+  ): Promise<{ row: ContextMessageRow } | { conflict: true }>;
+  /**
+   * PB-EXEC-01: one row of THIS conversation (and workspace) by id, for explicit
+   * target validation. Optional for older stores; the bounded transcript is searched
+   * when absent.
+   */
+  findMessage?(conversationId: string, messageId: string): Promise<ContextMessageRow | null>;
   listReplies(conversationId: string, userMessageId: string): Promise<ContextMessageRow[]>;
   insertReply(input: {
     conversationId: string;
@@ -71,7 +107,13 @@ export type ProjectBrainTurnDeps = {
   now(): Date;
 };
 
-export type ProjectBrainTurnInput = { clientMessageId: string; text: string; retry?: boolean };
+export type ProjectBrainTurnInput = {
+  clientMessageId: string;
+  text: string;
+  retry?: boolean;
+  /** PB-EXEC-01: the requested operation identity; absent = `{ answer, null }`. */
+  request?: ProjectBrainRequestIdentity;
+};
 
 export type ProjectBrainTurnResult =
   | {
@@ -85,10 +127,40 @@ export type ProjectBrainTurnResult =
     }
   | { status: "pending"; replayed: true; conversationId: string; userMessage: ContextMessageRow; retryAfterMs: number };
 
+/**
+ * PB-EXEC-01 §9.2.1: an execution-brief request without a usable target. Nothing
+ * was written and no model was called; the candidates come from persisted rows.
+ * Only `runProjectBrainRequest` can return it — never an answer turn.
+ */
+export type ProjectBrainNeedsTargetResult = { status: "needs_target"; conversationId: string | null; candidates: ExecutionBriefTargetCandidate[] };
+
+/**
+ * How long a persisted-but-unanswered user turn is presumed still in flight elsewhere.
+ * Operation-aware (PB-EXEC-01 review P1-1): an answer keeps TURN_PENDING_WINDOW_MS; an
+ * execution brief uses its own window, derived from its whole budget (execution-brief/schema.ts).
+ */
+export function pendingWindowFor(operation: ProjectBrainOperation): number {
+  return operation === "execution_brief" ? EXECUTION_BRIEF_PENDING_WINDOW_MS : TURN_PENDING_WINDOW_MS;
+}
+
 export class ProjectBrainTurnConflictError extends Error {
-  constructor(public readonly reason: "client_message_id_owned_by_another_user" | "client_message_id_reused_with_different_text") {
+  constructor(
+    public readonly reason:
+      | "client_message_id_owned_by_another_user"
+      | "client_message_id_reused_with_different_text"
+      | "client_message_id_reused_with_different_operation",
+  ) {
     super(reason);
     this.name = "ProjectBrainTurnConflictError";
+  }
+}
+
+/** PB-EXEC-01: an explicit `targetRef` failed server-side validation (§9.2 rules 1–5). Nothing was written. */
+export class ProjectBrainExecutionTargetError extends Error {
+  readonly code = "invalid_execution_target";
+  constructor() {
+    super("invalid_execution_target");
+    this.name = "ProjectBrainExecutionTargetError";
   }
 }
 
@@ -106,6 +178,10 @@ export type ProjectBrainReplyMetadata = {
     citations?: CitationReport;
     /** reportCount (PB-REASON-02) is absent on older rows. */
     context: { sourceCount: number; truncated: boolean; unavailable: string[]; reportCount?: number };
+    /** PB-EXEC-01: set on replies to an `execution_brief` turn (absent = an answer). */
+    operation?: Extract<ProjectBrainOperation, "execution_brief">;
+    /** PB-EXEC-01: the canonical, validated brief (generative brief replies only). Additive; version stays 1. */
+    executionBrief?: ExecutionBriefV1;
   };
 };
 
@@ -157,7 +233,9 @@ async function generate(
   userMessage: ContextMessageRow,
   existingDegraded: ContextMessageRow | null,
   replayed: boolean,
+  brief: BriefTurn | null = null,
 ): Promise<ProjectBrainTurnResult> {
+  if (brief) return generateBriefTurn(deps, conversation, userMessage, existingDegraded, replayed, brief);
   const { scope, store } = deps;
   const history = historyFrom(await store.listMessages(conversation.id), userMessage, deps.userId);
   // PB-REASON-02: the report map is built from the BOUNDED history the context
@@ -273,6 +351,165 @@ async function generate(
   return settleInsert(deps, conversation, userMessage, "degraded", inserted, replayed);
 }
 
+// ─── PB-EXEC-01: the execution-brief operation ───────────────────────────────
+
+type BriefTurn = {
+  identity: ProjectBrainRequestIdentity;
+  resolution: TargetResolution | null;
+  /** Inference-lease anchor (ms): the start of the request that runs this generation. */
+  leaseAnchorMs: number;
+};
+
+/** First line of a limited-mode reply to a brief request: no partial brief, and why. */
+export const BRIEF_DEGRADED_NOTICE =
+  "Project Brain is temporarily operating in limited mode, so I can't prepare the execution brief right now. Execution briefs require generative Project Brain; no partial brief was produced.";
+export const BRIEF_NOT_ENTITLED_NOTICE =
+  "Project Brain is in limited mode because full generative answers aren't included in your current plan, so I can't prepare an execution brief: execution briefs require generative Project Brain.";
+
+/** The ordinary reply-metadata source list: the brief's provenance sources without their digests. */
+function withoutDigest({ sourceContextDigest, ...reference }: ExecutionBriefV1["provenance"]["sources"][number]): ProjectBrainSourceReference {
+  void sourceContextDigest;
+  return reference;
+}
+
+async function loadMessage(deps: ProjectBrainTurnDeps, conversationId: string, messageId: string, messages: ContextMessageRow[]): Promise<ContextMessageRow | null> {
+  if (deps.store.findMessage) return deps.store.findMessage(conversationId, messageId);
+  return messages.find((m) => m.id === messageId) ?? null;
+}
+
+/** Deterministic, read-only target resolution (execution-brief/target.ts). */
+async function resolveBriefTarget(
+  deps: ProjectBrainTurnDeps,
+  conversation: ContextConversationRow | null,
+  identity: ProjectBrainRequestIdentity,
+  text: string,
+  beforeSeq?: number,
+): Promise<TargetResolution> {
+  const messages = conversation ? await deps.store.listMessages(conversation.id) : [];
+  const requested = identity.targetRef;
+  const explicitRow =
+    conversation && requested?.kind === "project_brain_recommendation" ? await loadMessage(deps, conversation.id, requested.assistantTurnId, messages) : null;
+  return resolveExecutionTarget({
+    requested,
+    text,
+    messages,
+    explicitRow,
+    conversationId: conversation?.id ?? null,
+    workspaceId: deps.scope.workspaceId,
+    scope: deps.scope,
+    beforeSeq,
+  });
+}
+
+async function generateBriefTurn(
+  deps: ProjectBrainTurnDeps,
+  conversation: ContextConversationRow,
+  userMessage: ContextMessageRow,
+  existingDegraded: ContextMessageRow | null,
+  replayed: boolean,
+  brief: BriefTurn,
+): Promise<ProjectBrainTurnResult> {
+  const { scope, store } = deps;
+  const history = historyFrom(await store.listMessages(conversation.id), userMessage, deps.userId);
+  const context = buildReportedContext(await deps.loadContext(history), { id: userMessage.id, createdAt: userMessage.created_at });
+  const generatedAt = deps.now().toISOString();
+  // A replay that must generate (unanswered, or an explicit retry) re-resolves the
+  // target from the SAME persisted rows, strictly before this turn — deterministic,
+  // and never a different target than the one the turn was created with.
+  const resolution = brief.resolution ?? (await resolveBriefTarget(deps, conversation, brief.identity, userMessage.content, Number(userMessage.message_seq)));
+
+  let reason: DegradedReason = "invalid_output";
+  if (!deps.generativeEntitled) {
+    reason = "not_entitled";
+  } else if (existingDegraded === null && !executionBriefLeaseAllowsInference(brief.leaseAnchorMs, deps.now().getTime())) {
+    // Pre-provider work ate the inference lease: starting the call now could still be running
+    // when another instance treats this turn as stale. Degrade honestly, never call the model.
+    reason = "timeout";
+    console.warn(JSON.stringify({ event: "project_brain.execution_brief.lease_expired", projectId: scope.projectId }));
+  } else if (resolution.kind === "resolved") {
+    try {
+      const outcome = await generateExecutionBrief({
+        scope,
+        userId: deps.userId,
+        moduleId: PROJECT_BRAIN_MODULE_ID,
+        conversationId: conversation.id,
+        userMessage,
+        context,
+        targetRef: resolution.targetRef,
+        recommendationText: resolution.recommendationText,
+        recommendationAnchors: resolution.recommendationAnchors,
+        generatedAt,
+        retry: existingDegraded !== null,
+        infer: deps.infer,
+        newBriefId: () => crypto.randomUUID(),
+      });
+      if (outcome.ok) {
+        const metadata: ProjectBrainReplyMetadata = {
+          projectBrain: {
+            version: PROJECT_BRAIN_METADATA_VERSION,
+            mode: "generative",
+            // The brief carries its own grounded structure; no ordinary statements are invented for it.
+            statements: [],
+            sources: outcome.brief.provenance.sources.map(withoutDigest),
+            constitutionVersion: PROJECT_BRAIN_CONSTITUTION_VERSION,
+            provider: outcome.provider,
+            model: outcome.model,
+            citations: {
+              rejectedCitations: outcome.brief.provenance.citations.rejectedCitations,
+              rejectedReports: outcome.brief.provenance.citations.rejectedReports,
+              downgradedStatements: outcome.brief.provenance.citations.demotedItems,
+              droppedStatements: outcome.brief.provenance.citations.droppedItems + outcome.brief.provenance.citations.credentialFindings + outcome.brief.provenance.citations.blockedCommands,
+              unsupportedReferences: outcome.brief.provenance.citations.unsupportedReferences,
+            },
+            context: contextSummary(context),
+            operation: "execution_brief",
+            executionBrief: outcome.brief,
+          },
+        };
+        const inserted = await store.insertReply({
+          conversationId: conversation.id,
+          replyToMessageId: userMessage.id,
+          mode: "generative",
+          content: executionBriefReplyContent(outcome.brief),
+          metadata,
+        });
+        return settleInsert(deps, conversation, userMessage, "generative", inserted, replayed);
+      }
+      console.warn(JSON.stringify({ event: "project_brain.execution_brief.invalid_model_output", projectId: scope.projectId, stage: outcome.stage }));
+    } catch (error) {
+      reason = classifyInferenceFailure(error);
+      console.warn(JSON.stringify({ event: "project_brain.execution_brief.inference_unavailable", projectId: scope.projectId, reason }));
+    }
+  }
+
+  if (existingDegraded) {
+    return { status: "completed", replayed: true, conversationId: conversation.id, userMessage, reply: existingDegraded, retryFailed: true };
+  }
+
+  const degraded = buildDegradedReply(context, reason);
+  const [, ...rest] = degraded.content.split("\n");
+  const metadata: ProjectBrainReplyMetadata = {
+    projectBrain: {
+      version: PROJECT_BRAIN_METADATA_VERSION,
+      mode: "degraded",
+      statements: [],
+      sources: degraded.sources,
+      constitutionVersion: PROJECT_BRAIN_CONSTITUTION_VERSION,
+      reason,
+      context: contextSummary(context),
+      operation: "execution_brief",
+    },
+  };
+  const inserted = await store.insertReply({
+    conversationId: conversation.id,
+    replyToMessageId: userMessage.id,
+    mode: "degraded",
+    content: [reason === "not_entitled" ? BRIEF_NOT_ENTITLED_NOTICE : BRIEF_DEGRADED_NOTICE, ...rest].join("\n"),
+    metadata,
+  });
+  return settleInsert(deps, conversation, userMessage, "degraded", inserted, replayed);
+}
+
 async function settleInsert(
   deps: ProjectBrainTurnDeps,
   conversation: ContextConversationRow,
@@ -291,19 +528,38 @@ async function settleInsert(
   return { status: "completed", replayed: true, conversationId: conversation.id, userMessage, reply: winner };
 }
 
+/** An ordinary turn (any operation whose target is already resolvable). Never returns needs_target. */
 export async function runProjectBrainTurn(deps: ProjectBrainTurnDeps, input: ProjectBrainTurnInput): Promise<ProjectBrainTurnResult> {
-  const { store } = deps;
-  const conversation = (await store.findConversation()) ?? (await store.getOrCreateConversation());
+  const result = await runProjectBrainRequest(deps, input);
+  if (result.status === "needs_target") throw new ProjectBrainExecutionTargetError();
+  return result;
+}
 
-  let userMessage = await store.findUserMessage(conversation.id, input.clientMessageId);
+/** The route's entry point: an answer turn, a brief turn, or a pre-turn target selection. */
+export async function runProjectBrainRequest(deps: ProjectBrainTurnDeps, input: ProjectBrainTurnInput): Promise<ProjectBrainTurnResult | ProjectBrainNeedsTargetResult> {
+  const { store } = deps;
+  const identity = input.request ?? ANSWER_REQUEST_IDENTITY;
+  const existing = await store.findConversation();
+
+  let userMessage = existing ? await store.findUserMessage(existing.id, input.clientMessageId) : null;
   let replayed = userMessage !== null;
+  let resolution: TargetResolution | null = null;
+  if (!userMessage && identity.operation === "execution_brief") {
+    // §9.2.1: resolve BEFORE anything is written. Reads only.
+    resolution = await resolveBriefTarget(deps, existing, identity, input.text);
+    if (resolution.kind === "invalid") throw new ProjectBrainExecutionTargetError();
+    if (resolution.kind === "needs_target") return { status: "needs_target", conversationId: existing?.id ?? null, candidates: resolution.candidates };
+  }
+
+  const conversation = existing ?? (await store.getOrCreateConversation());
   if (!userMessage) {
-    const inserted = await store.insertUserMessage(conversation.id, input.clientMessageId, input.text);
+    const inserted = await store.insertUserMessage(conversation.id, input.clientMessageId, input.text, requestIdentityMetadata(identity));
     if ("row" in inserted) {
       userMessage = inserted.row;
     } else {
       userMessage = await store.findUserMessage(conversation.id, input.clientMessageId);
       replayed = true;
+      resolution = null;
       if (!userMessage) throw new Error("User turn conflicted but could not be re-read.");
     }
   }
@@ -313,6 +569,13 @@ export async function runProjectBrainTurn(deps: ProjectBrainTurnDeps, input: Pro
   if (userMessage.content !== input.text) {
     throw new ProjectBrainTurnConflictError("client_message_id_reused_with_different_text");
   }
+  // PB-EXEC-01: never replay an answer as a brief, a brief as an answer, or one
+  // target's brief as another's. A legacy row (no identity) is `{ answer, null }`.
+  const stored = storedRequestIdentity(userMessage);
+  if (stored === "unknown" || canonicalJson(stored) !== canonicalJson(identity)) {
+    throw new ProjectBrainTurnConflictError("client_message_id_reused_with_different_operation");
+  }
+  const requestStartMs = deps.now().getTime();
 
   const replies = await store.listReplies(conversation.id, userMessage.id);
   const generativeReply = replies.find((r) => r.brain_mode === "generative");
@@ -328,20 +591,26 @@ export async function runProjectBrainTurn(deps: ProjectBrainTurnDeps, input: Pro
   const running = inFlight.get(key);
   if (running) return running.then((result) => ({ ...result, replayed: true }) as ProjectBrainTurnResult);
 
+  const createdAtMs = new Date(userMessage.created_at).getTime();
+  const pendingWindowMs = pendingWindowFor(identity.operation);
   if (!degradedReply && replayed) {
-    const ageMs = deps.now().getTime() - new Date(userMessage.created_at).getTime();
-    if (ageMs < TURN_PENDING_WINDOW_MS) {
+    const ageMs = requestStartMs - createdAtMs;
+    if (ageMs < pendingWindowMs) {
       return {
         status: "pending",
         replayed: true,
         conversationId: conversation.id,
         userMessage,
-        retryAfterMs: Math.max(1000, TURN_PENDING_WINDOW_MS - ageMs),
+        retryAfterMs: Math.max(1000, pendingWindowMs - ageMs),
       };
     }
   }
+  // Lease anchor = this request's start. For a first request it is no later than the row's
+  // created_at (clock skew aside, covered by the margin); for a stale recovery it is the
+  // recovery's own start, since the original lease is already over.
+  const brief: BriefTurn | null = identity.operation === "execution_brief" ? { identity, resolution, leaseAnchorMs: requestStartMs } : null;
 
-  const work = generate(deps, conversation, userMessage, degradedReply, replayed).finally(() => inFlight.delete(key));
+  const work = generate(deps, conversation, userMessage, degradedReply, replayed, brief).finally(() => inFlight.delete(key));
   inFlight.set(key, work);
   return work;
 }

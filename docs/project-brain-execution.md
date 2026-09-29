@@ -1,7 +1,10 @@
 # Project Brain execution architecture (PB-EXEC-00)
 
-Status: **architecture and contract only.** PB-EXEC-00 adds no runtime capability: no route, no
-migration, no provider call, no execution, no repository access. It defines how Project Brain
+Status: **PB-EXEC-00 is architecture and contract; PB-EXEC-01 (brief generation and manual
+handoff) is implemented** — see §20.1. PB-EXEC-00 itself added no runtime capability: no route, no
+migration, no provider call, no execution, no repository access. PB-EXEC-02 and PB-EXEC-03 are
+not implemented: nothing delegates, executes, reads a repository or integrates with Claude Code
+or Codex. This document defines how Project Brain
 moves from *"I know what should happen next"* to *"I can package that work for an execution
 capability"* and fixes the boundaries PB-EXEC-01/02/03 must be built inside.
 
@@ -15,7 +18,7 @@ reason  <  prepare  <  delegate  <  merge  <  deploy     (each step is separatel
 | Increment | What it adds | Side effects |
 | --- | --- | --- |
 | PB-EXEC-00 (this) | Vocabulary, boundaries, reuse map, v1 brief contract | None — documentation only |
-| PB-EXEC-01 | Execution Brief generation and **manual** handoff (display + copy) | None inside PMFreak beyond the transcript row and AI usage accounting |
+| PB-EXEC-01 (implemented) | Execution Brief generation and **manual** handoff (display + copy) | None inside PMFreak beyond the user and assistant transcript rows and AI usage accounting |
 | PB-EXEC-02 | Delegated execution: an explicit human grant causes an external executor to act | External execution (Dangerous class) |
 | PB-EXEC-03 | Governed autonomous execution (policy-issued grants) | External execution under standing policy — requires a new ADR revisiting ADR-PMF-027/030 |
 
@@ -645,6 +648,15 @@ Same machinery as ordinary turns, applied per field:
      widen an instruction — so there is no "keep the prose, drop the precision" path.
    - Single-valued fields: if `target` or `objective` is removed, the brief is `needs_input`
      (§9.7); if removals leave `acceptanceCriteria` empty, the brief is `needs_input`.
+   - **A server-owned target is not a safety exemption.** For a prior-Recommendation brief the
+     server owns `target.title` / `target.statement` (the exact Recommendation text, §9.2), yet
+     that text is still renderer-bound, so it passes the **same** screen — credential guard,
+     unsupported execution-shaped reference, dangerous command — with the same definitions and
+     counters. On a failure the **whole** target is withheld (`target = null`, `needs_input`,
+     `groundingAdjusted = true`), `targetRef` still names the selected work, and a blocking
+     unknown asks to reconfirm the target without the unsupported execution detail, never
+     echoing it. Continuity (is the selected work still supported?) and this safety screen (may
+     its text reach an executor?) are separate checks; one Recommendation may fail both.
    - Server-owned constants (`handoff`, policy constraints) contain no references and are not
      model-writable.
    - Counting alone is never the response to an unsupported reference in a renderer-bound field.
@@ -790,9 +802,12 @@ sourceContextDigest = sha256( canonical JSON of {
 ```
 
 It changes when the meaningful source context the brief consumed changes, whatever the family's
-timestamp semantics. A change outside the consumed excerpt (text beyond the per-source budget) does
-not change it — correct for "what the brief was built from"; PB-EXEC-02 may additionally compare
-family revision markers where they exist. Reported turns need no digest: `context_messages` is
+timestamp semantics. For a source family **without** an independent revision marker, the digest
+changes only when the consumed representation changes: an edit outside the consumed excerpt (text
+beyond the per-source budget) does not change it — correct for "what the brief was built from". A
+family **with** a trustworthy revision marker (today `evidence_items { version, evidence_hash }`)
+includes it, so the digest may conservatively go stale even when the edited content lay outside the
+consumed excerpt — the safe side. Reported turns need no digest: `context_messages` is
 append-only (PB-CHAT-01), so a turn id pins its content.
 
 **`contextFingerprint`** — `sha256` over canonical JSON (sorted keys, sorted arrays) of stable
@@ -1367,8 +1382,9 @@ renderer in the UI.
 - No composite endpoint: "generate brief and run" or "run and merge" is forbidden (ADR-PMF-030).
 
 PB-EXEC-01 remains read-only because: brief generation is inference over already-authorized
-project context; its only writes are the assistant transcript row (with the brief in metadata)
-and `ai_usage_events`; copy is client-side; and the brief says in data that nothing is
+project context; for a successful persisted brief turn its only writes are the user transcript row
+(with its operation identity), the assistant transcript row (with the brief in metadata) and
+`ai_usage_events`; an unresolved target writes nothing (§9.2.1); copy is client-side; and the brief says in data that nothing is
 authorized.
 
 ---
@@ -1570,6 +1586,32 @@ re-auditing `docs/adr/`.
 | Cost | One call per explicit request, visible in `ai_usage_events`; zero otherwise |
 | Explicitly not executed | No repository read, no git, no shell, no executor call, no execution request, no grant, no PR, no deploy, no project write |
 
+### 20.1 PB-EXEC-01 — implementation status (implemented)
+
+PB-EXEC-01 implements §9 and §13 as ratified. Where a name or boundary needed a mechanical choice,
+it is recorded here; no decision of PB-EXEC-00 was reopened.
+
+| Area | As implemented |
+| --- | --- |
+| Module | `src/lib/project-brain/execution-brief/`: `types`, `schema` (transient model schema, limits, strict parser, output budget), `prompt`, `target` (closed phrase matcher, `targetRef` parsing, §9.2 validation, deterministic candidates), `ground` (alias → stable id translation, origin checks, whole-item removal, command rules, credential boundary 1), `repository-context`, `policy` (handoff constants), `canonical-json`, `hash` (the only Node import), `assemble` (digests, fingerprint, content hash, readiness, credential boundary 2), `validate` (strict persisted-brief parser), `render` (generic / claude_code / codex), `credential-guard`, `generate` (the one provider call) |
+| Route | `POST /brain/turns` body is a closed set: `clientMessageId`, `text`, `retry`, `intent`, `targetRef`. No `renderFor`, no metadata, no scope, no execution fields. Responses: `completed`, `pending`, `needs_target` (200, nothing written), `400 invalid_execution_target`, `409 client_message_id_reused_with_different_operation`. Governance unchanged (`project_brain.converse`); no new route |
+| Turn service | `runProjectBrainRequest` resolves the target **before** anything is written; `runProjectBrainTurn` keeps its answer-only result type. A brief turn runs `project_brain.execution_brief` *instead of* the answer inference; provider idempotency key `project-brain:<userTurnId>:brief:first\|retry`. A replay that must generate re-resolves the target from the same persisted rows strictly before the turn |
+| Persistence | User row: `metadata.projectBrainRequest` (server-built by `insertUserTurn`; `appendMessage` unchanged). Assistant row: `metadata.projectBrain.executionBrief` + `operation: "execution_brief"`; metadata version stays 1; `brain_mode` keeps its two values. No migration |
+| Output budget | `EXECUTION_BRIEF_INFERENCE`: `maxTokens` 11 500 ≥ the derived worst case (≈ 28.1k characters → ≈ 11.25k tokens, same 3-chars/token floor and 1.2 margin as turns); one attempt of ≤ 45 s. Ordinary turns keep 3 800 / 20 s / 2 attempts |
+| Pending window (review P1-1) | Operation-aware: `pendingWindowFor("answer")` = `TURN_PENDING_WINDOW_MS` (60 s, unchanged); `pendingWindowFor("execution_brief")` = `EXECUTION_BRIEF_PENDING_WINDOW_MS` = 30 s pre-provider allowance (history, context, reports, target re-resolution) + 45 s × 1 provider call + 15 s post-provider allowance (parse, grounding, assembly, hashing, credential scan, reply insert) + 30 s margin = **120 s**. Plus an **inference lease**: a brief turn starts its provider call only if, measured from the start of the request running it, the call and its post-work end a full margin before the window; otherwise it degrades (`timeout`) without calling the provider. **Guarantee:** another instance recovers a brief only after 120 s, by when the original call has finished or been aborted by its timeout — the two calls do not overlap while clock skew and process stalls stay within the 30 s margin. It is **not** exactly-once: a process frozen beyond the margin, or a provider that bills a request after the client aborted, can still cause a second billed call; the `(turn, mode)` unique index still keeps exactly one stored reply. Same-instance duplicates share one generation (`inFlight`) as before |
+| Selected-Recommendation target (review P1-2, final reviews) | **The server owns the target identity; the model cannot rewrite it.** Target validation yields a `SelectedRecommendationTarget` (`assistantTurnId`, `statementId`, the exact persisted Recommendation text, and its support anchors: each cited source reference as persisted — `evidenceId` plus a snapshot of `evidenceId, sourceSystem, title, evidenceType, recordedAt, excerpt, authorityLevel, isPrimary, workspaceId, projectId` — and each cited user report's `turnId` + `createdAt`). It is identity data only — never Evidence, a source reference, known context, project state or provenance. **Canonical target:** `statement` = the exact Recommendation text; `title` = that text when it fits the 120-character title limit, otherwise the fixed label *"Selected Project Brain recommendation"* (no summarizing, rewriting or truncation). **Canonical support:** the Recommendation's anchors that are still present and unchanged in the CURRENT context, assembled server-side — the model's target aliases are ignored. **Model contract:** the prompt gives `<selected_target title=… statement=…>` and the strict schema pins `target.title`/`target.statement` to those single values (and target aliases to the anchors' aliases); the server still compares exactly after parsing, and a mismatch adds the blocking unknown *"Project Brain could not prepare instructions consistently for the selected recommendation."* without ever persisting or echoing the mismatching prose. **Continuity** (`continuity.ts`, deterministic): (2) at least one anchor; (3) every anchor still in the bounded context (the same authenticated user turn and `createdAt` for a report); (4) every source anchor's snapshot digest equals that of the current reference; (5) every precise reference in the Recommendation text is still supplied. Any failure adds *"Reconfirm the selected recommendation — The selected recommendation is no longer sufficiently supported by the current project context."* Either unknown makes the brief `needs_input`; `targetRef` never changes; the canonical target is the selected Recommendation, rendered as `[selected recommendation]` — **unless its text fails the renderer-safety screen of §9.5 (unsupported or dangerous execution precision, credential-like content), in which case the whole target is withheld (`target = null`, `needs_input`) with the blocking unknown *"Reconfirm the target without the unsupported execution detail"*; server-owned identity never bypasses that screen**. No lexical or semantic similarity decides anything (the earlier word-overlap heuristic was removed: "Rewrite authentication for P14 invoice export" shares P14, *invoice* and *export* yet is different work). **Honest limit:** rule 4 proves the persisted *reference* is unchanged, not semantic entailment of source content beyond its excerpt; families whose `recordedAt` follows `updated_at` make any edit a reconfirmation |
+| Reported claims in narrative (final review, found by real-provider certification) | A `whyNow` (or known-context) sentence that makes an execution-sensitive claim (merged, deployed, clean, …) or uses report language its cited RECORD sources do not contain is a REPORT: with a valid report it stays, is rendered `[reported · unverified]` (a report citation takes precedence over a record citation in every renderer), and — if execution-sensitive — is also listed under *verify before acting* with its stop condition; without a report it becomes an assumption. A `project_record` objective/constraint/criterion/area that relays a report ("as you reported…") is demoted to `reported` (with a report) or `suggested`. Outcome statements ("done when tests pass") are not current-state claims and are not demoted. Previously a real model could render "[project record] P13 … has been merged and the branch is clean" |
+| Persisted-brief verification (review P2-1, P2-2) | The transcript API exposes a brief only through `persistedBriefVerifier(routeScope)` (`verify.ts`, server-only): strict parse, **recomputed `briefContentHash` equal to the stored one**, and **binding** — `identity.conversationId = row.conversation_id`, `identity.requestTurnId = row.reply_to_message_id`, `identity.workspaceId = row.workspace_id = route workspace`, `identity.projectId = route project`, every provenance source in the brief's own workspace and project. Hash integrity and container/scope binding are separate checks; both are required. On failure the brief is omitted (`briefUnavailable`), nothing of it is exposed, and the stored row is never rewritten. `transcript-view.ts` stays pure and is fail-closed: without a verifier it exposes no brief |
+| Canonical brief | §9.4 as written, with `target`, `objective` and `whyNow` nullable (null = removed by grounding ⇒ `needs_input`) and a brief-specific citation report (`rejectedCitations`, `rejectedReports`, `unsupportedReferences`, `credentialFindings`, `droppedItems`, `demotedItems`, `blockedCommands`). Provenance sources drop `excerpt`/`author`/`href` (titles, systems and dates are kept) |
+| Grounding additions | Over-long or surplus items are dropped whole, never clipped. Known context must be what the cited RECORD states: report language, or an execution-sensitive claim (merged, deployed, clean, …) its cited records do not contain, moves the item to assumptions. Well-known standard identifiers (`UTF-8`, `ISO-8601`, `SHA-256`, …) are not project codes unless the project's records use that family. A `current_user_request` target is grounded in the current authenticated turn. Execution-sensitivity is escalated deterministically, never lowered |
+| Credential guard | Layers as §9.5.1: the Perilla 10 and P2-20 value patterns moved verbatim to `src/lib/security/credential-patterns.ts` and shared by all three consumers (two prose narrowings apply in the brief guard only: a `Bearer` credential must contain a digit; a `service_role` match must continue into a long digit-bearing value); sensitive-key assignments built from the shared key fragments; PEM armour; a reviewed v1 provider list (AWS access key ids, Anthropic, Slack tokens and webhooks, Google API keys, GitLab, npm, SendGrid, Twilio, Hugging Face, Supabase secret keys, Azure storage keys — each from the provider's documented format, none copied from a third-party ruleset; **not universal coverage**); a bounded opaque-token rule (≥ 32 characters; hex-only flagged; mixed charsets need entropy ≥ 3.5 bits/char) with field+shape exemptions. Boundary 3 guards everything the card displays (the whole brief and every renderer's output) and re-checks the exact clipboard string |
+| UI | One "Prepare execution brief" control per RECOMMENDATION; the brief card (banner, readiness, four zones in customer wording, open inputs, repository status, handoff rules, renderer radios, Copy brief, guarded preview); a target chooser for `needs_target`; a phrase such as "make the Codex prompt" only preselects the renderer locally |
+| Verification | `tests/pb-exec-01-execution-brief.test.ts`, `tests/pb-exec-01-brief-presentation.test.mjs` (+ `tests/pb-exec-01-harness.tsx`), `tests/e2e/pb-exec-01-brief-card.spec.ts` (real component in Chromium, no server), `tests/e2e/pb-exec-01-project-brain.spec.ts` (real app, disposable stack, `scripts/pb-exec-01/openai-stub.mjs`), real-provider certification `scripts/pb-exec-01/certify-execution-brief.ts` |
+
+Observed with the real provider: the model often marks an undecided product detail (for example
+the exact CSV schema of an export) as a *blocking* unknown, so many real briefs are `needs_input`.
+That is the conservative direction and readiness stays server-computed; tuning it is a follow-up.
+
 ---
 
 ## 21. PB-EXEC-02 prerequisites
@@ -1636,7 +1678,10 @@ is reliable. Learning signals may inform such a policy; they never become one.
 7. Retention of briefs in transcripts once briefs carry larger content.
 8. Should four-eyes (requester ≠ approver) apply to every delegation or only to merge and
    production deploy? (Proposed in §12.4; PB-EXEC-02 ADR.)
-9. Which maintained credential ruleset PB-EXEC-01 vendors for §9.5.1 layer 4, subject to the
+9. ~~Which maintained credential ruleset PB-EXEC-01 vendors for §9.5.1 layer 4.~~ Answered by
+   PB-EXEC-01: none is installed or vendored (audited: secretlint, gitleaks, trufflehog,
+   detect-secrets), so layer 4 is a reviewed, bounded, named v1 list of provider token formats
+   (§20.1). Vendoring a maintained ruleset *as data* remains a follow-up, subject to the
    IP-compliance check. (The ambiguous-target storage question is closed: §9.2.1.)
 
 ## 24. Deferred work
