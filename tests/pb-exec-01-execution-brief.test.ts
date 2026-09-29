@@ -67,14 +67,16 @@ import {
   EXECUTION_BRIEF_PHRASES,
   matchDescribedBriefRequest,
   matchExecutionBriefPhrase,
+  canonicalSelectedTarget,
   parseTargetRef,
   referenceSnapshot,
+  SELECTED_RECOMMENDATION_TITLE,
   storedRequestIdentity,
 } from "../src/lib/project-brain/execution-brief/target";
 import { EXECUTION_BRIEF_RENDERERS, EXECUTION_BRIEF_SERIALIZER_VERSION, type ExecutionBriefTargetRef, type ExecutionBriefV1 } from "../src/lib/project-brain/execution-brief/types";
 import { parseExecutionBriefV1 } from "../src/lib/project-brain/execution-brief/validate";
 import { persistedBriefVerifier, verifyPersistedExecutionBrief } from "../src/lib/project-brain/execution-brief/verify";
-import { checkRecommendationContinuity, snapshotDigest, targetKeepsRecommendationIdentity } from "../src/lib/project-brain/execution-brief/continuity";
+import { checkRecommendationContinuity, snapshotDigest, TARGET_INCONSISTENT_UNKNOWN } from "../src/lib/project-brain/execution-brief/continuity";
 import { exportSpecEvidence, FIXTURE_NOW, p14ExportProject, PROJECT, scope, USER, WS } from "./fixtures/pb-exec-01-projects";
 
 const OTHER_USER = "77777777-7777-4777-8777-777777777777";
@@ -147,7 +149,9 @@ function memoryStore(opts: { conversationId?: string; exists?: boolean } = {}): 
   return store;
 }
 
-type Seen = { prompt: string; system: string; source(labelPart: string): string; currentReport: string; reportFor(content: string): string | null };
+type Seen = { prompt: string; system: string; source(labelPart: string): string; currentReport: string; reportFor(content: string): string | null; selectedTarget: { title: string; statement: string } | null };
+
+const unescapePrompt = (v: string) => v.replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 
 function seen(request: InferenceRequest): Seen {
   const prompt = request.messages[1].content;
@@ -163,6 +167,10 @@ function seen(request: InferenceRequest): Seen {
       return id;
     },
     currentReport: prompt.match(/<current_question[^>]* report_id="(R\d+)"/)?.[1] ?? "",
+    selectedTarget: (() => {
+      const m = prompt.match(/<selected_target title="([^"]*)" statement="([^"]*)">/);
+      return m ? { title: unescapePrompt(m[1]), statement: unescapePrompt(m[2]) } : null;
+    })(),
     reportFor(content) {
       const line = prompt.split("\n").find((l) => l.startsWith("<turn") && l.includes(content));
       return line?.match(/report_id="(R\d+)"/)?.[1] ?? null;
@@ -176,7 +184,8 @@ function goodBrief(s: Seen, patch: (o: ExecutionBriefModelOutput) => void = () =
   const decision = s.source("Decision — Invoice exports must exclude voided invoices");
   const out: ExecutionBriefModelOutput = {
     capabilityFit: "fits",
-    target: { title: "Implement P14 — invoice export", statement: "Build the CSV invoice export described in milestone P14.", sourceAliases: [p14], reportAliases: [] },
+    // A compliant model echoes the server-owned target exactly when one is given.
+    target: s.selectedTarget ? { ...s.selectedTarget, sourceAliases: [p14], reportAliases: [] } : { title: "Implement P14 — invoice export", statement: "Build the CSV invoice export described in milestone P14.", sourceAliases: [p14], reportAliases: [] },
     objective: { text: "Users can export one billing period's invoices as CSV from the billing page.", origin: "project_record", sourceAliases: [p14], reportAliases: [] },
     whyNow: { text: "P14 is the next planned milestone after the billing-period work.", sourceAliases: [p14], reportAliases: [] },
     knownContext: [{ text: "Milestone P14 Invoice export is planned with a target of 2026-10-15.", sourceAliases: [p14] }],
@@ -351,7 +360,10 @@ test("A4: over-limit narrative is dropped whole, never clipped; an over-long tar
   assert.ok(!allStrings(b).some((x) => x.includes("yyyy") || x.includes("zzzz")));
   assert.ok(b.provenance.citations.droppedItems >= 2);
   assert.equal(b.provenance.groundingAdjusted, true);
-  const long = await preparedBrief((o) => (o.target.title = "t".repeat(L.titleChars + 1)));
+  // Where the model's target is authoritative (a described current request), an over-long one is removed.
+  const store = memoryStore({ exists: false });
+  const { deps } = turnDeps(p14ExportProject(), (s) => goodBrief(s, (o) => (o.target.title = "t".repeat(L.titleChars + 1))), store);
+  const long = completedBrief(await brief(deps, "Prepare an execution brief to add CSV invoice export.", { kind: "current_user_request" }));
   assert.equal(long.brief.target, null);
   assert.equal(long.brief.readiness, "needs_input");
 });
@@ -865,7 +877,6 @@ const INVENTED: Array<{ kind: string; token: string }> = [
 test("I1: an unsupported execution-shaped reference in ANY renderer-bound field removes the whole item and never echoes the token", async () => {
   type Patch = (o: ExecutionBriefModelOutput, t: string) => void;
   const fields: Array<{ name: string; patch: Patch; gone: (b: ExecutionBriefV1) => boolean }> = [
-    { name: "target", patch: (o, t) => (o.target.statement = `Build it in ${t}.`), gone: (b) => b.target === null },
     { name: "objective", patch: (o, t) => (o.objective.text = `Export CSV via ${t}.`), gone: (b) => b.objective === null },
     { name: "whyNow", patch: (o, t) => (o.whyNow.text = `Because ${t} is next.`), gone: (b) => b.whyNow === null },
     { name: "knownContext", patch: (o, t) => (o.knownContext[0].text = `Work is tracked in ${t}.`), gone: (b) => b.knownContext.length === 0 },
@@ -890,6 +901,27 @@ test("I1: an unsupported execution-shaped reference in ANY renderer-bound field 
       assert.ok(b.provenance.citations.unsupportedReferences >= 1);
       if (field.name === "target" || field.name === "objective") assert.equal(b.readiness, "needs_input");
     }
+  }
+});
+
+test("I1b: where the model's target is authoritative (current_user_request), an unsupported reference removes it whole", async () => {
+  for (const invented of INVENTED) {
+    const store = memoryStore({ exists: false });
+    const { deps } = turnDeps(p14ExportProject(), (s) => goodBrief(s, (o) => (o.target.statement = `Build it in ${invented.token}.`)), store);
+    const { brief: b } = completedBrief(await brief(deps, "Prepare an execution brief to add CSV invoice export.", { kind: "current_user_request" }));
+    assert.equal(b.target, null, invented.kind);
+    assert.equal(b.readiness, "needs_input");
+    assert.equal(JSON.stringify(b).toLowerCase().includes(invented.token.toLowerCase().replace(/\/$/, "")), false);
+    assert.ok(b.unknowns.some((u) => u.fact.toLowerCase().startsWith(invented.kind.toLowerCase())));
+  }
+});
+
+test("I1c: on a prior-Recommendation brief, an invented reference in the MODEL's target never reaches the brief — the target is server-owned", async () => {
+  for (const invented of INVENTED) {
+    const { brief: b } = await preparedBrief((o) => (o.target.statement = `Build it in ${invented.token}.`));
+    assert.equal(b.target!.statement, "Implement P14 invoice export next.");
+    assert.equal(JSON.stringify(b).toLowerCase().includes(invented.token.toLowerCase().replace(/\/$/, "")), false, invented.kind);
+    assert.equal(b.readiness, "needs_input");
   }
 });
 
@@ -1183,7 +1215,7 @@ test("N5: a guard that throws fails closed at every boundary", async () => {
   const request = { messages: [{ role: "system", content: "" }, { role: "user", content: "" }] } as unknown as InferenceRequest;
   void request;
   const s1 = context.sources.find((s) => s.family === "MILESTONE" && s.label.includes("P14"))!.alias;
-  const output = goodBrief({ prompt: "", system: "", source: () => s1, currentReport: "R1", reportFor: () => null });
+  const output = goodBrief({ prompt: "", system: "", source: () => s1, currentReport: "R1", reportFor: () => null, selectedTarget: null });
   const grounded = groundExecutionBrief({ output, context, question: "q", generatedAt: FIXTURE_NOW.toISOString(), targetRef: { kind: "current_user_request" }, scanNarrative: () => { throw new Error("boom"); } });
   assert.equal(grounded.objective, null, "boundary 1: a throwing scan removes the item");
   assert.equal(grounded.acceptanceCriteria.length, 0);
@@ -1235,9 +1267,8 @@ test("O1: renderer semantic parity — same banner, items, markers, unknowns and
     assert.match(top, /manual handoff/);
     assert.match(top, /not an authorization to execute, merge or deploy/i);
     for (const item of items) {
-      const line = text.split("\n").find((l) => l.includes(item.text));
-      assert.ok(line, `${renderer}: carries "${item.text}"`);
-      assert.ok(line!.includes(item.marker), `${renderer}: "${item.text}" keeps ${item.marker}`);
+      assert.ok(text.includes(item.text), `${renderer}: carries "${item.text}"`);
+      assert.ok(text.split("\n").some((l) => l.includes(item.text) && l.includes(item.marker)), `${renderer}: "${item.text}" keeps ${item.marker}`);
     }
     // A suggested criterion is never an unmarked requirement.
     assert.doesNotMatch(text, /Done when: An empty period/);
@@ -1544,11 +1575,13 @@ test("R2-4: negative control — the model substitutes unrelated, currently-supp
       o.objective = { text: "The billing-period model is complete.", origin: "project_record", sourceAliases: [other], reportAliases: [] };
     },
   });
-  // Every item is well grounded in CURRENT records — yet it is not the selected work.
-  assert.equal(b.target!.sourceIds.includes(P14_SOURCE), false);
-  assert.equal(b.provenance.groundingAdjusted, false);
+  // Every item is well grounded in CURRENT records — yet it is not the selected work. The
+  // canonical target stays the selected Recommendation, server-owned (final review).
+  assert.equal(b.target!.statement, "Implement P14 invoice export next.");
+  assert.deepEqual(b.target!.sourceIds, [P14_SOURCE]);
+  assert.equal(JSON.stringify(b.target).includes("P13"), false);
   assert.equal(b.readiness, "needs_input");
-  assert.ok(b.unknowns.some((u) => u.fact === RECONFIRM && u.blocking));
+  assert.ok(b.unknowns.some((u) => u.fact === TARGET_INCONSISTENT_UNKNOWN.fact && u.blocking));
 });
 
 test("R2-5: a precise reference in the recommendation that nothing current supplies → needs_input", async () => {
@@ -1687,49 +1720,83 @@ function continuityOf(b: ExecutionBriefV1) {
   return b.unknowns.some((u) => u.fact === RECONFIRM) ? "reconfirm" : "ok";
 }
 
-test("C1: incidental-anchor laundering — a P13 target citing the P14 anchor AND P13 is refused (the old `some` rule accepted it)", async () => {
+const SELECTED = "Implement P14 invoice export next.";
+const INCONSISTENT = TARGET_INCONSISTENT_UNKNOWN.fact;
+const unknownFacts = (b: ExecutionBriefV1) => b.unknowns.map((u) => u.fact);
+
+/** Asserts the canonical target is the selected Recommendation, server-owned, whatever the model wrote. */
+function assertServerOwnedTarget(b: ExecutionBriefV1, forbidden?: string) {
+  assert.deepEqual({ title: b.target!.title, statement: b.target!.statement }, { title: SELECTED, statement: SELECTED });
+  assert.deepEqual(b.target!.sourceIds, [P14_SOURCE], "support = the Recommendation's current anchor");
+  assert.deepEqual(b.target!.reportedTurnIds, []);
+  if (forbidden) assert.equal(JSON.stringify(b).includes(forbidden), false, "the model's target prose is never persisted");
+}
+
+test("T1: lexical laundering — 'Rewrite authentication for P14 invoice export.' citing only P14 is never the target", async () => {
   const { brief: b, reply } = await continuityBrief({
-    patch: (o, s) => {
-      const p14 = s.source("Milestone — P14 Invoice export");
-      const p13 = s.source("Milestone — P13 Billing-period model");
-      o.target = { title: "Implement P13 billing-period model", statement: "Finish the P13 billing-period model.", sourceAliases: [p14, p13], reportAliases: [] };
-    },
+    recommendation: SELECTED,
+    patch: (o, s) => (o.target = { title: "Rewrite authentication for P14 invoice export.", statement: "Rewrite authentication for P14 invoice export.", sourceAliases: [s.source("Milestone — P14 Invoice export")], reportAliases: [] }),
   });
-  // Negative control: the pre-fix predicate (target cites SOME anchor) would have passed.
-  const oldRule = [...b.target!.sourceIds, ...b.target!.reportedTurnIds].some((id) => id === P14_SOURCE);
-  assert.equal(oldRule, true, "the laundered target does cite the original anchor");
+  assertServerOwnedTarget(b, "Rewrite authentication");
   assert.equal(b.readiness, "needs_input");
-  assert.equal(continuityOf(b), "reconfirm");
-  assert.deepEqual(b.targetRef, { ...recTarget(reply), resolvedBy: "explicit" }, "no retarget");
-  assert.ok(b.target!.title.includes("P13"), "the draft is kept as written — nothing stripped or rewritten");
+  assert.ok(unknownFacts(b).includes(INCONSISTENT));
+  assert.equal(b.unknowns.find((u) => u.fact === INCONSISTENT)!.why.includes("authentication"), false, "the warning never echoes the mismatching prose");
+  assert.deepEqual(b.targetRef, { ...recTarget(reply), resolvedBy: "explicit" });
 });
 
-test("C1b: a new work-item identity in the target fails even when it cites ONLY the original anchor", async () => {
+test("T2: dangerous scope expansion keeping the identity words — 'Delete customer data for P14 invoice export.' — fails closed", async () => {
   const { brief: b } = await continuityBrief({
-    patch: (o, s) => (o.target = { title: "Implement P15 reconciliation", statement: "Build the P15 invoice export reconciliation.", sourceAliases: [s.source("Milestone — P14 Invoice export")], reportAliases: [] }),
+    recommendation: SELECTED,
+    patch: (o, s) => (o.target = { title: "Delete customer data for P14 invoice export.", statement: "Delete customer data for P14 invoice export.", sourceAliases: [s.source("Milestone — P14 Invoice export")], reportAliases: [] }),
   });
+  assertServerOwnedTarget(b, "Delete customer data");
   assert.equal(b.readiness, "needs_input");
-  assert.equal(continuityOf(b), "reconfirm");
+  assert.ok(unknownFacts(b).includes(INCONSISTENT));
+  for (const renderer of EXECUTION_BRIEF_RENDERERS) assert.equal(renderExecutionBrief(b, renderer).includes("Delete customer data"), false);
 });
 
-test("C2: unrelated target prose citing only the original anchor — a citation alone never proves identity", async () => {
+test("T3: the exact server-owned target, unchanged snapshot → may proceed", async () => {
+  const { brief: b } = await continuityBrief({ recommendation: SELECTED });
+  assertServerOwnedTarget(b);
+  assert.equal(b.readiness, "handoff_ready");
+  assert.equal(unknownFacts(b).includes(INCONSISTENT) || unknownFacts(b).includes(RECONFIRM), false);
+  for (const renderer of EXECUTION_BRIEF_RENDERERS) assert.ok(renderExecutionBrief(b, renderer).includes(`[selected recommendation] ${SELECTED}`), renderer);
+});
+
+test("T4: grounded extra detail in the target is not a silent mutation — elaboration belongs in the other fields", async () => {
   const { brief: b } = await continuityBrief({
-    patch: (o, s) => (o.target = { title: "Rewrite authentication system", statement: "Replace the login and session handling.", sourceAliases: [s.source("Milestone — P14 Invoice export")], reportAliases: [] }),
+    recommendation: SELECTED,
+    patch: (o, s) => (o.target = { title: "Implement P14 CSV invoice export next.", statement: "Implement P14 CSV invoice export next.", sourceAliases: [s.source("Milestone — P14 Invoice export")], reportAliases: [] }),
   });
+  assertServerOwnedTarget(b, "Implement P14 CSV invoice export next.");
   assert.equal(b.readiness, "needs_input");
-  assert.equal(continuityOf(b), "reconfirm");
+  assert.ok(unknownFacts(b).includes(INCONSISTENT));
+  // The same detail as ELABORATION is fine: target exact, detail in scope/criteria.
+  const elaborated = await continuityBrief({ recommendation: SELECTED, patch: (o) => o.scope.inScope.push("CSV output format") });
+  assertServerOwnedTarget(elaborated.brief);
+  assert.equal(elaborated.brief.readiness, "handoff_ready");
+  assert.ok(elaborated.brief.scope.inScope.includes("CSV output format"));
 });
 
-test("C2b: target-identity rule — deterministic, conservative, no semantics", () => {
-  const rec = "Implement P14 invoice export next.";
-  assert.equal(targetKeepsRecommendationIdentity(rec, { title: "Implement P14 — invoice export", statement: "Build the CSV invoice export described in milestone P14." }), true);
-  assert.equal(targetKeepsRecommendationIdentity(rec, { title: "Implement P14 CSV export", statement: "CSV export of invoices for P14." }), true, "added grounded detail is fine");
-  assert.equal(targetKeepsRecommendationIdentity(rec, { title: "Implement P15", statement: "Invoice export for P15." }), false, "P14 → P15");
-  assert.equal(targetKeepsRecommendationIdentity(rec, { title: "Implement P14 and P15", statement: "Invoice export." }), false, "a second identity is new work");
-  assert.equal(targetKeepsRecommendationIdentity(rec, { title: "Rewrite authentication", statement: "Replace the login flow." }), false);
-  assert.equal(targetKeepsRecommendationIdentity("Implement invoice export", { title: "Implement invoice export", statement: "Invoices can be exported." }), true, "no identifiers: the substantive words carry it");
-  assert.equal(targetKeepsRecommendationIdentity("Implement invoice export", { title: "Improve dashboards", statement: "Faster charts." }), false);
-  assert.equal(targetKeepsRecommendationIdentity("Do it next.", { title: "Anything", statement: "Anything." }), false, "nothing to prove identity against");
+test("T5: model target aliases never add or remove target support — the server assembles it from current anchors", async () => {
+  const { brief: b } = await continuityBrief({
+    recommendation: SELECTED,
+    patch: (o, s) => (o.target = { ...s.selectedTarget!, sourceAliases: [s.source("Milestone — P14 Invoice export"), s.source("Milestone — P13 Billing-period model")], reportAliases: [s.currentReport] }),
+  });
+  assertServerOwnedTarget(b);
+  const none = await continuityBrief({ recommendation: SELECTED, patch: (o, s) => (o.target = { ...s.selectedTarget!, sourceAliases: [], reportAliases: [] }) });
+  assertServerOwnedTarget(none.brief);
+});
+
+test("T6: the canonical title rule — exact text when it fits, a fixed neutral label otherwise; the statement is always the exact text", () => {
+  assert.deepEqual(canonicalSelectedTarget(SELECTED), { title: SELECTED, statement: SELECTED });
+  const long = `Implement P14 ${"invoice export ".repeat(10)}next.`;
+  assert.ok(long.length > L.titleChars);
+  assert.deepEqual(canonicalSelectedTarget(long), { title: SELECTED_RECOMMENDATION_TITLE, statement: long });
+  assert.equal(canonicalSelectedTarget("x".repeat(L.titleChars)).title.length, L.titleChars, "the boundary is the brief title limit");
+  // The lexical identity heuristic is gone — it is not an authority boundary any more.
+  const src = strip(readFileSync("src/lib/project-brain/execution-brief/continuity.ts", "utf8"));
+  assert.doesNotMatch(src, /targetKeepsRecommendationIdentity|contentWords|NON_CONTENT|stem\(|WORK_ITEM_ID/);
 });
 
 test("C3: same evidenceId, changed persisted-reference snapshot → support_changed → needs_input", async () => {
@@ -1739,7 +1806,8 @@ test("C3: same evidenceId, changed persisted-reference snapshot → support_chan
   assert.equal(continuityOf(b), "reconfirm");
   const context = contextFor(p14ExportProject());
   const target = { title: "Implement P14 invoice export", statement: "Invoice export.", sourceIds: [P14_SOURCE], reportedTurnIds: [] };
-  const result = checkRecommendationContinuity({ grounded: { target }, context, anchors: { sources: [{ evidenceId: P14_SOURCE, snapshot: referenceSnapshot(stale) }], reports: [] }, recommendationText: "Implement P14 invoice export.", question: "q", generatedAt: FIXTURE_NOW.toISOString() });
+  void target;
+  const result = checkRecommendationContinuity({ context, anchors: { sources: [{ evidenceId: P14_SOURCE, snapshot: referenceSnapshot(stale) }], reports: [] }, recommendationText: "Implement P14 invoice export.", question: "q", generatedAt: FIXTURE_NOW.toISOString() });
   assert.deepEqual(result, { ok: false, reason: "support_changed" });
   // Every snapshot field matters: a changed excerpt alone is a change.
   const excerptOnly = { ...persistedReference(P14_SOURCE), excerpt: "status cancelled · superseded" };
@@ -1750,7 +1818,8 @@ test("C4: same evidenceId + same snapshot + target locked to it → may proceed"
   const context = contextFor(p14ExportProject());
   const target = { title: "Implement P14 invoice export", statement: "Build the P14 invoice export.", sourceIds: [P14_SOURCE], reportedTurnIds: [] };
   const anchors = { sources: [{ evidenceId: P14_SOURCE, snapshot: referenceSnapshot(persistedReference(P14_SOURCE)) }], reports: [] };
-  assert.deepEqual(checkRecommendationContinuity({ grounded: { target }, context, anchors, recommendationText: "Implement P14 invoice export next.", question: "q", generatedAt: FIXTURE_NOW.toISOString() }), { ok: true });
+  void target;
+  assert.deepEqual(checkRecommendationContinuity({ context, anchors, recommendationText: "Implement P14 invoice export next.", question: "q", generatedAt: FIXTURE_NOW.toISOString() }), { ok: true });
   // A JSON round-trip of the persisted reference (as stored in metadata) is the same snapshot.
   assert.equal(snapshotDigest(referenceSnapshot(JSON.parse(JSON.stringify(persistedReference(P14_SOURCE))))), snapshotDigest(referenceSnapshot(context.sources.find((s) => s.reference.evidenceId === P14_SOURCE)!.reference)));
 });
@@ -1786,12 +1855,13 @@ test("C6/C7: a report anchor must be the same authenticated user turn, still in 
   assert.equal(continuityOf(completedBrief(await brief(deps, BRIEF_TEXT, recTarget(absent.reply))).brief), "reconfirm", "C7: outside the bounded context");
 });
 
-test("C9: a target citing a user report that is not one of the Recommendation's anchors is not locked", async () => {
+test("C9: a report the model cites for the target is ignored — target support is only the Recommendation's anchors", async () => {
   const { brief: b } = await continuityBrief({
     before: ["P14 should also cover credit notes."],
     patch: (o, s) => (o.target = { ...o.target, reportAliases: [s.reportFor("credit notes")!] }),
   });
-  assert.equal(continuityOf(b), "reconfirm");
+  assert.deepEqual(b.target!.reportedTurnIds, []);
+  assert.deepEqual(b.target!.sourceIds, [P14_SOURCE]);
 });
 
 test("C10: the model contract itself locks a prior-Recommendation target to the surviving anchors' aliases", async () => {
@@ -1801,6 +1871,10 @@ test("C10: the model contract itself locks a prior-Recommendation target to the 
   const p14Alias = seen(calls[0]).source("Milestone — P14 Invoice export");
   assert.deepEqual(target.sourceAliases.items.enum, [p14Alias], "only the anchor's alias this turn");
   assert.equal(target.reportAliases.maxItems, 0, "the Recommendation cited no report");
+  const pinned = schema.properties.target.properties as unknown as Record<string, { enum?: string[] }>;
+  assert.deepEqual(pinned.title.enum, ["Implement P14 invoice export next."], "the server-owned title is pinned");
+  assert.deepEqual(pinned.statement.enum, ["Implement P14 invoice export next."], "the server-owned statement is pinned");
+  assert.match(calls[0].messages[1].content, /<selected_target title="Implement P14 invoice export next\." statement="Implement P14 invoice export next\.">/);
   const objective = schema.properties.objective.properties;
   assert.equal(objective.sourceAliases.items.enum, undefined, "other fields keep the open contract");
   assert.equal(calls[0].responseFormat!.jsonSchema!.strict, true);

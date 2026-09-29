@@ -109,7 +109,7 @@ export const EXECUTION_BRIEF_MODEL_SCHEMA: InferenceJsonSchema = {
  * still enforces the lock (continuity.ts rule 5) as defence in depth: unrelated target
  * support is refused, never stripped.
  */
-export function executionBriefModelSchema(targetLock?: { sourceAliases: string[]; reportAliases: string[] }): InferenceJsonSchema {
+export function executionBriefModelSchema(targetLock?: { sourceAliases: string[]; reportAliases: string[]; title?: string; statement?: string }): InferenceJsonSchema {
   if (!targetLock) return EXECUTION_BRIEF_MODEL_SCHEMA;
   const locked = (values: string[], max: number) =>
     values.length === 0 ? { type: "array", items: str, maxItems: 0 } : { type: "array", items: { type: "string", enum: [...new Set(values)] }, maxItems: Math.min(max, new Set(values).size) };
@@ -120,7 +120,14 @@ export function executionBriefModelSchema(targetLock?: { sourceAliases: string[]
       ...base,
       properties: {
         ...base.properties,
-        target: obj({ title: str, statement: str, sourceAliases: locked(targetLock.sourceAliases, L.sourceAliasesPerItem), reportAliases: locked(targetLock.reportAliases, L.reportAliasesPerItem) }),
+        // Final review: the server-owned target text is pinned too (single-value enums). The
+        // server still compares exactly after parsing and never persists the model's target.
+        target: obj({
+          title: targetLock.title === undefined ? str : { type: "string", enum: [targetLock.title] },
+          statement: targetLock.statement === undefined ? str : { type: "string", enum: [targetLock.statement] },
+          sourceAliases: locked(targetLock.sourceAliases, L.sourceAliasesPerItem),
+          reportAliases: locked(targetLock.reportAliases, L.reportAliasesPerItem),
+        }),
       },
     },
   };

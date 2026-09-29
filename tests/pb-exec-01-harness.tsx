@@ -58,12 +58,19 @@ const alias = (prompt: string, labelPart: string) => {
 };
 const reportFor = (prompt: string, content: string) => prompt.split("\n").find((l) => l.startsWith("<turn") && l.includes(content))?.match(/report_id="(R\d+)"/)?.[1] ?? "R1";
 
+function selectedTarget(prompt: string): { title: string; statement: string } | null {
+  const m = prompt.match(/<selected_target title="([^"]*)" statement="([^"]*)">/);
+  const un = (v: string) => v.replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  return m ? { title: un(m[1]), statement: un(m[2]) } : null;
+}
+
 function good(prompt: string): ExecutionBriefModelOutput {
   const p14 = alias(prompt, "Milestone — P14 Invoice export");
   const decision = alias(prompt, "Decision — Invoice exports must exclude voided invoices");
   return {
     capabilityFit: "fits",
-    target: { title: "Implement P14 — invoice export", statement: "Build the CSV invoice export described in milestone P14.", sourceAliases: [p14], reportAliases: [] },
+    // A compliant model echoes the server-owned target (final review) when one is given.
+    target: { ...(selectedTarget(prompt) ?? { title: "Implement P14 — invoice export", statement: "Build the CSV invoice export described in milestone P14." }), sourceAliases: [p14], reportAliases: [] },
     objective: { text: "Users can export one billing period's invoices as CSV from the billing page.", origin: "project_record", sourceAliases: [p14], reportAliases: [] },
     whyNow: { text: "P14 is the next planned milestone.", sourceAliases: [p14], reportAliases: [] },
     knownContext: [{ text: "Milestone P14 Invoice export is planned with a target of 2026-10-15.", sourceAliases: [p14] }],

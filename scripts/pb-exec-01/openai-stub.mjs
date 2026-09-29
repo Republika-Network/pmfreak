@@ -40,9 +40,13 @@ function brief(prompt) {
   const reports = [...prompt.matchAll(/<turn role="user"[^>]* report_id="(R\d+)"[^>]*>([\s\S]*?)<\/turn>/g)].map((m) => ({ id: m[1], text: decode(m[2]) }));
   const progress = [...reports].reverse().find((r) => /\b(merged|clean|deployed|finished)\b/i.test(r.text));
   const title = main ? main.line.split(":")[0].replace(/^[^—]+—\s*/, "") : "the selected work";
+  // A prior-Recommendation target is server-owned: echo it exactly, as the schema requires.
+  const selected = /<selected_target title="([^"]*)" statement="([^"]*)">/.exec(prompt);
   return {
     capabilityFit: "fits",
-    target: { title: `[stub model] ${title}`.slice(0, 120), statement: `Deliver ${title} as recorded in the project.`.slice(0, 400), sourceAliases: main ? [main.id] : [], reportAliases: [] },
+    target: selected
+      ? { title: decode(selected[1]), statement: decode(selected[2]), sourceAliases: [], reportAliases: [] }
+      : { title: `[stub model] ${title}`.slice(0, 120), statement: `Deliver ${title} as recorded in the project.`.slice(0, 400), sourceAliases: main ? [main.id] : [], reportAliases: [] },
     objective: { text: `The work recorded as ${title} is complete and verified.`.slice(0, 600), origin: main ? "project_record" : "suggested", sourceAliases: main ? [main.id] : [], reportAliases: [] },
     whyNow: { text: "It is the open item the latest answer recommended.", sourceAliases: main ? [main.id] : [], reportAliases: [] },
     knownContext: main ? [{ text: `On record: ${main.line.replace(/^[^:]+:\s*/, "")}`.slice(0, 280), sourceAliases: [main.id] }] : [],

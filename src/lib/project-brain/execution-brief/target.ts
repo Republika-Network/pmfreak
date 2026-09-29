@@ -206,6 +206,36 @@ export type RecommendationReportAnchor = { turnId: string; createdAt: string };
  */
 export type RecommendationAnchors = { sources: RecommendationSourceAnchor[]; reports: RecommendationReportAnchor[] };
 
+/**
+ * The selected prior Recommendation as TARGET IDENTITY (final review): the server — not the
+ * model — owns what work was selected. Built only from a row that passed validation (row,
+ * scope, RECOMMENDATION). Identity data only: never Evidence, never a source reference,
+ * never known context, never project state, never provenance.
+ */
+export type SelectedRecommendationTarget = {
+  assistantTurnId: string;
+  statementId: string;
+  recommendationText: string;
+  anchors: RecommendationAnchors;
+};
+
+/** Brief title limit (mirrors EXECUTION_BRIEF_OUTPUT_LIMITS.titleChars; kept here so this module stays browser-safe). */
+const TARGET_TITLE_CHARS = 120;
+export const SELECTED_RECOMMENDATION_TITLE = "Selected Project Brain recommendation";
+
+/**
+ * The canonical, deterministic target text of a selected Recommendation:
+ *   statement = the exact persisted Recommendation text;
+ *   title     = that same text when it fits the title limit, else a fixed neutral label.
+ * No summarizing, no rewriting, no truncation that could change meaning.
+ */
+export function canonicalSelectedTarget(recommendationText: string): { title: string; statement: string } {
+  return {
+    title: recommendationText.length <= TARGET_TITLE_CHARS ? recommendationText : SELECTED_RECOMMENDATION_TITLE,
+    statement: recommendationText,
+  };
+}
+
 function statementsOf(row: ContextMessageRow): PersistedStatement[] | null {
   const meta = record(record(row.metadata)?.projectBrain);
   if (!meta || !Array.isArray(meta.statements)) return null;

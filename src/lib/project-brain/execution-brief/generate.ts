@@ -20,9 +20,9 @@ import type { InferenceRequest, InferenceResponse } from "@/lib/ai/inference/typ
 import type { ProjectBrainContext } from "../conversation/context-types";
 import type { ProjectContextScope } from "../types";
 import { assembleExecutionBrief, ExecutionBriefAssemblyError } from "./assemble";
-import { checkRecommendationContinuity, withRecommendationContinuity } from "./continuity";
+import { applySelectedTarget, checkRecommendationContinuity } from "./continuity";
 import { groundExecutionBrief, reportTextsOf } from "./ground";
-import type { RecommendationAnchors } from "./target";
+import { canonicalSelectedTarget, type RecommendationAnchors, type SelectedRecommendationTarget } from "./target";
 import { buildExecutionBriefMessages, recommendationAnchorAliases } from "./prompt";
 import { extractReportedRepositoryContext } from "./repository-context";
 import { EXECUTION_BRIEF_INFERENCE, executionBriefModelSchema, parseExecutionBriefModelOutput } from "./schema";
@@ -61,6 +61,17 @@ export function executionBriefReplyContent(brief: Pick<ExecutionBriefV1, "readin
 
 export async function generateExecutionBrief(input: ExecutionBriefGenerationInput): Promise<ExecutionBriefGenerationResult> {
   const { scope, context, userMessage } = input;
+  // Final review: a prior-Recommendation target is SERVER-OWNED identity.
+  const selected: SelectedRecommendationTarget | null =
+    input.targetRef.kind === "project_brain_recommendation"
+      ? {
+          assistantTurnId: input.targetRef.assistantTurnId,
+          statementId: input.targetRef.statementId,
+          recommendationText: input.recommendationText ?? "",
+          anchors: input.recommendationAnchors ?? { sources: [], reports: [] },
+        }
+      : null;
+  const selectedText = selected ? canonicalSelectedTarget(selected.recommendationText) : null;
   const response = await input.infer({
     moduleId: input.moduleId,
     workspaceId: scope.workspaceId,
@@ -69,11 +80,11 @@ export async function generateExecutionBrief(input: ExecutionBriefGenerationInpu
     actorType: "user",
     dataSensitivity: "confidential",
     chainDepth: 0,
-    messages: buildExecutionBriefMessages({ context, question: userMessage.content, targetRef: input.targetRef, recommendationText: input.recommendationText, recommendationAnchors: input.recommendationAnchors, asOf: input.generatedAt }),
+    messages: buildExecutionBriefMessages({ context, question: userMessage.content, targetRef: input.targetRef, recommendationText: input.recommendationText, recommendationAnchors: input.recommendationAnchors, selectedTarget: selectedText, asOf: input.generatedAt }),
     // A prior-Recommendation target may cite only that Recommendation's surviving anchors.
     responseFormat: {
       type: "json_schema",
-      jsonSchema: executionBriefModelSchema(input.targetRef.kind === "project_brain_recommendation" ? recommendationAnchorAliases(context, input.recommendationAnchors) : undefined),
+      jsonSchema: executionBriefModelSchema(selectedText ? { ...recommendationAnchorAliases(context, input.recommendationAnchors), ...selectedText } : undefined),
     },
     temperature: EXECUTION_BRIEF_INFERENCE.temperature,
     maxTokens: EXECUTION_BRIEF_INFERENCE.maxTokens,
@@ -91,20 +102,21 @@ export async function generateExecutionBrief(input: ExecutionBriefGenerationInpu
   if (!parsed) return { ok: false, stage: "schema" };
 
   try {
-    let grounded = groundExecutionBrief({ output: parsed, context, question: userMessage.content, generatedAt: input.generatedAt, targetRef: input.targetRef });
-    if (input.targetRef.kind === "project_brain_recommendation") {
-      // The brief must still be about the SELECTED work (continuity.ts). A failure never
-      // retargets: it adds a blocking "Reconfirm the selected recommendation" unknown.
+    let grounded = groundExecutionBrief({ output: parsed, context, question: userMessage.content, generatedAt: input.generatedAt, targetRef: input.targetRef, selectedTarget: selectedText ?? undefined });
+    if (selected) {
+      // Continuity of the selected work's CURRENT support (continuity.ts rules 2–5), then the
+      // server-owned canonical target (rules 6–8). Never a retarget; the model's target prose
+      // is never persisted.
       const continuity = checkRecommendationContinuity({
-        grounded,
         context,
-        anchors: input.recommendationAnchors ?? { sources: [], reports: [] },
-        recommendationText: input.recommendationText ?? "",
+        anchors: selected.anchors,
+        recommendationText: selected.recommendationText,
         question: userMessage.content,
         generatedAt: input.generatedAt,
       });
       if (!continuity.ok) console.warn(JSON.stringify({ event: "project_brain.execution_brief.target_unconfirmed", projectId: scope.projectId, reason: continuity.reason }));
-      grounded = withRecommendationContinuity(grounded, continuity);
+      if (grounded.modelTargetMatches === false) console.warn(JSON.stringify({ event: "project_brain.execution_brief.target_inconsistent", projectId: scope.projectId }));
+      grounded = applySelectedTarget(grounded, { selected, context, continuity });
     }
     const reportTexts = reportTextsOf(context, userMessage.content).map((r) => ({ turnId: r.report.reference.turnId, text: r.text }));
     const repositoryContext = extractReportedRepositoryContext(reportTexts);

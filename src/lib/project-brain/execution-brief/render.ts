@@ -31,6 +31,9 @@ export const ORIGIN_MARKER: Readonly<Record<BriefOrigin, string>> = {
   policy: "[policy]",
 };
 
+/** The marker of a server-owned prior-Recommendation target. */
+export const SELECTED_MARKER = "[selected recommendation]";
+
 const READINESS_TEXT = {
   handoff_ready: "Handoff ready",
   needs_input: "NEEDS INPUT — resolve the open inputs below before acting",
@@ -77,7 +80,13 @@ export function briefRenderModel(brief: ExecutionBriefV1): BriefRenderModel {
       key: "target",
       title: "Target",
       items: brief.target
-        ? [{ marker: supportMarker(brief.target.sourceIds, brief.target.reportedTurnIds), text: `${brief.target.title} — ${brief.target.statement}` }]
+        ? [
+            brief.targetRef.kind === "project_brain_recommendation"
+              ? // Server-owned: the selected recommendation's exact text — prior AI output that
+                // identifies the work, never a project fact (final review).
+                { marker: SELECTED_MARKER, text: brief.target.title === brief.target.statement ? brief.target.statement : `${brief.target.title} — ${brief.target.statement}` }
+              : { marker: supportMarker(brief.target.sourceIds, brief.target.reportedTurnIds), text: `${brief.target.title} — ${brief.target.statement}` },
+          ]
         : [],
       empty: "Not established — see open inputs.",
     },

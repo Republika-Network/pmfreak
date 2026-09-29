@@ -226,6 +226,13 @@ export async function runCase(c: Case, complete: (request: InferenceRequest) => 
       c.text,
     ].join("\n");
     checks.push(...unsupportedPrecision(brief, suppliedText));
+    // Server-owned target (final review): the persisted target IS the selected Recommendation,
+    // and a compliant model echoed it exactly (no false target mismatch).
+    if (brief.targetRef.kind === "project_brain_recommendation") {
+      const selectedText = c.target === "recommendation" || c.target === "phrase" ? c.recommendations[0] : null;
+      if (selectedText && brief.target?.statement !== selectedText) checks.push("persisted target is not the selected recommendation");
+      if (brief.unknowns.some((u) => u.fact.startsWith("Project Brain could not prepare instructions consistently"))) checks.push("false target mismatch");
+    }
     checks.push(...(c.check?.(brief) ?? []));
   }
   return {

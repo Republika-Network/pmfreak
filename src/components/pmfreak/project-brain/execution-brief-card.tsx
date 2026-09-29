@@ -167,7 +167,14 @@ export function ExecutionBriefCard({ brief, variant = "light", initialRenderer =
       <div className="mt-3 space-y-3">
         {brief.target ? (
           <Section title="Target" testId="execution-brief-target">
-            <p className={wrap}>{brief.target.statement}</p>
+            <p className={wrap}>
+              {brief.targetRef.kind === "project_brain_recommendation" ? (
+                <span className={`mr-1.5 inline-block rounded-full border px-1.5 text-[10px] font-medium ${styles.chip}`} data-origin="selected_recommendation">
+                  Selected recommendation
+                </span>
+              ) : null}
+              {brief.target.statement}
+            </p>
           </Section>
         ) : null}
         <Section title="Objective" testId="execution-brief-objective">

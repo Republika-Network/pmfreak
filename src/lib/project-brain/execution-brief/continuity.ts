@@ -1,43 +1,37 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Execution Brief — selected-Recommendation continuity (PB-EXEC-01 review P1-2, final review)
+// Execution Brief — selected-Recommendation target (PB-EXEC-01 review P1-2, final reviews)
 //
 // The selected prior Recommendation IDENTIFIES the work; it is earlier AI output, never a
-// source or evidence. The brief must stay about THAT work: the model must not be able to
-// prepare different work under the same targetRef — neither by citing other records, nor by
-// citing the original anchor incidentally beside unrelated support, nor after the record it
-// rested on changed.
+// source or evidence. The SERVER owns the target identity: the model cannot say what work
+// was selected — it only prepares that work.
 //
-// Deterministic — no model call, no embedding, no semantic matching. A prior-Recommendation
-// brief is continuity-valid only if ALL of:
-//   1. the Recommendation had at least one source or report anchor;
-//   2. every anchor is still in the CURRENT bounded context (sources in this turn's
-//      <project_context>; the same authenticated user turn, same createdAt, in the report map);
-//   3. every source anchor's persisted-reference SNAPSHOT (sha256 of the canonical
+//   1. assistantTurnId + statementId select ONE validated persisted RECOMMENDATION (target.ts);
+//   2. it cited at least one source or report anchor;
+//   3. every anchor is still in the CURRENT bounded context (the same authenticated user
+//      turn, same createdAt, for a report);
+//   4. every source anchor's persisted-reference SNAPSHOT digest (sha256 of the canonical
 //      evidenceId, sourceSystem, title, evidenceType, recordedAt, excerpt, authorityLevel,
-//      isPrimary, workspaceId, projectId) equals the snapshot of the current reference;
-//   4. the grounded target has support;
-//   5. EVERY id supporting the target is one of those surviving anchors (a target lock:
-//      other fields may cite any current record; the target may not);
-//   6. the target introduces no new work-item identity: every identifier in its title and
-//      statement (typed references plus letter+digit work-item ids such as P14 / INV-42) is
-//      one the Recommendation named; if the Recommendation names identifiers the target names
-//      at least one of them; and the target repeats the Recommendation's substantive words
-//      (at least min(2, n) of its n content words) — so a citation alone never proves identity;
-//   7. every precise reference in the Recommendation text is still supplied by the request.
-// Otherwise the blocking unknown "Reconfirm the selected recommendation" makes the brief
-// needs_input; targetRef never changes; nothing is stripped or rewritten.
+//      isPrimary, workspaceId, projectId) equals that of the current reference;
+//   5. every precise reference in the Recommendation text is still supplied;
+//   6. the canonical target TEXT is server-owned: statement = the exact Recommendation text,
+//      title = that text when it fits, else a fixed neutral label (target.ts);
+//   7. the canonical target SUPPORT is the Recommendation's current, unchanged anchors;
+//   8. model output cannot replace 6 or 7. Its target is only compared for exact equality;
+//      a mismatch is a blocking inconsistency, and the mismatching prose is never persisted.
 //
-// Honest limit: rule 3 proves the persisted REFERENCE is unchanged (its title, excerpt,
-// recordedAt, …), not the semantic entailment of source content beyond that excerpt. Families
-// whose recordedAt follows updated_at make any edit a reconfirmation — the safe side. A
-// conservative false negative (reconfirming still-valid work) is preferred to preparing the
-// wrong work. SERVER ONLY (hashing).
+// Rules 2–5 failing → blocking "Reconfirm the selected recommendation"; an inexact model
+// target → blocking "Project Brain could not prepare instructions consistently…". Either
+// way the brief is needs_input, targetRef never changes, and the canonical target shown is
+// still the selected Recommendation. No lexical or semantic similarity is used anywhere.
+//
+// Honest limit: rule 4 proves the persisted REFERENCE is unchanged, not the semantic
+// entailment of source content beyond its excerpt. SERVER ONLY (hashing).
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { ProjectBrainContext } from "../conversation/context-types";
-import { extractExecutionReferences, STANDARD_CODE_FAMILIES, unsupportedReferenceChecker, type GroundedBrief } from "./ground";
+import type { ProjectBrainContext, ProjectBrainContextReport, ProjectBrainContextSource } from "../conversation/context-types";
+import { unsupportedReferenceChecker, type GroundedBrief } from "./ground";
 import { sha256Tag } from "./hash";
-import { referenceSnapshot, type RecommendationAnchors, type ReferenceSnapshot } from "./target";
+import { canonicalSelectedTarget, referenceSnapshot, type RecommendationAnchors, type ReferenceSnapshot, type SelectedRecommendationTarget } from "./target";
 
 export const RECONFIRM_RECOMMENDATION_UNKNOWN = {
   fact: "Reconfirm the selected recommendation",
@@ -46,79 +40,38 @@ export const RECONFIRM_RECOMMENDATION_UNKNOWN = {
   blocking: true,
 };
 
-export type RecommendationContinuityFailure =
-  | "no_original_support"
-  | "support_missing"
-  | "support_changed"
-  | "target_unsupported"
-  | "target_not_locked"
-  | "target_identity_changed"
-  | "unsupported_reference";
+export const TARGET_INCONSISTENT_UNKNOWN = {
+  fact: "Project Brain could not prepare instructions consistently for the selected recommendation.",
+  why: "The draft did not keep the selected recommendation as its target, so the selected recommendation is shown instead. Request the brief again before handing it off.",
+  resolveBy: "user" as const,
+  blocking: true,
+};
 
+export type RecommendationContinuityFailure = "no_original_support" | "support_missing" | "support_changed" | "unsupported_reference";
 export type RecommendationContinuity = { ok: true } | { ok: false; reason: RecommendationContinuityFailure };
 
-/** Rule 3: the digest of a persisted-reference snapshot. */
+/** Rule 4: the digest of a persisted-reference snapshot. */
 export function snapshotDigest(snapshot: ReferenceSnapshot): string {
   return sha256Tag(snapshot);
 }
 
-// ── Rule 6: deterministic target identity ──
-
-const WORK_ITEM_ID = /\b[a-z]{1,10}-?\d{1,5}\b/gi;
-/** Verbs and filler that name no particular work; never counted as the Recommendation's content. */
-const NON_CONTENT = new Set([
-  "implement", "implementing", "implementation", "build", "building", "create", "creating", "start", "starting", "finish", "finishing",
-  "complete", "completing", "deliver", "delivering", "develop", "developing", "make", "work", "working", "next", "then", "first", "prepare",
-  "continue", "focus", "should", "would", "could", "this", "that", "with", "from", "into", "onto", "before", "after", "their", "there",
-  "which", "what", "when", "where", "while", "because", "since", "about", "above", "below", "have", "will", "been", "being", "they",
-  "your", "ours", "also", "only", "still", "just", "more", "most", "some", "such", "than", "once", "each", "other", "these", "those",
-  "project", "recommend", "recommended", "recommendation", "priority", "task", "item", "milestone", "planned", "current", "currently",
-]);
-
-function identities(text: string): Set<string> {
-  const out = new Set<string>();
-  const typed = new Set(["code", "pr", "branch", "path", "sha", "url", "command"]);
-  for (const ref of extractExecutionReferences(text)) if (typed.has(ref.kind)) out.add(ref.token);
-  for (const m of text.matchAll(WORK_ITEM_ID)) {
-    const token = m[0].toLowerCase();
-    if (/^\d/.test(token)) continue;
-    if (STANDARD_CODE_FAMILIES.has(token.replace(/-?\d+$/, ""))) continue;
-    out.add(token);
+/** The anchors that are still present AND unchanged in the current context (rule 7's support). */
+function survivingAnchors(context: ProjectBrainContext, anchors: RecommendationAnchors): { sources: ProjectBrainContextSource[]; reports: ProjectBrainContextReport[] } {
+  const sources: ProjectBrainContextSource[] = [];
+  for (const a of anchors.sources) {
+    const current = context.sources.find((s) => s.reference.evidenceId === a.evidenceId);
+    if (current && snapshotDigest(a.snapshot) === snapshotDigest(referenceSnapshot(current.reference))) sources.push(current);
   }
-  return out;
+  const reports: ProjectBrainContextReport[] = [];
+  for (const a of anchors.reports) {
+    const current = (context.reports ?? []).find((r) => r.reference.turnId === a.turnId && r.reference.createdAt === a.createdAt);
+    if (current) reports.push(current);
+  }
+  return { sources, reports };
 }
 
-/** Minimal plural folding only ("invoices" → "invoice", "entries" → "entry"); no other stemming. */
-const stem = (word: string) => {
-  const w = word.toLowerCase();
-  if (w.endsWith("ies")) return `${w.slice(0, -3)}y`;
-  return w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w;
-};
-function contentWords(text: string): Set<string> {
-  return new Set(
-    text
-      .split(/[^\p{L}\p{N}]+/u)
-      .filter((w) => w.length >= 4 && /\p{L}/u.test(w) && !/\d/.test(w) && !NON_CONTENT.has(w.toLowerCase()))
-      .map(stem),
-  );
-}
-
-/** Rule 6. Exported for tests. */
-export function targetKeepsRecommendationIdentity(recommendationText: string, target: { title: string; statement: string }): boolean {
-  const targetText = `${target.title}\n${target.statement}`;
-  const recIds = identities(recommendationText);
-  const targetIds = identities(targetText);
-  for (const id of targetIds) if (!recIds.has(id)) return false; // no new identity
-  if (recIds.size > 0 && ![...targetIds].some((id) => recIds.has(id))) return false; // names the selected item
-  const recWords = contentWords(recommendationText);
-  const targetWords = contentWords(targetText);
-  if (recIds.size === 0 && recWords.size === 0) return false; // nothing to prove identity against
-  const shared = [...recWords].filter((w) => targetWords.has(w)).length;
-  return shared >= Math.min(2, recWords.size);
-}
-
+/** Rules 2–5. */
 export function checkRecommendationContinuity(input: {
-  grounded: Pick<GroundedBrief, "target">;
   context: ProjectBrainContext;
   anchors: RecommendationAnchors;
   recommendationText: string;
@@ -126,39 +79,52 @@ export function checkRecommendationContinuity(input: {
   generatedAt: string;
 }): RecommendationContinuity {
   const { anchors, context } = input;
-  // 1
   if (anchors.sources.length + anchors.reports.length === 0) return { ok: false, reason: "no_original_support" };
-  // 2
   const currentSources = new Map(context.sources.map((s) => [s.reference.evidenceId, s]));
-  const currentReports = new Map((context.reports ?? []).map((r) => [r.reference.turnId, r]));
   for (const a of anchors.sources) if (!currentSources.has(a.evidenceId)) return { ok: false, reason: "support_missing" };
   for (const a of anchors.reports) {
-    const report = currentReports.get(a.turnId);
+    const report = (context.reports ?? []).find((r) => r.reference.turnId === a.turnId);
     if (!report || report.reference.createdAt !== a.createdAt) return { ok: false, reason: "support_missing" };
   }
-  // 3
   for (const a of anchors.sources) {
-    const current = currentSources.get(a.evidenceId)!;
-    if (snapshotDigest(a.snapshot) !== snapshotDigest(referenceSnapshot(current.reference))) return { ok: false, reason: "support_changed" };
+    if (snapshotDigest(a.snapshot) !== snapshotDigest(referenceSnapshot(currentSources.get(a.evidenceId)!.reference))) return { ok: false, reason: "support_changed" };
   }
-  // 4
-  const target = input.grounded.target;
-  const support = target ? [...target.sourceIds, ...target.reportedTurnIds] : [];
-  if (!target || support.length === 0) return { ok: false, reason: "target_unsupported" };
-  // 5
-  const surviving = new Set([...anchors.sources.map((a) => a.evidenceId), ...anchors.reports.map((a) => a.turnId)]);
-  if (!support.every((id) => surviving.has(id))) return { ok: false, reason: "target_not_locked" };
-  // 6
-  if (!targetKeepsRecommendationIdentity(input.recommendationText, target)) return { ok: false, reason: "target_identity_changed" };
-  // 7
-  if (unsupportedReferenceChecker(context, input.question, input.generatedAt)(input.recommendationText) !== null) {
-    return { ok: false, reason: "unsupported_reference" };
-  }
+  if (unsupportedReferenceChecker(context, input.question, input.generatedAt)(input.recommendationText) !== null) return { ok: false, reason: "unsupported_reference" };
   return { ok: true };
 }
 
-/** A failed check adds the blocking reconfirm unknown (once). Nothing else changes. */
-export function withRecommendationContinuity(grounded: GroundedBrief, result: RecommendationContinuity): GroundedBrief {
-  if (result.ok || grounded.unknowns.some((u) => u.fact === RECONFIRM_RECOMMENDATION_UNKNOWN.fact)) return grounded;
-  return { ...grounded, unknowns: [RECONFIRM_RECOMMENDATION_UNKNOWN, ...grounded.unknowns] };
+/**
+ * Rules 6–8: the canonical target is the server-owned selected Recommendation, supported by
+ * its current, unchanged anchors (added to provenance as the CURRENT records/reports they
+ * are — never the Recommendation itself). Blocking unknowns on any failure.
+ */
+export function applySelectedTarget(
+  grounded: GroundedBrief,
+  input: { selected: SelectedRecommendationTarget; context: ProjectBrainContext; continuity: RecommendationContinuity },
+): GroundedBrief {
+  const { title, statement } = canonicalSelectedTarget(input.selected.recommendationText);
+  const support = survivingAnchors(input.context, input.selected.anchors);
+  const sources = [...grounded.sources];
+  for (const s of support.sources) if (!sources.includes(s)) sources.push(s);
+  const reports = [...grounded.reports];
+  for (const r of support.reports) if (!reports.includes(r)) reports.push(r);
+  const unknowns = [...grounded.unknowns];
+  const add = (u: typeof RECONFIRM_RECOMMENDATION_UNKNOWN) => {
+    if (!unknowns.some((x) => x.fact === u.fact)) unknowns.unshift(u);
+  };
+  if (grounded.modelTargetMatches === false) add(TARGET_INCONSISTENT_UNKNOWN);
+  if (!input.continuity.ok) add(RECONFIRM_RECOMMENDATION_UNKNOWN);
+  return {
+    ...grounded,
+    target: {
+      title,
+      statement,
+      sourceIds: support.sources.map((s) => s.reference.evidenceId),
+      reportedTurnIds: support.reports.map((r) => r.reference.turnId),
+    },
+    targetRemoved: false,
+    sources,
+    reports,
+    unknowns,
+  };
 }

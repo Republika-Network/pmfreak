@@ -229,6 +229,8 @@ export type GroundedBrief = {
   /** Blocking gaps the server itself identified (readiness input). */
   targetRemoved: boolean;
   objectiveRemoved: boolean;
+  /** Prior-Recommendation briefs only: did the model echo the server-owned target exactly? null otherwise. */
+  modelTargetMatches: boolean | null;
 };
 
 export type GroundBriefInput = {
@@ -241,6 +243,12 @@ export type GroundBriefInput = {
   targetRef: ResolvedExecutionBriefTargetRef;
   /** Boundary-1 scanner; injectable only so tests can prove a throwing guard fails closed. */
   scanNarrative?: (text: string) => string[];
+  /**
+   * Final review: for a prior-Recommendation brief the SERVER owns the target (target.ts
+   * canonicalSelectedTarget). The model's target is then never grounded or used — it is
+   * only compared for exact equality; continuity.ts assigns the canonical target.
+   */
+  selectedTarget?: { title: string; statement: string };
 };
 
 type Field =
@@ -382,7 +390,12 @@ export function groundExecutionBrief(input: GroundBriefInput): GroundedBrief {
   // ── target ──
   let target: GroundedBrief["target"] = null;
   let targetRemoved = false;
-  {
+  let modelTargetMatches: boolean | null = null;
+  if (input.selectedTarget) {
+    // Server-owned target: the model's target prose and aliases are not authoritative and
+    // never persisted. Exact match only — no trimming, no similarity.
+    modelTargetMatches = output.target.title === input.selectedTarget.title && output.target.statement === input.selectedTarget.statement;
+  } else {
     const t = output.target;
     const r = screen([t.title, t.statement]);
     if (!t.title.trim() || !t.statement.trim() || tooLong(t.title, L.titleChars) || tooLong(t.statement, L.statementChars)) {
@@ -621,6 +634,7 @@ export function groundExecutionBrief(input: GroundBriefInput): GroundedBrief {
     groundingAdjusted,
     targetRemoved,
     objectiveRemoved,
+    modelTargetMatches,
   };
 }
 
