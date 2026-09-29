@@ -245,6 +245,14 @@ Consequences:
   least as strictly as an Agent Run (§10).
 - If PMFreak later wants a tool-using project agent, it must be a separate Agent Definition under
   ADR-PMF-027, not an upgrade of Project Brain.
+- **"Project Brain has no tools" is compatible with "Project Brain hosts governed human command
+  controls"** (CHAT-GOV-00, ADR-PMF-077, [`project-brain-governed-commands.md`](project-brain-governed-commands.md)).
+  A *tool* is an operation the model can invoke; Project Brain has none and gains none. A *governed
+  command control* is a UI control a human operates, rendered in the conversation thread, that calls
+  an existing canonical command endpoint (never `/brain/turns`). The model cannot press, select,
+  confirm or submit it and cannot supply its canonical ids. Throughout this document, a "separate
+  surface" for a command means a **separate command endpoint with separate authority**; it does not
+  require a separate screen.
 
 ---
 
@@ -1234,6 +1242,11 @@ at *delegate* level or above receives an answer explaining what it would require
 acted on, and in PB-EXEC-01 it never produces a control that bypasses a separate surface.
 Action names are conceptual here; PB-EXEC-02's ADR fixes them.
 
+The same one-command-per-authority-level rule governs every governed command control hosted in
+the conversation (CHAT-GOV-00, ADR-PMF-077): Recommendation → Decision, Decision → Action,
+Action → Task, Task → Execution and Execution → Outcome are separate commands, and no control
+performs more than one of them. An utterance never activates a control.
+
 ### 12.3 Approval matrix
 
 Danger classes are the canonical ones (*04-AI* §6). "Per-op" and "forbidden by default" entries
@@ -1380,6 +1393,11 @@ renderer in the UI.
 - PB-EXEC-01 does not call, read or write any `/api/agents/**` route or `src/lib/agents/**`
   module.
 - No composite endpoint: "generate brief and run" or "run and merge" is forbidden (ADR-PMF-030).
+- Hosting is not routing (CHAT-GOV-00, ADR-PMF-077). A governed command control may be *rendered*
+  inside the Project Brain conversation, but it calls an existing canonical command endpoint
+  (`/api/operational-flow`, `/api/execution-tasks/internal-execution`, and in PB-EXEC-02 the
+  execution surface) directly, as the human. It never goes through `/brain/turns`, and
+  `/brain/turns` gains no write operation and no request field that names a command.
 
 PB-EXEC-01 remains read-only because: brief generation is inference over already-authorized
 project context; for a successful persisted brief turn its only writes are the user transcript row
@@ -1713,3 +1731,4 @@ reported, not fixed, by PB-EXEC-00.
 | D16 | `objective` carries provenance; `handoff_ready` requires a `project_record` or `reported` objective (§9.4, §9.7) | Decided |
 | D17 | Every renderer keeps the AI-generated / manual-handoff / not-authorization banner and per-item epistemic status (§9.10) | Decided |
 | D18 | Ambiguous target: pre-turn target selection, nothing persisted, no brief; `brain_mode` unchanged; no migration (§9.2.1) | Decided |
+| D19 | The conversation may host human-operated governed command controls that call existing canonical command endpoints; they are not model tools, and "separate surface" means a separate command endpoint and authority, not a separate screen (§4, §12.2, §14) | Decided (CHAT-GOV-00, ADR-PMF-077) |

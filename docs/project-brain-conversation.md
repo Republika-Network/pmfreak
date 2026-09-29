@@ -427,6 +427,30 @@ PB-EXEC-01 is implemented. PB-EXEC-02 and PB-EXEC-03 are not implemented: there 
 execution, no repository integration and no Claude Code or Codex integration — the product
 prepares and copies text only.
 
+## Governed command controls (CHAT-GOV)
+
+Architecture: [`project-brain-governed-commands.md`](project-brain-governed-commands.md) (CHAT-GOV-00),
+ratified by [ADR-PMF-077](adr/ADR-PMF-077-chat-hosted-governed-command-controls.md). CHAT-GOV-00 is
+architecture only: no governed command control exists in the conversation yet.
+
+- **`/brain/turns` remains read-only permanently.** Chat-first does not change what a turn may
+  write (see *No write-back*).
+- **Project Brain itself receives no write tools, agent identity or grants.**
+- **The conversation surface MAY host structured human command controls.** They are rendered in
+  the thread beside replies, but they are a separate channel from the conversation.
+- **Those controls are not model tools.** A tool is something the model can invoke; a control is
+  something a human operates. No tool or command schema is ever given to the model.
+- **Controls call existing canonical server operations directly** — `POST /api/operational-flow`
+  and `POST /api/execution-tasks/internal-execution` — with the same payloads and authorization as
+  every other surface. There is no chat-specific write endpoint.
+- **The model cannot press, select, confirm or submit those controls.** Composer text ("go ahead",
+  "yes", "accept it") never executes a write; a deterministic intent layer may only focus a card,
+  open its confirmation or show a chooser.
+- **The model cannot manufacture canonical IDs.** Canonical references rendered beside replies must
+  be verified server-side, and cards render current canonical state, never transcript prose.
+- **One control, one command, one authority level.** No control performs more than one canonical
+  transition; composite operations such as "Accept and create action" are prohibited.
+
 ## Degraded mode
 
 Not entitled (no provider call), provider not configured, timeout, circuit open, quota/cost ceiling or invalid output →
@@ -443,6 +467,10 @@ The only writes behind a turn are the two transcript rows and the AI usage row t
 Outcome, Project Memory, vault nutrient, operational or intervention memory write exists on
 this path — pinned by `tests/pb-chat-01-project-brain-conversation.test.ts` (static and
 behavioural) and by the browser scenario's before/after row counts.
+
+This guarantee is about `/brain/turns` and it is permanent. Governed command controls hosted in the
+conversation (CHAT-GOV) do not weaken it: a control's write is issued by a human through a canonical
+command endpoint, never by a turn, and is recorded only in that command's canonical tables.
 
 ## Verification
 
