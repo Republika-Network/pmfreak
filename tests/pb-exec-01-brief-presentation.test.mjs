@@ -102,6 +102,18 @@ test("grounding adjusted: a visible notice; the removed item and its token never
   assert.match(section(html, "execution-brief-unknowns"), /A file path or directory that the project records and this conversation do not establish/);
 });
 
+test("withheld selected target: identity kept, no target section, the unsupported path never renders", () => {
+  const html = markup.withheld;
+  const brief = views.withheld.brain.executionBrief;
+  assert.equal(brief.target, null);
+  assert.equal(brief.targetRef.kind, "project_brain_recommendation");
+  assert.equal(section(html, "execution-brief-target"), null);
+  assert.ok(section(html, "execution-brief-grounding-notice"));
+  assert.match(section(html, "execution-brief-unknowns"), /Reconfirm the target without the unsupported execution detail/);
+  assert.equal(html.includes("src/not-established"), false);
+  for (const text of Object.values(rendered.withheld)) assert.equal(text.includes("src/not-established"), false);
+});
+
 test("Sources & verification lists the brief's cited records from its provenance", () => {
   const details = section(markup.ready, "project-brain-answer-details");
   assert.ok(details, "the disclosure row exists for a brief with cited records");

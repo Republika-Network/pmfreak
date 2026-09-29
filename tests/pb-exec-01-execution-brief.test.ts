@@ -76,7 +76,7 @@ import {
 import { EXECUTION_BRIEF_RENDERERS, EXECUTION_BRIEF_SERIALIZER_VERSION, type ExecutionBriefTargetRef, type ExecutionBriefV1 } from "../src/lib/project-brain/execution-brief/types";
 import { parseExecutionBriefV1 } from "../src/lib/project-brain/execution-brief/validate";
 import { persistedBriefVerifier, verifyPersistedExecutionBrief } from "../src/lib/project-brain/execution-brief/verify";
-import { checkRecommendationContinuity, snapshotDigest, TARGET_INCONSISTENT_UNKNOWN } from "../src/lib/project-brain/execution-brief/continuity";
+import { checkRecommendationContinuity, SELECTED_TARGET_WITHHELD_UNKNOWN, snapshotDigest, TARGET_INCONSISTENT_UNKNOWN } from "../src/lib/project-brain/execution-brief/continuity";
 import { exportSpecEvidence, FIXTURE_NOW, p14ExportProject, PROJECT, scope, USER, WS } from "./fixtures/pb-exec-01-projects";
 
 const OTHER_USER = "77777777-7777-4777-8777-777777777777";
@@ -1934,4 +1934,129 @@ test("W4: record-only reasoning and outcome statements are untouched (no false d
   assert.match(renderExecutionBrief(b, "generic"), /\[project record\] P14 is the next planned milestone/);
   const outcome = await preparedBrief((o) => (o.objective.text = "The invoice export is complete and all billing tests pass."));
   assert.equal(outcome.brief.objective!.origin, "project_record", "an outcome is not a current-state claim");
+});
+
+// ── Final review: a server-owned selected target still passes the renderer-safety boundary ──
+
+const WITHHELD = SELECTED_TARGET_WITHHELD_UNKNOWN.fact;
+
+/** Captures console.warn while `fn` runs. */
+async function withLogs<T>(fn: () => Promise<T>): Promise<{ value: T; logs: string }> {
+  const warn = console.warn;
+  const logs: string[] = [];
+  console.warn = (...args: unknown[]) => logs.push(args.map(String).join(" "));
+  try {
+    return { value: await fn(), logs: logs.join("\n") };
+  } finally {
+    console.warn = warn;
+  }
+}
+
+/** Identity kept, whole target withheld, nothing of `leak` anywhere a human or executor can see or copy. */
+function assertTargetWithheld(out: Awaited<ReturnType<typeof continuityBrief>>, leak: string, logs: string) {
+  const { brief: b, reply, result, view } = out;
+  assert.deepEqual(b.targetRef, { ...recTarget(reply), resolvedBy: "explicit" }, "identity is unchanged");
+  assert.equal(b.target, null, "the whole target is withheld — never edited token by token");
+  assert.equal(b.readiness, "needs_input");
+  assert.equal(b.provenance.groundingAdjusted, true);
+  const withheld = b.unknowns.find((u) => u.fact === WITHHELD);
+  assert.ok(withheld && withheld.blocking, "a blocking, non-echoing unknown");
+  assert.equal(unknownFacts(b).includes(INCONSISTENT), false, "no claim that the selected recommendation is shown instead");
+  assert.equal(JSON.stringify(b).includes(leak), false, "not in the canonical brief");
+  assert.equal(JSON.stringify(result.reply).includes(leak), false, "not in the persisted brief row");
+  assert.equal(JSON.stringify(view).includes(leak), false, "not in the transcript view");
+  for (const renderer of EXECUTION_BRIEF_RENDERERS) assert.equal(renderExecutionBrief(b, renderer).includes(leak), false, `${renderer}: not rendered, so never copied`);
+  assert.equal(logs.includes(leak), false, "never logged");
+  assert.match(logs, /project_brain\.execution_brief\.target_withheld/);
+}
+
+async function unsafeSelected(recommendation: string, before: string[] = []) {
+  const { value, logs } = await withLogs(() => continuityBrief({ recommendation, before }));
+  return { out: value, logs };
+}
+
+test("S1: an unsupported file path in the selected Recommendation never survives into the brief or any renderer", async () => {
+  const path = "src/not-established/export.ts";
+  const { out, logs } = await unsafeSelected(`Implement P14 in ${path}.`);
+  assertTargetWithheld(out, path, logs);
+  assert.ok(out.brief.provenance.citations.unsupportedReferences > 0);
+  assert.equal(continuityOf(out.brief), "reconfirm", "continuity also fails — a separate check");
+});
+
+test("S2: an unsupplied commit SHA in the selected Recommendation never survives", async () => {
+  const sha = "3f9c2ab7d41e";
+  const { out, logs } = await unsafeSelected(`Implement P14 on top of commit ${sha}.`);
+  assertTargetWithheld(out, sha, logs);
+  assert.ok(out.brief.provenance.citations.unsupportedReferences > 0);
+});
+
+test("S3: an unsupplied URL in the selected Recommendation never survives", async () => {
+  const url = "https://specs.example.test/p14-export";
+  const { out, logs } = await unsafeSelected(`Implement P14 as specified at ${url}.`);
+  assertTargetWithheld(out, "specs.example.test", logs);
+  assert.ok(out.brief.provenance.citations.unsupportedReferences > 0);
+});
+
+test("S4: an unsupplied concrete command in the selected Recommendation never survives", async () => {
+  const command = "npm run export:check";
+  const { out, logs } = await unsafeSelected(`Implement P14 and verify it with \`${command}\`.`);
+  assertTargetWithheld(out, command, logs);
+  assert.ok(out.brief.provenance.citations.unsupportedReferences > 0);
+});
+
+test("S5: a dangerous command the user DID supply is still never canonical target instructions", async () => {
+  const { out, logs } = await unsafeSelected("Implement P14 and then run `git push --force`.", ["After the export we run `git push --force` on the branch."]);
+  assertTargetWithheld(out, "push --force", logs);
+  assert.ok(out.brief.provenance.citations.blockedCommands > 0);
+  assert.equal(out.brief.provenance.citations.unsupportedReferences, 0, "supplied — this is a safety failure, not a precision one");
+  assert.equal(continuityOf(out.brief), "ok", "continuity holds; safety alone withholds the target");
+  for (const echo of ["git push", "--force"]) assert.equal(JSON.stringify(out.brief.unknowns).includes(echo), false, "the unknowns name the kind, never the command");
+});
+
+test("S6: a credential-like selected Recommendation never enters the persisted brief, a renderer or the clipboard path", async () => {
+  const secret = fake("AKIA", "IOSFODNN7EXAMPLE");
+  const { out, logs } = await unsafeSelected(`Implement P14 using key ${secret}.`);
+  assertTargetWithheld(out, secret, logs);
+  assert.ok(out.brief.provenance.citations.credentialFindings > 0);
+  assert.ok(out.brief.unknowns.some((u) => u.fact === "A credential-like value appeared in the draft"));
+});
+
+test("S7: a safe selected Recommendation keeps the exact server-owned target and may be handoff-ready", async () => {
+  const { brief: b } = await continuityBrief({ recommendation: SELECTED });
+  assertServerOwnedTarget(b);
+  assert.equal(b.readiness, "handoff_ready");
+  assert.equal(unknownFacts(b).includes(WITHHELD), false);
+  assert.equal(b.provenance.citations.unsupportedReferences + b.provenance.citations.blockedCommands + b.provenance.citations.credentialFindings, 0);
+  // A supplied, non-dangerous precise reference is fine too — the same rule as every field.
+  const supplied = await continuityBrief({ recommendation: "Implement P14 invoice export in src/billing/export.ts.", before: ["The P14 export code lives in src/billing/export.ts."] });
+  assert.equal(supplied.brief.target!.statement, "Implement P14 invoice export in src/billing/export.ts.");
+  assert.equal(unknownFacts(supplied.brief).includes(WITHHELD), false);
+});
+
+test("S8: a model retarget with an unsafe selected Recommendation still never persists the model's prose", async () => {
+  const { value: out } = await withLogs(() => continuityBrief({
+    recommendation: "Implement P14 in src/not-established/export.ts.",
+    patch: (o, s) => (o.target = { title: "Rewrite authentication for P14 invoice export.", statement: "Rewrite authentication for P14 invoice export.", sourceAliases: [s.source("Milestone — P14 Invoice export")], reportAliases: [] }),
+  }));
+  assert.equal(out.brief.target, null);
+  assert.equal(JSON.stringify(out.brief).includes("Rewrite authentication"), false);
+  for (const renderer of EXECUTION_BRIEF_RENDERERS) assert.equal(renderExecutionBrief(out.brief, renderer).includes("Rewrite authentication"), false);
+});
+
+test("S9: the selected target uses grounding's ONE screen — no second reference or command taxonomy", () => {
+  const ground = strip(readFileSync("src/lib/project-brain/execution-brief/ground.ts", "utf8"));
+  assert.match(ground, /if \(input\.selectedTarget\) \{[\s\S]*?const r = screen\(\[input\.selectedTarget\.title, input\.selectedTarget\.statement\]\);[\s\S]*?selectedTargetWithheld = true;\s*onRemoved\("target", r, true\);/);
+  const continuity = strip(readFileSync("src/lib/project-brain/execution-brief/continuity.ts", "utf8"));
+  assert.doesNotMatch(continuity, /isDangerousCommand|narrativeCredentialCategories|new RegExp|\/\\b/, "continuity.ts forks no screen");
+  assert.match(continuity, /if \(grounded\.selectedTargetWithheld\) \{[\s\S]*?target: null/);
+  // Pure grounding: the same result whatever the model wrote for the target.
+  const context = contextFor(p14ExportProject());
+  const unsafe = { title: "Implement P14 in src/not-established/export.ts.", statement: "Implement P14 in src/not-established/export.ts." };
+  const output = goodBrief({ prompt: "", system: "", source: () => context.sources[0].alias, currentReport: "R1", reportFor: () => null, selectedTarget: unsafe });
+  const g = groundExecutionBrief({ output, context, question: "q", generatedAt: FIXTURE_NOW.toISOString(), targetRef: { kind: "project_brain_recommendation", assistantTurnId: "a1", statementId: "s1", resolvedBy: "explicit" }, selectedTarget: unsafe });
+  assert.equal(g.selectedTargetWithheld, true);
+  assert.equal(g.citations.unsupportedReferences, 1);
+  assert.equal(g.groundingAdjusted, true);
+  const safe = groundExecutionBrief({ output, context, question: "q", generatedAt: FIXTURE_NOW.toISOString(), targetRef: { kind: "project_brain_recommendation", assistantTurnId: "a1", statementId: "s1", resolvedBy: "explicit" }, selectedTarget: { title: SELECTED, statement: SELECTED } });
+  assert.equal(safe.selectedTargetWithheld, false);
 });

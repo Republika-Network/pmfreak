@@ -91,6 +91,23 @@ test("a credential-like brief is never displayed, previewed or copied; the value
   expect(await page.locator("#root").innerHTML()).not.toContain("ghp_");
 });
 
+test("a withheld selected target: needs input, copy still offered, the unsupported path never reaches the DOM or clipboard", async ({ page }) => {
+  await open(page);
+  const withheld = card(page, "withheld");
+  await expect(withheld.getByTestId("execution-brief-readiness")).toHaveText("Needs input");
+  await expect(withheld.getByTestId("execution-brief-target")).toHaveCount(0);
+  await expect(withheld).toContainText("Reconfirm the target without the unsupported execution detail");
+  for (const [key, label] of [["claude_code", "Claude Code"], ["codex", "Codex"], ["generic", "Generic"]] as const) {
+    await withheld.getByText(label, { exact: true }).click();
+    await withheld.getByTestId("execution-brief-copy").click();
+    await expect(withheld.getByTestId("execution-brief-copy-status")).toContainText(`Copied — formatted for ${label}`);
+    const clip = await page.evaluate(() => navigator.clipboard.readText());
+    expect(clip).toBe(harness.rendered.withheld[key]);
+    expect(clip).not.toContain("src/not-established");
+  }
+  expect(await page.locator("#root").innerHTML()).not.toContain("src/not-established");
+});
+
 test("keyboard: renderer radios move with arrows, Copy works from the keyboard, focus is not stolen, no auto-scroll", async ({ page }) => {
   await open(page);
   const ready = card(page, "ready");

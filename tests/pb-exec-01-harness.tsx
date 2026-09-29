@@ -96,7 +96,7 @@ function seedAnswer(store: Store, recommendations: string[]) {
   return store.seed({ role: "assistant", content: "Based on the current project state, I recommend implementing P14 next.", created_by_user_id: null, reply_to_message_id: user.id, brain_mode: "generative", metadata: { projectBrain: { version: 1, mode: "generative", statements, sources: [], constitutionVersion: "1.1.0", citations: { rejectedCitations: 0, downgradedStatements: 0, droppedStatements: 0, unsupportedReferences: 0 }, context: { sourceCount: 0, truncated: false, unavailable: [] } } } });
 }
 
-async function produce(patch: (o: ExecutionBriefModelOutput, prompt: string) => void, opts: { entitled?: boolean; before?: string[] } = {}) {
+async function produce(patch: (o: ExecutionBriefModelOutput, prompt: string) => void, opts: { entitled?: boolean; before?: string[]; recommendation?: string } = {}) {
   const store = memoryStore();
   let n = 0;
   const deps = {
@@ -113,7 +113,7 @@ async function produce(patch: (o: ExecutionBriefModelOutput, prompt: string) => 
   for (const text of opts.before ?? []) {
     await runProjectBrainRequest(deps, { clientMessageId: `00000000-0000-4000-8000-${String(++n + 500).padStart(12, "0")}`, text });
   }
-  const reply = seedAnswer(store, ["Implement P14 invoice export next."]);
+  const reply = seedAnswer(store, [opts.recommendation ?? "Implement P14 invoice export next."]);
   const result = await runProjectBrainRequest(deps, {
     clientMessageId: "00000000-0000-4000-8000-000000000777",
     text: "Prepare an execution brief for the selected recommendation.",
@@ -134,6 +134,8 @@ export async function buildCases(): Promise<Record<string, ContextMessageRow>> {
   const long = await produce((o) => {
     o.knownContext.push({ text: `Very long identifier ${"x".repeat(240)}`, sourceAliases: o.knownContext[0].sourceAliases });
   });
+  // A selected Recommendation naming a path nothing supplied: identity kept, target withheld.
+  const withheld = await produce(() => {}, { recommendation: "Implement P14 in src/not-established/export.ts." });
   const degraded = await produce(() => {}, { entitled: false });
   const malformed = { ...ready, id: "d0000000-0000-4000-8000-00000000abcd", metadata: { projectBrain: { ...(ready.metadata as { projectBrain: object }).projectBrain, executionBrief: { schema: "pmfreak.execution-brief", version: 1 } } } } as ContextMessageRow;
   // A brief that validates but whose text carries a credential-shaped value (the server
@@ -145,7 +147,7 @@ export async function buildCases(): Promise<Record<string, ContextMessageRow>> {
   const poisoned = { ...ready, id: "d0000000-0000-4000-8000-00000000beef", metadata: poisonedMeta } as unknown as ContextMessageRow;
   const store = memoryStore();
   const threeRecommendations = seedAnswer(store, ["Implement P14 invoice export.", "Close the P13 review.", "Draft the go-live checklist."]);
-  return { ready, needsInput, reported, adjusted, long, degraded, malformed, poisoned, threeRecommendations };
+  return { ready, needsInput, reported, adjusted, long, withheld, degraded, malformed, poisoned, threeRecommendations };
 }
 
 async function main() {

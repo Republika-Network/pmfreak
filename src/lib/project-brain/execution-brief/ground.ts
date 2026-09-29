@@ -231,6 +231,12 @@ export type GroundedBrief = {
   objectiveRemoved: boolean;
   /** Prior-Recommendation briefs only: did the model echo the server-owned target exactly? null otherwise. */
   modelTargetMatches: boolean | null;
+  /**
+   * Prior-Recommendation briefs only: the exact Recommendation text failed the SAME renderer
+   * screen as every other field (credential, unsupported reference, dangerous command), so
+   * continuity.ts withholds the whole canonical target. Identity (targetRef) is unaffected.
+   */
+  selectedTargetWithheld: boolean;
 };
 
 export type GroundBriefInput = {
@@ -391,10 +397,19 @@ export function groundExecutionBrief(input: GroundBriefInput): GroundedBrief {
   let target: GroundedBrief["target"] = null;
   let targetRemoved = false;
   let modelTargetMatches: boolean | null = null;
+  let selectedTargetWithheld = false;
   if (input.selectedTarget) {
     // Server-owned target: the model's target prose and aliases are not authoritative and
     // never persisted. Exact match only — no trimming, no similarity.
     modelTargetMatches = output.target.title === input.selectedTarget.title && output.target.statement === input.selectedTarget.statement;
+    // Server-owned identity is not a safety exemption: the exact Recommendation text is
+    // renderer-bound, so it passes the same screen. Earlier AI output never vouches for its
+    // own precision. A failure withholds the WHOLE target — never a token-by-token edit.
+    const r = screen([input.selectedTarget.title, input.selectedTarget.statement]);
+    if (!r.ok) {
+      selectedTargetWithheld = true;
+      onRemoved("target", r, true);
+    }
   } else {
     const t = output.target;
     const r = screen([t.title, t.statement]);
@@ -635,6 +650,7 @@ export function groundExecutionBrief(input: GroundBriefInput): GroundedBrief {
     targetRemoved,
     objectiveRemoved,
     modelTargetMatches,
+    selectedTargetWithheld,
   };
 }
 

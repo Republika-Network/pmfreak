@@ -272,6 +272,16 @@ test("F2: unsupported execution-shaped references never survive in any renderer-
   assert.match(grounding, /Counting alone is never the response/);
 });
 
+test("F2b: a server-owned selected target is not a safety-screen bypass", () => {
+  const grounding = subsection("### 9.5 Grounding and fake-precision enforcement");
+  assert.match(grounding, /\*\*A server-owned target is not a safety exemption\.\*\*/);
+  assert.match(grounding, /passes the \*\*same\*\* screen — credential guard,\s+unsupported execution-shaped reference, dangerous command/);
+  assert.match(grounding, /the \*\*whole\*\* target is withheld \(`target = null`, `needs_input`,\s+`groundingAdjusted = true`\), `targetRef` still names the selected work/);
+  assert.match(grounding, /never\s+echoing it/);
+  assert.match(EXECUTION_DOC, /server-owned identity never bypasses that screen/);
+  assert.doesNotMatch(EXECUTION_DOC, /the canonical target is always the selected Recommendation/);
+});
+
 test("F3: the context fingerprint tracks the consumed source content, not recordedAt", () => {
   const fp = subsection("### 9.8 Identity, content hash, context fingerprint and versioning");
   assert.match(fp, /`recordedAt` is \*\*not\*\* a revision marker for every family/);

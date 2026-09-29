@@ -116,6 +116,7 @@ export async function generateExecutionBrief(input: ExecutionBriefGenerationInpu
       });
       if (!continuity.ok) console.warn(JSON.stringify({ event: "project_brain.execution_brief.target_unconfirmed", projectId: scope.projectId, reason: continuity.reason }));
       if (grounded.modelTargetMatches === false) console.warn(JSON.stringify({ event: "project_brain.execution_brief.target_inconsistent", projectId: scope.projectId }));
+      if (grounded.selectedTargetWithheld) console.warn(JSON.stringify({ event: "project_brain.execution_brief.target_withheld", projectId: scope.projectId }));
       grounded = applySelectedTarget(grounded, { selected, context, continuity });
     }
     const reportTexts = reportTextsOf(context, userMessage.content).map((r) => ({ turnId: r.report.reference.turnId, text: r.text }));

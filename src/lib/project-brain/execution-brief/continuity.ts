@@ -17,12 +17,18 @@
 //      title = that text when it fits, else a fixed neutral label (target.ts);
 //   7. the canonical target SUPPORT is the Recommendation's current, unchanged anchors;
 //   8. model output cannot replace 6 or 7. Its target is only compared for exact equality;
-//      a mismatch is a blocking inconsistency, and the mismatching prose is never persisted.
+//      a mismatch is a blocking inconsistency, and the mismatching prose is never persisted;
+//   9. server-owned identity is not a safety exemption: the exact text passed grounding's
+//      renderer screen (credential, unsupported reference, dangerous command — ground.ts).
+//      A failure withholds the WHOLE canonical target (target = null) with a blocking
+//      unknown that never echoes the detail; targetRef still names the selected work.
 //
 // Rules 2–5 failing → blocking "Reconfirm the selected recommendation"; an inexact model
 // target → blocking "Project Brain could not prepare instructions consistently…". Either
 // way the brief is needs_input, targetRef never changes, and the canonical target shown is
-// still the selected Recommendation. No lexical or semantic similarity is used anywhere.
+// still the selected Recommendation — unless rule 9 withheld it. Continuity (is the work
+// still supported?) and safety (may this text reach an executor?) are separate checks; one
+// Recommendation may fail both. No lexical or semantic similarity is used anywhere.
 //
 // Honest limit: rule 4 proves the persisted REFERENCE is unchanged, not the semantic
 // entailment of source content beyond its excerpt. SERVER ONLY (hashing).
@@ -43,6 +49,13 @@ export const RECONFIRM_RECOMMENDATION_UNKNOWN = {
 export const TARGET_INCONSISTENT_UNKNOWN = {
   fact: "Project Brain could not prepare instructions consistently for the selected recommendation.",
   why: "The draft did not keep the selected recommendation as its target, so the selected recommendation is shown instead. Request the brief again before handing it off.",
+  resolveBy: "user" as const,
+  blocking: true,
+};
+
+export const SELECTED_TARGET_WITHHELD_UNKNOWN = {
+  fact: "Reconfirm the target without the unsupported execution detail",
+  why: "The selected recommendation contains execution detail that is not established safely enough for an execution brief, so its text was left out. Restate the work without that detail and request a new brief.",
   resolveBy: "user" as const,
   blocking: true,
 };
@@ -94,26 +107,32 @@ export function checkRecommendationContinuity(input: {
 }
 
 /**
- * Rules 6–8: the canonical target is the server-owned selected Recommendation, supported by
+ * Rules 6–9: the canonical target is the server-owned selected Recommendation, supported by
  * its current, unchanged anchors (added to provenance as the CURRENT records/reports they
- * are — never the Recommendation itself). Blocking unknowns on any failure.
+ * are — never the Recommendation itself), or null when grounding withheld its text (rule 9).
+ * Blocking unknowns on any failure.
  */
 export function applySelectedTarget(
   grounded: GroundedBrief,
   input: { selected: SelectedRecommendationTarget; context: ProjectBrainContext; continuity: RecommendationContinuity },
 ): GroundedBrief {
+  const unknowns = [...grounded.unknowns];
+  const add = (u: typeof RECONFIRM_RECOMMENDATION_UNKNOWN) => {
+    if (!unknowns.some((x) => x.fact === u.fact)) unknowns.unshift(u);
+  };
+  if (!input.continuity.ok) add(RECONFIRM_RECOMMENDATION_UNKNOWN);
+  if (grounded.selectedTargetWithheld) {
+    // Rule 9: nothing of the text survives — no title, no statement, no support claimed for it.
+    add(SELECTED_TARGET_WITHHELD_UNKNOWN);
+    return { ...grounded, target: null, targetRemoved: true, unknowns };
+  }
+  if (grounded.modelTargetMatches === false) add(TARGET_INCONSISTENT_UNKNOWN);
   const { title, statement } = canonicalSelectedTarget(input.selected.recommendationText);
   const support = survivingAnchors(input.context, input.selected.anchors);
   const sources = [...grounded.sources];
   for (const s of support.sources) if (!sources.includes(s)) sources.push(s);
   const reports = [...grounded.reports];
   for (const r of support.reports) if (!reports.includes(r)) reports.push(r);
-  const unknowns = [...grounded.unknowns];
-  const add = (u: typeof RECONFIRM_RECOMMENDATION_UNKNOWN) => {
-    if (!unknowns.some((x) => x.fact === u.fact)) unknowns.unshift(u);
-  };
-  if (grounded.modelTargetMatches === false) add(TARGET_INCONSISTENT_UNKNOWN);
-  if (!input.continuity.ok) add(RECONFIRM_RECOMMENDATION_UNKNOWN);
   return {
     ...grounded,
     target: {
