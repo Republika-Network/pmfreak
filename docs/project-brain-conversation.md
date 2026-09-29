@@ -405,9 +405,10 @@ architecture and contract; PB-EXEC-01 — implemented as described below).
   The user row stores its operation identity (`metadata.projectBrainRequest`); a reused
   `clientMessageId` with another operation or target is a `409`. A brief turn has its own
   pending window (120 s, derived from its whole budget) and starts its provider call only
-  inside an inference lease. A brief for a selected Recommendation must stay anchored to that
-  Recommendation's persisted, still-current support, or it asks to reconfirm it
-  (`needs_input`). The transcript API shows a stored brief only after recomputing its content
+  inside an inference lease. A brief for a selected Recommendation must stay about that
+  Recommendation: its target may cite only the Recommendation's own still-current, unchanged
+  support and may not introduce a different work item; otherwise the brief asks to reconfirm
+  it (`needs_input`) and is never retargeted. The transcript API shows a stored brief only after recomputing its content
   hash and binding it to its row and the route's workspace and project. The brief card renders the
   same canonical brief as Generic, Claude Code or Codex text **in the browser** (no request, no
   model call, no write) and copies it after a credential check. There is no execute, delegate,

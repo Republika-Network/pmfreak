@@ -49,8 +49,9 @@ export type BriefRenderModel = {
   footer: string[];
 };
 
+/** A report citation takes precedence (final review): a claim resting on chat is never shown as a record. */
 const supportMarker = (sourceIds: string[], reportedTurnIds: string[]) =>
-  sourceIds.length > 0 ? ORIGIN_MARKER.project_record : reportedTurnIds.length > 0 ? ORIGIN_MARKER.reported : ORIGIN_MARKER.suggested;
+  reportedTurnIds.length > 0 ? ORIGIN_MARKER.reported : sourceIds.length > 0 ? ORIGIN_MARKER.project_record : ORIGIN_MARKER.suggested;
 const short = (hash: string) => hash.replace(/^sha256:/, "").slice(0, 12);
 
 /** The single semantic model every renderer formats. Exported for the parity test. */

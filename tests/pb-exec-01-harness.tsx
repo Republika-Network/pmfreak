@@ -83,7 +83,8 @@ function good(prompt: string): ExecutionBriefModelOutput {
 
 function seedAnswer(store: Store, recommendations: string[]) {
   const user = store.seed({ content: "What should I work on next?", client_message_id: `00000000-0000-4000-8000-${String(store.rows.length + 900).padStart(12, "0")}` });
-  const anchor = { evidenceId: "project_milestones:f0000014-0000-4000-8000-000000000000", sourceSystem: "project_milestones", title: "Milestone — P14 Invoice export", evidenceType: "MILESTONE", recordedAt: FIXTURE_NOW.toISOString(), authorityLevel: "primary", isPrimary: true };
+  // As persisted: the full current reference of the P14 milestone the Recommendation cited.
+  const anchor = JSON.parse(JSON.stringify(assembleProjectBrainContext({ ...p14ExportProject(), history: [] }).sources.find((s) => s.reference.evidenceId === "project_milestones:f0000014-0000-4000-8000-000000000000")!.reference));
   const statements = recommendations.map((text, i) => ({ id: `${user.id}:${i}`, scope, epistemicType: "RECOMMENDATION", text, confidence: { kind: "qualitative", level: "medium" }, sources: [anchor], requiresHumanApproval: true, generatedAt: FIXTURE_NOW.toISOString(), constitutionVersion: "1.1.0" }));
   return store.seed({ role: "assistant", content: "Based on the current project state, I recommend implementing P14 next.", created_by_user_id: null, reply_to_message_id: user.id, brain_mode: "generative", metadata: { projectBrain: { version: 1, mode: "generative", statements, sources: [], constitutionVersion: "1.1.0", citations: { rejectedCitations: 0, downgradedStatements: 0, droppedStatements: 0, unsupportedReferences: 0 }, context: { sourceCount: 0, truncated: false, unavailable: [] } } } });
 }

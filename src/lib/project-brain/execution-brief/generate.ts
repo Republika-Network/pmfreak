@@ -23,9 +23,9 @@ import { assembleExecutionBrief, ExecutionBriefAssemblyError } from "./assemble"
 import { checkRecommendationContinuity, withRecommendationContinuity } from "./continuity";
 import { groundExecutionBrief, reportTextsOf } from "./ground";
 import type { RecommendationAnchors } from "./target";
-import { buildExecutionBriefMessages } from "./prompt";
+import { buildExecutionBriefMessages, recommendationAnchorAliases } from "./prompt";
 import { extractReportedRepositoryContext } from "./repository-context";
-import { EXECUTION_BRIEF_INFERENCE, EXECUTION_BRIEF_MODEL_SCHEMA, parseExecutionBriefModelOutput } from "./schema";
+import { EXECUTION_BRIEF_INFERENCE, executionBriefModelSchema, parseExecutionBriefModelOutput } from "./schema";
 import { EXECUTION_BRIEF_OPERATION, type ExecutionBriefV1, type ResolvedExecutionBriefTargetRef } from "./types";
 
 export type ExecutionBriefGenerationInput = {
@@ -70,7 +70,11 @@ export async function generateExecutionBrief(input: ExecutionBriefGenerationInpu
     dataSensitivity: "confidential",
     chainDepth: 0,
     messages: buildExecutionBriefMessages({ context, question: userMessage.content, targetRef: input.targetRef, recommendationText: input.recommendationText, recommendationAnchors: input.recommendationAnchors, asOf: input.generatedAt }),
-    responseFormat: { type: "json_schema", jsonSchema: EXECUTION_BRIEF_MODEL_SCHEMA },
+    // A prior-Recommendation target may cite only that Recommendation's surviving anchors.
+    responseFormat: {
+      type: "json_schema",
+      jsonSchema: executionBriefModelSchema(input.targetRef.kind === "project_brain_recommendation" ? recommendationAnchorAliases(context, input.recommendationAnchors) : undefined),
+    },
     temperature: EXECUTION_BRIEF_INFERENCE.temperature,
     maxTokens: EXECUTION_BRIEF_INFERENCE.maxTokens,
     timeoutMs: EXECUTION_BRIEF_INFERENCE.timeoutMs,
@@ -94,7 +98,7 @@ export async function generateExecutionBrief(input: ExecutionBriefGenerationInpu
       const continuity = checkRecommendationContinuity({
         grounded,
         context,
-        anchors: input.recommendationAnchors ?? { sourceIds: [], reportedTurnIds: [] },
+        anchors: input.recommendationAnchors ?? { sources: [], reports: [] },
         recommendationText: input.recommendationText ?? "",
         question: userMessage.content,
         generatedAt: input.generatedAt,

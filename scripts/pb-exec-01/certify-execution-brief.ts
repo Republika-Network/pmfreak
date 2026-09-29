@@ -79,6 +79,9 @@ export const CASES: Case[] = [
       ...(b.reportedContext.some((r) => /merged|clean/i.test(r.text)) ? [] : ["the merge report is not in reportedContext"]),
       ...(b.reportedContext.filter((r) => /merged|clean/i.test(r.text)).every((r) => r.executionSensitive) ? [] : ["a merge/clean report is not execution-sensitive"]),
       ...(b.knownContext.some((k) => /P13[^.]*merged/i.test(k.text) && !/not/i.test(k.text)) ? ["the reported merge became known context"] : []),
+      ...(renderExecutionBrief(b, "generic").split("\n").some((l) => l.includes("[project record]") && /\b(merged|clean)\b/i.test(l) && !/\bnot\b/i.test(l))
+        ? ["the reported merge renders as a project record"]
+        : []),
     ],
   },
   {
@@ -169,7 +172,9 @@ export async function runCase(c: Case, complete: (request: InferenceRequest) => 
   let targetRef: ExecutionBriefTargetRef | null = null;
   if (c.recommendations.length > 0) {
     const user = store.seed({ content: "What should I work on next?", client_message_id: crypto.randomUUID() });
-    const anchorSources = (c.anchors ?? ["project_milestones:f0000014-0000-4000-8000-000000000000"]).map((evidenceId) => ({ evidenceId, sourceSystem: "project_milestones", title: "t", evidenceType: "MILESTONE", recordedAt: FIXTURE_NOW.toISOString(), authorityLevel: "primary", isPrimary: true }));
+    // As persisted: the full current references the Recommendation cited.
+    const current = assembleProjectBrainContext({ ...raw, history: [] }).sources;
+    const anchorSources = (c.anchors ?? ["project_milestones:f0000014-0000-4000-8000-000000000000"]).map((evidenceId) => JSON.parse(JSON.stringify(current.find((s) => s.reference.evidenceId === evidenceId)!.reference)));
     const statements = c.recommendations.map((text, i) => ({ id: `${user.id}:${i}`, scope, epistemicType: "RECOMMENDATION", text, confidence: { kind: "qualitative", level: "medium" }, sources: anchorSources, requiresHumanApproval: true, generatedAt: FIXTURE_NOW.toISOString(), constitutionVersion: "1.1.0" }));
     const reply = store.seed({ role: "assistant", content: c.recommendations.join(" "), created_by_user_id: null, reply_to_message_id: user.id, brain_mode: "generative", metadata: { projectBrain: { version: 1, mode: "generative", statements, sources: [], constitutionVersion: "1.1.0", context: { sourceCount: 0, truncated: false, unavailable: [] } } } });
     if (c.target === "recommendation") targetRef = { kind: "project_brain_recommendation", assistantTurnId: reply.id, statementId: `${user.id}:0` };

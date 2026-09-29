@@ -73,7 +73,7 @@ const CLI_START = /^(?:npm|npx|pnpm|yarn|bun|pytest|jest|vitest|cargo|go|git|doc
  * "RFC-3339"). Not project references — unless the project's own records use that
  * code family, in which case the ordinary rule applies.
  */
-const STANDARD_CODE_FAMILIES = new Set(["utf", "sha", "iso", "rfc", "http", "tls", "aes", "rsa", "base", "ipv", "es", "ecma", "md", "crc", "oauth", "soc"]);
+export const STANDARD_CODE_FAMILIES: ReadonlySet<string> = new Set(["utf", "sha", "iso", "rfc", "http", "tls", "aes", "rsa", "base", "ipv", "es", "ecma", "md", "crc", "oauth", "soc"]);
 
 const collapse = (value: string) => value.toLowerCase().replace(/\s+/g, " ").trim();
 const trimToken = (value: string) => value.replace(/[.,;:!?)\]}>'"`]+$/g, "").replace(/\/+$/g, "");
@@ -348,11 +348,26 @@ export function groundExecutionBrief(input: GroundBriefInput): GroundedBrief {
   };
   const isRecord = (s: ProjectBrainContextSource) => s.trust === "RECORD";
 
-  /** Origin check for instruction items: unsupported claimed support → suggested (ids cleared). */
-  const origin = <O extends "project_record" | "reported" | "suggested">(claimed: O, sources: ProjectBrainContextSource[], reports: ProjectBrainContextReport[]) => {
+  /**
+   * Origin check for instruction items: unsupported claimed support → suggested (ids cleared).
+   * A `project_record` item that relays a REPORT ("as you reported, …", "according to the
+   * user") is not a record claim (final review): `reported` if it cites a valid report,
+   * otherwise `suggested`. Only report language counts here — these items state outcomes and
+   * rules ("done when tests pass"), so execution-sensitive words are not current-state claims;
+   * that stricter test applies to current-state narrative (known context, whyNow).
+   */
+  const origin = <O extends "project_record" | "reported" | "suggested">(claimed: O, sources: ProjectBrainContextSource[], reports: ProjectBrainContextReport[], text: string) => {
+    if (claimed === "project_record" && sources.some(isRecord) && REPORT_LANGUAGE.test(text)) {
+      citations.demotedItems += 1;
+      if (reports.length > 0) {
+        keep(sources, reports);
+        return { origin: "reported" as O | "suggested" | "reported", sourceIds: ids(sources), reportedTurnIds: turnIds(reports) };
+      }
+      return { origin: "suggested" as O | "suggested" | "reported", sourceIds: [] as string[], reportedTurnIds: [] as string[] };
+    }
     const valid = claimed === "project_record" ? sources.some(isRecord) : claimed === "reported" ? reports.length > 0 : true;
     if (claimed !== "suggested" && !valid) citations.demotedItems += 1;
-    const finalOrigin = (valid ? claimed : "suggested") as O | "suggested";
+    const finalOrigin = (valid ? claimed : "suggested") as O | "suggested" | "reported";
     if (finalOrigin === "suggested") return { origin: finalOrigin, sourceIds: [] as string[], reportedTurnIds: [] as string[] };
     keep(sources, reports);
     return { origin: finalOrigin, sourceIds: ids(sources), reportedTurnIds: turnIds(reports) };
@@ -406,12 +421,18 @@ export function groundExecutionBrief(input: GroundBriefInput): GroundedBrief {
       onRemoved("objective", r, true);
     } else {
       const { sources, reports } = resolve(o.sourceAliases, o.reportAliases);
-      objective = { text: o.text.trim(), ...origin(o.origin, sources, reports) };
+      objective = { text: o.text.trim(), ...origin(o.origin, sources, reports, o.text.trim()) };
     }
   }
 
   // ── whyNow (narrative; keeps whatever valid support it cites) ──
+  // Final review: an execution-sensitive or report-language claim its cited RECORDS do not
+  // contain is a report, not project state. With a valid report it stays (renderers mark it
+  // reported) and, if execution-sensitive, is ALSO listed under verify-before-acting; without
+  // one it becomes an assumption.
   let whyNow: GroundedBrief["whyNow"] = null;
+  let whyNowReportClaim: { text: string; reportedTurnIds: string[] } | null = null;
+  let whyNowAssumption: string | null = null;
   {
     const w = output.whyNow;
     const r = screen([w.text]);
@@ -423,16 +444,26 @@ export function groundExecutionBrief(input: GroundBriefInput): GroundedBrief {
       onRemoved("whyNow", r, false);
     } else {
       const { sources, reports } = resolve(w.sourceAliases, w.reportAliases);
-      keep(sources, reports);
-      whyNow = { text: w.text.trim(), sourceIds: ids(sources), reportedTurnIds: turnIds(reports) };
+      const text = w.text.trim();
+      if (!knownClaimIsRecordOnly(text, sources.filter(isRecord)) && reports.length === 0) {
+        whyNowAssumption = text;
+      } else {
+        if (!knownClaimIsRecordOnly(text, sources.filter(isRecord))) {
+          citations.demotedItems += 1;
+          if (EXECUTION_SENSITIVE.test(text)) whyNowReportClaim = { text, reportedTurnIds: turnIds(reports) };
+        }
+        keep(sources, reports);
+        whyNow = { text, sourceIds: ids(sources), reportedTurnIds: turnIds(reports) };
+      }
     }
   }
 
   const assumptions: GroundedBrief["assumptions"] = [];
   const moveToAssumption = (text: string) => {
     citations.demotedItems += 1;
-    if (assumptions.length < L.assumptions + L.knownContext + L.reportedContext) assumptions.push({ text });
+    if (assumptions.length < L.assumptions + L.knownContext + L.reportedContext + 1) assumptions.push({ text });
   };
+  if (whyNowAssumption) moveToAssumption(whyNowAssumption);
 
   // ── knownContext: RECORD sources only ──
   const knownContext: GroundedBrief["knownContext"] = [];
@@ -458,6 +489,9 @@ export function groundExecutionBrief(input: GroundBriefInput): GroundedBrief {
     if (reports.length === 0) { moveToAssumption(text); continue; }
     keep([], reports);
     reportedContext.push({ text, reportedTurnIds: turnIds(reports), executionSensitive: item.executionSensitive || EXECUTION_SENSITIVE.test(text) });
+  }
+  if (whyNowReportClaim && !reportedContext.some((r) => r.text === whyNowReportClaim!.text)) {
+    reportedContext.push({ text: whyNowReportClaim.text, reportedTurnIds: whyNowReportClaim.reportedTurnIds, executionSensitive: true });
   }
 
   // ── assumptions ──
@@ -502,7 +536,7 @@ export function groundExecutionBrief(input: GroundBriefInput): GroundedBrief {
     const r = screen([text]);
     if (!r.ok) { onRemoved("areasToInspect", r, false); continue; }
     const { sources, reports } = resolve(item.sourceAliases, item.reportAliases);
-    const valid = item.origin === "project_record" ? sources.some(isRecord) : reports.length > 0;
+    const valid = item.origin === "project_record" ? sources.some(isRecord) && !REPORT_LANGUAGE.test(text) : reports.length > 0;
     if (!valid) {
       citations.demotedItems += 1;
       addUnknown({ fact: "Which files or areas to inspect", why: "Neither the project records nor this conversation name them; locate them in the repository instead of assuming.", resolveBy: "repository_binding", blocking: false });
@@ -521,7 +555,7 @@ export function groundExecutionBrief(input: GroundBriefInput): GroundedBrief {
       const r = screen([text]);
       if (!r.ok) { onRemoved(field, r, false); continue; }
       const { sources, reports } = resolve(item.sourceAliases, item.reportAliases);
-      out.push({ text, ...origin(item.origin, sources, reports) });
+      out.push({ text, ...origin(item.origin, sources, reports, text) });
     }
     return out;
   };

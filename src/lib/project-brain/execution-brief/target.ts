@@ -168,18 +168,43 @@ type PersistedStatement = {
   epistemicType: string;
   text: string;
   scope: { workspaceId: string; projectId: string } | null;
-  /** Stable ids of the sources the statement cited when it was persisted. */
-  sourceIds: string[];
-  /** context_messages ids of the user reports the statement cited. */
-  reportedTurnIds: string[];
+  /** The source references the statement cited, as persisted. */
+  sources: RecommendationSourceAnchor[];
+  /** The user reports the statement cited (context_messages ids + times). */
+  reports: RecommendationReportAnchor[];
 };
 
 /**
- * Deterministic support anchors of a selected prior Recommendation (review P1-2): the
- * STABLE ids it cited when it was persisted. Identification only — never a source, never
- * evidence, never an alias. Used to prove the brief is still about the selected work.
+ * The fields of a persisted ProjectBrainSourceReference that make up its SNAPSHOT (final
+ * review): what the Recommendation's citation said about the record when it was created.
+ * Missing fields normalize to null, so a persisted-then-reloaded reference and the same
+ * reference built today compare equal. Pure (hashed server-side in continuity.ts).
  */
-export type RecommendationAnchors = { sourceIds: string[]; reportedTurnIds: string[] };
+export const REFERENCE_SNAPSHOT_FIELDS = [
+  "evidenceId", "sourceSystem", "title", "evidenceType", "recordedAt", "excerpt", "authorityLevel", "isPrimary", "workspaceId", "projectId",
+] as const;
+export type ReferenceSnapshot = Record<(typeof REFERENCE_SNAPSHOT_FIELDS)[number], string | boolean | null>;
+
+export function referenceSnapshot(reference: unknown): ReferenceSnapshot {
+  const r = record(reference) ?? {};
+  const out = {} as ReferenceSnapshot;
+  for (const field of REFERENCE_SNAPSHOT_FIELDS) {
+    const v = r[field];
+    out[field] = typeof v === "string" || typeof v === "boolean" ? v : null;
+  }
+  return out;
+}
+
+export type RecommendationSourceAnchor = { evidenceId: string; snapshot: ReferenceSnapshot };
+export type RecommendationReportAnchor = { turnId: string; createdAt: string };
+
+/**
+ * Deterministic support anchors of a selected prior Recommendation (review P1-2 + final
+ * review): the sources it cited, WITH their persisted-reference snapshot, and the user
+ * reports it cited. Identification only — never a source, never evidence, never an alias.
+ * Used by continuity.ts to prove the brief is still about the selected work.
+ */
+export type RecommendationAnchors = { sources: RecommendationSourceAnchor[]; reports: RecommendationReportAnchor[] };
 
 function statementsOf(row: ContextMessageRow): PersistedStatement[] | null {
   const meta = record(record(row.metadata)?.projectBrain);
@@ -189,11 +214,23 @@ function statementsOf(row: ContextMessageRow): PersistedStatement[] | null {
     const s = record(value);
     if (!s || typeof s.id !== "string" || typeof s.epistemicType !== "string" || typeof s.text !== "string") continue;
     const scope = record(s.scope);
-    const ids = (list: unknown, key: string) =>
-      Array.isArray(list) ? [...new Set(list.map((x) => record(x)?.[key]).filter((v): v is string => typeof v === "string" && v.length > 0))] : [];
+    const sources: RecommendationSourceAnchor[] = [];
+    for (const ref of Array.isArray(s.sources) ? s.sources : []) {
+      const snapshot = referenceSnapshot(ref);
+      if (typeof snapshot.evidenceId === "string" && snapshot.evidenceId && !sources.some((a) => a.evidenceId === snapshot.evidenceId)) {
+        sources.push({ evidenceId: snapshot.evidenceId, snapshot });
+      }
+    }
+    const reports: RecommendationReportAnchor[] = [];
+    for (const rep of Array.isArray(s.reports) ? s.reports : []) {
+      const r = record(rep);
+      if (r && typeof r.turnId === "string" && r.turnId && typeof r.createdAt === "string" && !reports.some((a) => a.turnId === r.turnId)) {
+        reports.push({ turnId: r.turnId, createdAt: r.createdAt });
+      }
+    }
     out.push({
-      sourceIds: ids(s.sources, "evidenceId"),
-      reportedTurnIds: ids(s.reports, "turnId"),
+      sources,
+      reports,
       id: s.id,
       epistemicType: s.epistemicType,
       text: s.text,
@@ -225,7 +262,7 @@ export function validateRecommendationTarget(input: {
   if (!statement) return { ok: false };
   if (statement.epistemicType !== "RECOMMENDATION") return { ok: false }; // 5
   if (!statement.scope || statement.scope.workspaceId !== scope.workspaceId || statement.scope.projectId !== scope.projectId) return { ok: false };
-  return { ok: true, text: statement.text, anchors: { sourceIds: statement.sourceIds, reportedTurnIds: statement.reportedTurnIds } };
+  return { ok: true, text: statement.text, anchors: { sources: statement.sources, reports: statement.reports } };
 }
 
 /**

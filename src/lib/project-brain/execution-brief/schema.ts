@@ -101,6 +101,31 @@ export const EXECUTION_BRIEF_MODEL_SCHEMA: InferenceJsonSchema = {
   }) as Record<string, unknown>,
 };
 
+/**
+ * The target lock in the MODEL CONTRACT (final review). For a prior-Recommendation target,
+ * `target.sourceAliases` / `target.reportAliases` may contain only THIS turn's aliases of the
+ * Recommendation's surviving anchors — an `enum`, so the model cannot cite other ids for the
+ * target (other fields keep the open schema). An empty list is `maxItems: 0`. The server
+ * still enforces the lock (continuity.ts rule 5) as defence in depth: unrelated target
+ * support is refused, never stripped.
+ */
+export function executionBriefModelSchema(targetLock?: { sourceAliases: string[]; reportAliases: string[] }): InferenceJsonSchema {
+  if (!targetLock) return EXECUTION_BRIEF_MODEL_SCHEMA;
+  const locked = (values: string[], max: number) =>
+    values.length === 0 ? { type: "array", items: str, maxItems: 0 } : { type: "array", items: { type: "string", enum: [...new Set(values)] }, maxItems: Math.min(max, new Set(values).size) };
+  const base = EXECUTION_BRIEF_MODEL_SCHEMA.schema as { properties: Record<string, unknown> } & Record<string, unknown>;
+  return {
+    ...EXECUTION_BRIEF_MODEL_SCHEMA,
+    schema: {
+      ...base,
+      properties: {
+        ...base.properties,
+        target: obj({ title: str, statement: str, sourceAliases: locked(targetLock.sourceAliases, L.sourceAliasesPerItem), reportAliases: locked(targetLock.reportAliases, L.reportAliasesPerItem) }),
+      },
+    },
+  };
+}
+
 // ─── Strict parser ───────────────────────────────────────────────────────────
 
 type AnyRecord = Record<string, unknown>;
