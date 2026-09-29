@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { requireAuthenticatedUser } from "@/lib/security/server-authorization";
@@ -11,10 +12,13 @@ import {
   queueInternalTaskExecution,
   transitionInternalTaskExecution,
 } from "@/lib/execution-tasks/internal-execution-provider";
+import { governedDenialBody } from "@/lib/operational-flow/governed-denial-contract";
+import { logger, safeErrorMessage } from "@/lib/observability/logger";
 
 const TASK_COLUMNS =
   "id,workspace_id,project_id,task_draft_id,recommended_action_id,raid_item_id,title,description,status,priority,owner_user_id,owner_name,start_date,due_date,completed_at,progress_percent,acceptance_criteria,checklist,confidence_score,source_payload,created_by,created_at,updated_at";
 
+const ROUTE_ID = "/api/execution-tasks/internal-execution";
 const WRITE_ROLES = new Set(["owner", "admin", "pm"]);
 
 async function canAccessTaskProject(
@@ -195,19 +199,26 @@ export async function POST(request: NextRequest) {
         : await transitionInternalTaskExecution(supabase, task.id, command);
 
     if (result.disposition === "denied" || result.disposition === "conflict") {
-      return NextResponse.json({ ok: false, ...result }, { status: 409 });
+      // CHAT-GOV-01a. The P2-08 refusal keeps its 409 and its own fields, and gains the safe
+      // `error` / `code` / `recovery` plus a reference id logged on this line.
+      const referenceId = randomUUID();
+      logger.warn("internal_execution_refused", {
+        route: ROUTE_ID, reference_id: referenceId, task_id: task.id, command, user_id: userId,
+        disposition: result.disposition, failure_class: result.failureClass, reason: result.reason,
+      });
+      return NextResponse.json({ ok: false, ...governedDenialBody(result, referenceId) }, { status: 409 });
     }
 
     const status = result.disposition === "queued" ? 201 : 200;
     return NextResponse.json({ ok: true, ...result }, { status });
   } catch (error) {
-    console.error("internal_execution.persistence_failed", {
-      taskId: task.id,
-      command,
-      error: error instanceof Error ? error.message : "unknown",
+    const referenceId = randomUUID();
+    logger.error("internal_execution.persistence_failed", {
+      route: ROUTE_ID, reference_id: referenceId, task_id: task.id, command,
+      error_detail: safeErrorMessage(error),
     });
     return NextResponse.json(
-      { ok: false, error: "Unable to persist internal execution.", failureClass: "persistence_failed" },
+      { ok: false, error: "Unable to persist internal execution.", failureClass: "persistence_failed", referenceId },
       { status: 500 },
     );
   }

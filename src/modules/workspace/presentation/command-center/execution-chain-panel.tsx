@@ -14,7 +14,7 @@
  * eligibility rules — never from a client-side role name.
  */
 
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import {
   MATERIAL_ACTION_CLASSES,
   MATERIAL_ACTION_RISKS,
@@ -28,6 +28,7 @@ import {
   type GovernedExecutionChain,
   type ExecutionStageKey,
 } from "./execution-read-model";
+import { describeOperationFailure, type OperationFailure } from "./operational-data";
 
 /** Plain-language help for the P2-06 classification the human must supply. */
 const MISSING_DATA_HELP: Record<string, string> = {
@@ -82,12 +83,54 @@ function labelize(value: string | null): string {
   return value ? value.replaceAll("_", " ") : "—";
 }
 
-function StageRow({
+/** A failed governed operation, pinned to the stage whose control failed. `attempt` changes on
+ *  every failure, so a repeated identical refusal still moves focus. */
+export type StageFailure = OperationFailure & {
+  stage: ExecutionStageKey;
+  attempt: number;
+};
+
+/**
+ * CHAT-GOV-01a — the failure notice, rendered directly under the control that failed.
+ *
+ * It takes focus when it appears (and again on each new failure), which also scrolls it into
+ * view, so neither a sighted PM nor a screen-reader user is left on a button that simply
+ * re-enabled. It never retries: recovery is the PM's explicit next action.
+ */
+export function OperationFailureAlert({ failure }: { failure: StageFailure }) {
+  // Addressed by id rather than a component ref: this panel holds no refs (P2-12 L1c2).
+  const alertId = useId();
+  useEffect(() => {
+    document.getElementById(alertId)?.focus();
+  }, [alertId, failure.attempt]);
+  return (
+    <div
+      id={alertId}
+      role="alert"
+      tabIndex={-1}
+      data-failure-stage={failure.stage}
+      className="mt-2 rounded-lg border border-rose-500/25 bg-rose-500/[0.08] px-3 py-2 text-xs text-rose-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/40"
+    >
+      <p>{failure.message}</p>
+      {failure.recovery && <p className="mt-1 text-[11px] leading-relaxed">{failure.recovery}</p>}
+      {failure.referenceId && (
+        <p className="mt-1 text-[11px] text-rose-900/80">
+          Failure reference: <span className="font-mono">{failure.referenceId}</span>
+        </p>
+      )}
+    </div>
+  );
+}
+
+export function StageRow({
   stage,
   children,
+  failure = null,
 }: {
   stage: ExecutionStage;
   children?: React.ReactNode;
+  /** This stage's own failure, if its control just failed. Rendered after the control. */
+  failure?: StageFailure | null;
 }) {
   const stateLabel = stage.state === "complete" ? "Complete" : stage.state === "present" ? "Recorded" : "Not started";
   return (
@@ -104,6 +147,7 @@ function StageRow({
         </p>
       )}
       {children}
+      {failure && <OperationFailureAlert failure={failure} />}
     </li>
   );
 }
@@ -155,7 +199,7 @@ function BranchSection({
   const branchHeadingId = useId();
 
   const [pending, setPending] = useState<ExecutionStageKey | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<StageFailure | null>(null);
   const [expectedResult, setExpectedResult] = useState("");
   const [observationState, setObservationState] = useState("achieved");
   const [observationSummary, setObservationSummary] = useState("");
@@ -173,15 +217,17 @@ function BranchSection({
 
   async function run(key: ExecutionStageKey, operation: ExecutionOperation) {
     setPending(key);
-    setError(null);
+    setFailure(null);
     try {
       await onRun(operation);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The operation could not be completed.");
+      // Pinned to the stage that failed, so the notice renders beside its own control.
+      setFailure((previous) => ({ ...describeOperationFailure(caught), stage: key, attempt: (previous?.attempt ?? 0) + 1 }));
     } finally {
       setPending(null);
     }
   }
+  const failureFor = (key: ExecutionStageKey) => (failure?.stage === key ? failure : null);
 
   const busy = pending !== null;
   const selectedEvidence = evidenceId || evidenceOptions[0]?.id || "";
@@ -220,7 +266,7 @@ function BranchSection({
       </p>
 
       <ol className="mt-2 space-y-3" aria-labelledby={branchHeadingId}>
-        <StageRow stage={taskStage}>
+        <StageRow stage={taskStage} failure={failureFor("task")}>
           {branch.task ? (
             <dl className="mt-2 grid gap-1 text-[11px] text-slate-600">
               <div className="flex gap-2"><dt className="text-slate-500">Task</dt><dd className="font-mono">{branch.task.taskId}</dd></div>
@@ -238,7 +284,7 @@ function BranchSection({
           ) : null}
         </StageRow>
 
-        <StageRow stage={executionStage}>
+        <StageRow stage={executionStage} failure={failureFor("execution")}>
           {branch.executions.length > 0 && (
             <dl className="mt-2 grid gap-1 text-[11px] text-slate-600">
               <div className="flex gap-2"><dt className="text-slate-500">Execution</dt><dd className="font-mono">{branch.latestExecution?.executionId}</dd></div>
@@ -263,7 +309,7 @@ function BranchSection({
           )}
         </StageRow>
 
-        <StageRow stage={outcomeStage}>
+        <StageRow stage={outcomeStage} failure={failureFor("outcome")}>
           {branch.outcome ? (
             <dl className="mt-2 grid gap-1 text-[11px] text-slate-600">
               <div className="flex gap-2"><dt className="text-slate-500">Outcome</dt><dd className="font-mono">{branch.outcome.outcomeId}</dd></div>
@@ -305,7 +351,7 @@ function BranchSection({
           ) : null}
         </StageRow>
 
-        <StageRow stage={observationStage}>
+        <StageRow stage={observationStage} failure={failureFor("observation")}>
           {branch.observations.length > 0 && (
             <ul className="mt-2 space-y-2">
               {branch.observations.map((observation) => (
@@ -463,11 +509,6 @@ function BranchSection({
       <p role="status" aria-live="polite" className="sr-only">
         {pending ? `Recording ${pending.replaceAll("_", " ")}.` : ""}
       </p>
-      {error && (
-        <p role="alert" className="mt-3 rounded-lg border border-rose-500/25 bg-rose-500/[0.08] px-3 py-2 text-xs text-rose-900">
-          {error}
-        </p>
-      )}
     </li>
   );
 }
@@ -493,7 +534,7 @@ export function ExecutionChainPanel({
   const actionFormId = useId();
 
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<StageFailure | null>(null);
   // P2-06 classification, supplied by the authorized human. No value is pre-selected:
   // materiality — and therefore the governance outcome — is derived from these.
   const [actionType, setActionType] = useState("");
@@ -512,7 +553,7 @@ export function ExecutionChainPanel({
 
   async function proposeAction() {
     setPending(true);
-    setError(null);
+    setFailure(null);
     try {
       await onRun({
         kind: "material_action",
@@ -521,7 +562,7 @@ export function ExecutionChainPanel({
         justification: chain.rationale ?? "Recorded human decision.",
       });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The operation could not be completed.");
+      setFailure((previous) => ({ ...describeOperationFailure(caught), stage: "material_action", attempt: (previous?.attempt ?? 0) + 1 }));
     } finally {
       setPending(false);
     }
@@ -554,7 +595,7 @@ export function ExecutionChainPanel({
       </p>
 
       <ol className="mt-3 space-y-3">
-        <StageRow stage={proposalStage}>
+        <StageRow stage={proposalStage} failure={failure}>
           {proposalStage.actionable ? (
             <div className="mt-2">
               <p className="text-[11px] leading-relaxed text-slate-500">
@@ -625,11 +666,6 @@ export function ExecutionChainPanel({
       <p role="status" aria-live="polite" className="sr-only">
         {pending ? "Recording material action." : ""}
       </p>
-      {error && (
-        <p role="alert" className="mt-3 rounded-lg border border-rose-500/25 bg-rose-500/[0.08] px-3 py-2 text-xs text-rose-900">
-          {error}
-        </p>
-      )}
     </section>
   );
 }

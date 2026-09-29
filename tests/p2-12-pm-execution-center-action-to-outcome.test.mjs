@@ -512,7 +512,8 @@ test("P2-12 L1d: a conflict does not rotate the attempt — it stays visible and
   assert.match(operationalData, /idempotencyKey,\n  \}\);[\s\S]{0,400}markSubmissionAcknowledged\(attemptKey\)/);
   assert.doesNotMatch(stripComments(operationalData), /catch[\s\S]{0,200}clearSubmissionAttempt/);
   assert.doesNotMatch(stripComments(operationalData), /catch[\s\S]{0,200}markSubmissionAcknowledged/);
-  assert.match(panel, /catch \(caught\) \{[\s\S]{0,200}setError\(/);
+  // CHAT-GOV-01a: the surfaced failure is now pinned to the stage that failed (`setFailure`).
+  assert.match(panel, /catch \(caught\) \{[\s\S]{0,200}setFailure\(/);
 });
 
 test("P2-12 L2b: the digest is a full, untruncated SHA-256 from the platform primitive", () => {

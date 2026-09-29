@@ -100,22 +100,101 @@ export class OperationalFlowRequestError extends Error {
   }
 }
 
-export async function postOperationalFlow(workspaceId: string, projectId: string, payload: AnyRecord) {
-  const response = await fetch("/api/operational-flow", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ workspaceId, projectId, ...payload }),
-  });
-  const result = await response.json();
-  if (!response.ok) {
-    throw new OperationalFlowRequestError(result.error ?? "Operational flow action failed.", {
+/** No body message was supplied for a failed request. Known governed refusals always supply one. */
+const UNKNOWN_FAILURE_MESSAGE = "Operational flow action failed.";
+
+/**
+ * CHAT-GOV-01a — the ONE parser for governed write responses.
+ *
+ * Both governed write routes (`/api/operational-flow` and
+ * `/api/execution-tasks/internal-execution`) answer a refusal as
+ * `{ error, code, recovery?, referenceId? }` beside the contract's own fields. Every surface
+ * gets that through this function rather than re-reading response bodies itself.
+ *
+ * It never retries. A write whose outcome is unknown — the network failed, or the body could
+ * not be read — is reported as unknown, never as failed or succeeded, because a governed
+ * write may have committed before the answer was lost.
+ */
+async function requestGovernedJson(url: string, body: string): Promise<AnyRecord> {
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+  } catch {
+    throw new OperationalFlowRequestError("The request could not reach the server, so it is not known whether it was recorded.", {
+      status: 0,
+      code: "network_unreachable",
+      recovery: "Check your connection, then reload to see the current state before trying again.",
+    });
+  }
+
+  let result: AnyRecord | null = null;
+  try {
+    const parsed: unknown = await response.json();
+    if (parsed && typeof parsed === "object") result = parsed as AnyRecord;
+  } catch {
+    result = null;
+  }
+
+  if (!response.ok || result === null) {
+    // `safeInternalErrorResponse` routes nest the message as `{ error: { message } }`.
+    const bodyError = result?.error;
+    const message =
+      typeof bodyError === "string" && bodyError.trim() ? bodyError
+      : bodyError && typeof bodyError === "object" && typeof (bodyError as AnyRecord).message === "string" ? String((bodyError as AnyRecord).message)
+      : result === null ? `The server returned an unreadable answer (HTTP ${response.status}), so it is not known whether this was recorded.`
+      : UNKNOWN_FAILURE_MESSAGE;
+    throw new OperationalFlowRequestError(message, {
       status: response.status,
-      code: typeof result.code === "string" ? result.code : undefined,
-      recovery: typeof result.recovery === "string" ? result.recovery : undefined,
-      referenceId: typeof result.referenceId === "string" ? result.referenceId : undefined,
+      code: typeof result?.code === "string" ? result.code : undefined,
+      recovery:
+        typeof result?.recovery === "string" ? result.recovery
+        : result === null ? "Reload to see the current state before trying again."
+        : undefined,
+      referenceId: typeof result?.referenceId === "string" ? result.referenceId : undefined,
     });
   }
   return result;
+}
+
+export async function postOperationalFlow(workspaceId: string, projectId: string, payload: AnyRecord) {
+  return requestGovernedJson("/api/operational-flow", JSON.stringify({ workspaceId, projectId, ...payload }));
+}
+
+/** What a surface shows for a failed governed operation. */
+export type OperationFailure = {
+  message: string;
+  /** A human next step. Absent when the server gave none, or gave only a machine token. */
+  recovery?: string;
+  /** Server-minted; correlates this failure to the server log line. */
+  referenceId?: string;
+  code?: string;
+};
+
+/**
+ * `recovery` is a human sentence in the CHAT-GOV-01a governed-refusal contract and a
+ * machine token (`reload_recorded_state`) in the older P2-15 conflict contract. Only the
+ * sentence is shown; a token is a switch value, not prose.
+ */
+function isHumanRecovery(recovery: string): boolean {
+  return /\s/.test(recovery.trim());
+}
+
+/** Turns anything a governed operation rejected with into what the surface renders. */
+export function describeOperationFailure(caught: unknown): OperationFailure {
+  if (caught instanceof OperationalFlowRequestError) {
+    return {
+      message: caught.message,
+      ...(caught.recovery && isHumanRecovery(caught.recovery) ? { recovery: caught.recovery } : {}),
+      ...(caught.referenceId ? { referenceId: caught.referenceId } : {}),
+      ...(caught.code ? { code: caught.code } : {}),
+    };
+  }
+  if (caught instanceof Error && caught.message) return { message: caught.message };
+  return { message: "The operation could not be completed." };
 }
 
 export async function captureAndDeriveDemoEvidence(workspaceId: string, projectId: string, input: {
@@ -128,7 +207,7 @@ export async function captureAndDeriveDemoEvidence(workspaceId: string, projectI
     title: input.title, content: input.content, occurredAt: new Date().toISOString(), correlationId: requestId,
   });
   return postOperationalFlow(workspaceId, projectId, {
-    operation: "derive_evidence", normalizedEventId: captured.normalizedEvent.id, idempotencyKey: `evidence:${requestId}`,
+    operation: "derive_evidence", normalizedEventId: (captured.normalizedEvent as AnyRecord).id, idempotencyKey: `evidence:${requestId}`,
     assertionType: input.assertionType ?? "ASSUMPTION", classification: input.classification ?? "UNCLASSIFIED",
     confidenceScore: input.confidenceScore ?? 0.5, missingDataState: input.missingDataState ?? "UNKNOWN", evaluatedAt: new Date().toISOString(),
   });
@@ -181,7 +260,7 @@ export async function captureAndDeriveLiveEvidence(workspaceId: string, projectI
     title: input.title, content: input.content, occurredAt: new Date().toISOString(), correlationId,
   });
   return postOperationalFlow(workspaceId, projectId, {
-    operation: "derive_evidence", normalizedEventId: captured.normalizedEvent.id,
+    operation: "derive_evidence", normalizedEventId: (captured.normalizedEvent as AnyRecord).id,
     idempotencyKey: `live-evidence:${submissionId}`,
     assertionType: input.assertionType, classification: input.classification,
     confidenceScore: input.confidenceScore, missingDataState: input.missingDataState,
@@ -453,17 +532,23 @@ export async function runExecutionOperation(
   }
 
   if (operation.kind === "execution") {
-    const response = await fetch("/api/execution-tasks/internal-execution", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ taskId: operation.taskId, command: operation.command }),
-    });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(String(result.error ?? "Execution command failed."));
-    // A denied transition returns 200 with a disposition, so it is checked explicitly
-    // rather than inferred from the HTTP status alone.
+    const result = await requestGovernedJson(
+      "/api/execution-tasks/internal-execution",
+      JSON.stringify({ taskId: operation.taskId, command: operation.command }),
+    );
+    // The route answers a refusal with 409, which the parser already rejected. A refusal
+    // disposition on a 2xx would be a contract drift, so it is still refused, never
+    // reported as success.
     if (result.disposition === "denied" || result.disposition === "conflict") {
-      throw new Error(String(result.reason ?? result.failureClass ?? "Execution command was not accepted."));
+      throw new OperationalFlowRequestError(
+        typeof result.error === "string" && result.error ? result.error : "The execution command was not accepted.",
+        {
+          status: 409,
+          code: typeof result.code === "string" ? result.code : undefined,
+          recovery: typeof result.recovery === "string" ? result.recovery : undefined,
+          referenceId: typeof result.referenceId === "string" ? result.referenceId : undefined,
+        },
+      );
     }
     return;
   }

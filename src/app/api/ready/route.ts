@@ -3,6 +3,7 @@ import { getRequestId } from "@/lib/api/http";
 import { hasSupabaseEnv, getSupabaseEnv } from "@/lib/supabase/env";
 import { logger, safeErrorMessage } from "@/lib/observability/logger";
 import { checkGovernanceCapabilityConfiguration } from "@/lib/security/governance-capability";
+import { checkFronteraReadiness } from "@/lib/integrations/frontera/readiness";
 
 // Perilla 11 — readiness probe, distinct from /api/health:
 //   /api/health → liveness: the process is up and the AOC runtime composes.
@@ -111,6 +112,12 @@ export async function GET(request: Request) {
     // profile does, and no other profile reports the check.
     if (isClosedFreeBeta()) checks.push(await checkAuth());
     const ready = checks.every((check) => check.status === "pass");
+    // CHAT-GOV-01a. Frontera backs governed DISPATCH only, so it is reported beside the
+    // checks rather than among them: an absent authority store must not withdraw an
+    // instance that still serves every other surface, and dispatch fails closed on its own
+    // whatever this says (RR-READINESS-NOT-A-GOVERNED-GATE). Three fixed-vocabulary fields;
+    // never a value, path or provisioning fact. The probe does not open the store.
+    const frontera = await checkFronteraReadiness();
     if (!ready) {
       logger.warn("readiness_check_failed", {
         request_id: requestId,
@@ -120,7 +127,7 @@ export async function GET(request: Request) {
       });
     }
     return NextResponse.json(
-      { status: ready ? "ready" : "not_ready", checks, timestamp: new Date().toISOString() },
+      { status: ready ? "ready" : "not_ready", checks, frontera, timestamp: new Date().toISOString() },
       { status: ready ? 200 : 503, headers: { "x-request-id": requestId } },
     );
   } catch (error) {

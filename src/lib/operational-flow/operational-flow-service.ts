@@ -432,8 +432,14 @@ export async function dispatchGovernedMaterialActionToTask(
     // They are what an operator needs and precisely what an arbitrary client
     // should not be told about another system's authority structure; the
     // caller gets a narrow failure class and nothing further.
+    //
+    // CHAT-GOV-01a: the reference id is minted here, where the refusal is logged, so the
+    // one the PM quotes to support is the one on this line. It is random — nothing about
+    // the request, actor or store is encoded in it.
+    const referenceId = randomUUID();
     logger.warn("governed material action dispatch refused at the Frontera boundary", {
       routeId: "operational-flow.dispatch_material_action_to_task",
+      referenceId,
       actionId,
       workspaceId: scope.workspaceId,
       projectId: scope.projectId,
@@ -446,6 +452,7 @@ export async function dispatchGovernedMaterialActionToTask(
       disposition: "denied" as const,
       failureClass: frontera.failureClass,
       reason: "frontera_enforcement_denied",
+      referenceId,
     };
   }
 
@@ -463,15 +470,41 @@ export async function dispatchGovernedMaterialActionToTask(
   // The RPC stays the transaction and idempotency boundary: the Task is created
   // there, once, or not at all. Frontera authorized the attempt; it did not
   // create anything and cannot.
+  const data = result.data as Record<string, unknown>;
+
+  // CHAT-GOV-01a: the contract refused (expired, revoked, stale, digest conflict, …). The
+  // refusal is returned unchanged; it only gains a logged reference id. Until now these
+  // refusals were not logged at all, so support had nothing to correlate a report with.
+  if (data.disposition === "denied" || data.disposition === "conflict") {
+    const referenceId = randomUUID();
+    logger.warn("governed material action dispatch refused by the canonical contract", {
+      routeId: "operational-flow.dispatch_material_action_to_task",
+      referenceId,
+      actionId,
+      workspaceId: scope.workspaceId,
+      projectId: scope.projectId,
+      disposition: data.disposition,
+      failureClass: data.failureClass,
+      reason: data.reason,
+      governanceState: data.governanceState,
+    });
+    return { ...data, referenceId } as Record<string, unknown> & {
+      disposition: "conflict" | "denied";
+      failureClass?: string;
+      referenceId: string;
+    };
+  }
+
   // Correlation only. The Frontera decision id is an opaque handle that ties
   // this dispatch to Frontera's own audit trail; it is not PMFreak evidence and
   // is not written to any PMFreak table.
   return {
-    ...(result.data as Record<string, unknown>),
+    ...data,
     fronteraDecisionId: frontera.decisionId,
   } as Record<string, unknown> & {
     disposition?: "created" | "existing" | "conflict" | "denied";
     failureClass?: string;
+    referenceId?: string;
   };
 }
 

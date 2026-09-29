@@ -26,6 +26,7 @@ import {
 } from "@/lib/operational-flow/intake-source-keys";
 import { GENERIC_UNAUTHORIZED_MESSAGE, safeLegacyErrorResponse } from "@/lib/security/safe-route-error";
 import { resolveOperationalFlowConflict } from "@/lib/operational-flow/conflict-contract";
+import { governedDenialBody } from "@/lib/operational-flow/governed-denial-contract";
 import { randomUUID } from "node:crypto";
 import { logger, safeErrorMessage } from "@/lib/observability/logger";
 
@@ -218,12 +219,22 @@ export async function POST(request: Request) {
         actionId: String(body.actionId ?? ""),
         expectedProposalDigest: body.expectedProposalDigest ? String(body.expectedProposalDigest) : null,
       });
-      const status =
-        result.disposition === "created" ? 201 :
-        result.disposition === "existing" ? 200 :
-        result.disposition === "conflict" ? 409 :
-        409;
-      return Response.json(result, { status });
+      if (result.disposition === "created") return Response.json(result, { status: 201 });
+      if (result.disposition === "existing") return Response.json(result, { status: 200 });
+      // CHAT-GOV-01a. Every other disposition is a governed refusal (Frontera or the
+      // canonical contract) and keeps its 409. It is answered in the safe vocabulary — a
+      // human `error`, a stable `code`, a `recovery` step and the `referenceId` the service
+      // logged — rather than as a bare failure class the client could only show generically.
+      let referenceId = typeof result.referenceId === "string" ? result.referenceId : "";
+      if (!referenceId) {
+        // Only an unrecognised disposition arrives without one; it still gets a logged reference.
+        referenceId = randomUUID();
+        logger.warn("governed_dispatch_unrecognised_disposition", {
+          route: ROUTE_ID, operation, workspace_id: workspaceId, user_id: authorized.user.id,
+          reference_id: referenceId, disposition: String(result.disposition ?? ""), failure_class: String(result.failureClass ?? ""),
+        });
+      }
+      return Response.json(governedDenialBody(result, referenceId), { status: 409 });
     }
     if (operation === "revoke_material_action") return Response.json(await revokeGovernedMaterialAction(authorized.supabase, scope, {
       actionId: String(body.actionId ?? ""), evaluationTime: String(body.evaluationTime ?? ""), reasonCode: String(body.reasonCode ?? "governance_revoked"),
