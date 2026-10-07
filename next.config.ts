@@ -55,9 +55,10 @@ const nextConfig: NextConfig = {
  * NOT called: it remains outside the closed-beta boundary (RR-PRODUCTION-ENV-GUARD).
  */
 export default function config(phase: string): NextConfig {
-  if (phase === PHASE_PRODUCTION_SERVER) {
-    // Fails closed: a certified production server must not become operational with an
-    // unrecognized operating profile or an invalid closed-beta environment.
+  if (phase === PHASE_PRODUCTION_SERVER && getRuntimeEnvironment() === "production") {
+    // Fail closed only for the real production runtime. Vercel Preview also runs
+    // with a production server phase, but VERCEL_ENV=preview is intentionally not
+    // required to satisfy the closed-beta production environment contract.
     assertClosedFreeBetaEnvSafety();
   }
   return nextConfig;
