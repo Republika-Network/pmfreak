@@ -15,115 +15,31 @@ type FooterColumn = {
 
 export const metadata: Metadata = {
   description:
-    "PMFreak helps companies keep, protect, and use what they learn from every project.",
+    "PMFreak is an operational command center for project memory, decisions, evidence and AI-assisted execution.",
 };
 
-const operationalRealities = [
-  {
-    title: "Escalations surface too late",
-    description:
-      "Critical issues often sit across chats, docs, and meetings before reaching decision makers.",
-  },
-  {
-    title: "Status can look green while real work is already at risk",
-    description:
-      "Teams often discover delivery problems only after momentum has already been lost.",
-  },
-  {
-    title: "Context fragmentation burns PM time",
-    description:
-      "Project managers spend hours reconstructing what changed, who owns what, and what needs action.",
-  },
-  {
-    title: "Leadership gets decision-ready context too late",
-    description:
-      "Scattered updates make it difficult to walk into meetings with clear, current context.",
-  },
-  {
-    title: "Sensitive project knowledge leaks into uncontrolled AI tools",
-    description:
-      "Without a safe place to work, teams paste confidential context into tools no one is tracking.",
-  },
+const scatteredSignals = [
+  ["Slack", "Stakeholder escalation"],
+  ["Meeting", "Architecture changed"],
+  ["Docs", "New dependency"],
+  ["Email", "Vendor date moved"],
+  ["Issue", "Release blocker"],
+  ["AI", "Draft recommendation"],
 ] as const;
 
-const operationalFlowSteps = [
-  {
-    step: "01",
-    title: "Connect the project context",
-    text: "Bring together the updates, decisions, risks, and signals that matter.",
-  },
-  {
-    step: "02",
-    title: "Build project memory",
-    text: "PMFreak keeps track of what happened, who committed to what, and what still needs attention.",
-  },
-  {
-    step: "03",
-    title: "Spot what needs action",
-    text: "Risks, blockers, overdue commitments, and weak signals are surfaced before they become escalations.",
-  },
-  {
-    step: "04",
-    title: "Prepare the next step",
-    text: "PMFreak helps draft updates, actions, and recommendations based on the project context.",
-  },
-  {
-    step: "05",
-    title: "Keep control",
-    text: "Sensitive actions are routed for human approval, and important decisions are recorded.",
-  },
+const memoryEvents = [
+  ["JUL 08", "Scope approved", "Confirmed"],
+  ["JUL 14", "Architecture changed", "Current"],
+  ["JUL 21", "Vendor dependency introduced", "Current"],
+  ["AUG 02", "Decision superseded", "Superseded"],
+  ["AUG 07", "Production plan approved", "Current"],
 ] as const;
 
-const solutionCapabilities = [
-  {
-    title: "Remember decisions",
-    description: "Keep a record of what was decided, when, and why.",
-  },
-  {
-    title: "Track risks",
-    description: "Surface what's threatening delivery before it becomes a surprise.",
-  },
-  {
-    title: "Capture commitments",
-    description: "Know who committed to what, and whether it's still on track.",
-  },
-  {
-    title: "Prepare next actions",
-    description: "Get ready-to-review drafts for updates and next steps.",
-  },
-  {
-    title: "Route sensitive actions for approval",
-    description: "Nothing sensitive happens without a human in the loop.",
-  },
-  {
-    title: "Keep a clear record of what happened",
-    description: "Build a project history your team can trust and reuse.",
-  },
+const agentRows = [
+  ["Research agent", "Evidence + project context", "Complete"],
+  ["Planning agent", "Constraints + current decisions", "Working"],
+  ["Execution agent", "Approved action boundary", "Waiting"],
 ] as const;
-
-const traditionalToolPoints = [
-  "Track tasks and dates",
-  "Depend on manual updates",
-  "Show status after the fact",
-  "Lose context across projects",
-] as const;
-
-const genericAiToolPoints = [
-  "Summarize what you paste in",
-  "Depend on prompts",
-  "Scatter sensitive context",
-  "Do not understand your project history",
-] as const;
-
-const pmfreakPoints = [
-  "Keeps project knowledge organized",
-  "Spots risks and commitments",
-  "Prepares next actions",
-  "Routes sensitive actions for approval",
-  "Creates a clear record your team can trust",
-] as const;
-
-
 
 const footerColumns = [
   {
@@ -162,280 +78,395 @@ const footerColumns = [
   },
 ] as const satisfies readonly FooterColumn[];
 
-const primaryCtaClass =
-  "rounded-full bg-[#ff008c] px-6 py-3 text-sm font-bold text-white transition hover:bg-[#db0078]";
-
-const secondaryCtaClass =
-  "rounded-full border border-white/20 bg-white/10 px-6 py-3 text-sm font-bold text-white transition hover:bg-white/15";
-
-const lightSectionClass = "rounded-3xl border border-zinc-200 bg-white shadow-sm";
-
-function OperationalRealitySection() {
+function FragmentationSection() {
   return (
-    <section className={`${lightSectionClass} p-7 md:p-9`}>
-      <p className="text-xs font-bold uppercase tracking-[0.24em] text-[#ff008c]">
-        <span id="intelligence" className="block scroll-mt-[140px]"></span>The problem
-      </p>
+    <section id="intelligence" className="scroll-mt-28 overflow-hidden border-b border-zinc-200 bg-white">
+      <div className="mx-auto grid w-full max-w-[1320px] gap-14 px-5 py-24 md:px-8 lg:grid-cols-[0.75fr_1.25fr] lg:items-center lg:px-12 lg:py-32">
+        <div>
+          <p className="text-[11px] font-black uppercase tracking-[0.24em] text-[#ff008c]">
+            The operating problem
+          </p>
+          <h2 className="mt-4 max-w-xl text-4xl font-black leading-[0.96] tracking-[-0.045em] text-zinc-950 md:text-6xl">
+            Projects don&apos;t fail because they lack tasks.
+          </h2>
+          <p className="mt-6 max-w-lg text-lg leading-8 text-zinc-500">
+            They fail when the context behind the work gets fragmented. PMFreak reconnects the signals that explain what changed, why it matters, and what needs attention now.
+          </p>
+        </div>
 
-      <h2 className="mt-3 text-3xl font-black text-zinc-950 md:text-4xl">
-        The hidden cost of scattered project knowledge
-      </h2>
+        <div className="relative min-h-[540px]">
+          <div className="absolute left-1/2 top-1/2 h-[330px] w-[330px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-zinc-200 bg-[#faf9f7] shadow-[0_30px_90px_rgba(24,24,27,.09)]">
+            <div className="absolute inset-8 rounded-full border border-dashed border-zinc-300" />
+            <div className="absolute inset-16 flex flex-col items-center justify-center rounded-full bg-zinc-950 text-center text-white shadow-[0_20px_70px_rgba(24,24,27,.22)]">
+              <span className="text-[10px] font-black uppercase tracking-[0.2em] text-cyan-200">PMFreak</span>
+              <span className="mt-2 text-2xl font-black tracking-[-0.04em]">Project Brain</span>
+              <span className="mt-2 max-w-[150px] text-xs leading-5 text-zinc-400">Grounded operational context</span>
+            </div>
+          </div>
 
-      <p className="mt-3 max-w-3xl text-sm leading-relaxed text-zinc-600 md:text-base">
-        Projects don&rsquo;t only create tasks. They create decisions, context,
-        risks, commitments, lessons, and evidence. When that knowledge is
-        scattered across tools and people, teams move slower, leaders see
-        problems too late, and every new project starts from scratch.
-      </p>
-
-      <div className="mt-6 grid gap-4 sm:grid-cols-2">
-        {operationalRealities.map((item) => (
-          <article
-            key={item.title}
-            className="rounded-2xl border border-zinc-200 bg-zinc-50 p-5"
-          >
-            <h3 className="text-base font-black text-zinc-950 md:text-lg">
-              {item.title}
-            </h3>
-
-            <p className="mt-2 text-sm leading-relaxed text-zinc-700">
-              {item.description}
-            </p>
-          </article>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function SolutionSection() {
-  return (
-    <section className={`${lightSectionClass} p-7 md:p-9`}>
-      <p className="text-xs font-bold uppercase tracking-[0.24em] text-[#ff008c]">
-        The solution
-      </p>
-
-      <h2 className="mt-3 text-3xl font-black text-zinc-950 md:text-4xl">
-        Keep what your projects already know.
-      </h2>
-
-      <p className="mt-3 max-w-3xl text-sm leading-relaxed text-zinc-600 md:text-base">
-        PMFreak helps your team build a shared memory of each project &mdash;
-        decisions, risks, blockers, approvals, commitments, and next steps
-        &mdash; while keeping sensitive context inside controlled boundaries.
-      </p>
-
-      <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {solutionCapabilities.map((item) => (
-          <article
-            key={item.title}
-            className="rounded-2xl border border-zinc-200 bg-zinc-50 p-5"
-          >
-            <h3 className="text-base font-black text-zinc-950 md:text-lg">
-              {item.title}
-            </h3>
-
-            <p className="mt-2 text-sm leading-relaxed text-zinc-700">
-              {item.description}
-            </p>
-          </article>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function OperationalFlowSection() {
-  return (
-    <section id="how-it-works" className={`${lightSectionClass} scroll-mt-[140px] p-7 md:p-9`}>
-      <p className="text-xs font-bold uppercase tracking-[0.24em] text-[#ff008c]">
-        HOW IT WORKS
-      </p>
-
-      <h2 className="mt-3 text-3xl font-black text-zinc-950 md:text-4xl">
-        From scattered updates to a clear next step.
-      </h2>
-
-      <p className="mt-3 max-w-3xl text-sm leading-relaxed text-zinc-600 md:text-base">
-        PMFreak turns everyday project updates into organized knowledge, clear priorities, and next steps you can trust.
-      </p>
-
-      <div className="relative mt-7 overflow-hidden rounded-3xl border border-zinc-200 bg-gradient-to-b from-white via-zinc-50 to-white p-4 shadow-[0_25px_70px_rgba(10,10,10,0.08)] md:p-7">
-        <div className="pointer-events-none absolute -left-16 top-8 h-40 w-40 rounded-full bg-fuchsia-200/50 blur-3xl" />
-        <div className="pointer-events-none absolute -right-12 bottom-10 h-36 w-36 rounded-full bg-cyan-200/60 blur-3xl" />
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_30%,rgba(236,72,153,0.10),transparent_40%),radial-gradient(circle_at_75%_65%,rgba(34,211,238,0.10),transparent_38%)]" />
-        <div className="pointer-events-none absolute left-1/2 top-1/2 h-[34rem] w-[34rem] -translate-x-1/2 -translate-y-1/2 rounded-full border border-zinc-200/70 opacity-70" />
-        <div className="pointer-events-none absolute left-1/2 top-1/2 h-[22rem] w-[22rem] -translate-x-1/2 -translate-y-1/2 rounded-full border border-zinc-200/60 opacity-60" />
-
-        <div className="relative">
-          <svg viewBox="0 0 1200 560" className="pointer-events-none absolute inset-0 hidden h-full w-full lg:block" fill="none" aria-hidden>
-            <path d="M40 170 C260 170 300 105 510 130 C660 148 680 214 780 228 C910 246 980 220 1160 220" className="signal-path-a" />
-            <path d="M44 280 C250 280 300 315 500 300 C640 290 700 238 800 255 C940 280 1000 330 1160 326" className="signal-path-b" />
-            <path d="M600 334 C620 390 690 430 820 438 C930 445 1040 420 1154 378" className="signal-path-c" />
-            <path d="M594 334 C560 386 488 420 344 434 C228 446 128 428 48 396" className="signal-path-d" />
-            <path d="M80 232 C220 236 320 228 490 244 C590 252 665 260 740 286 C858 326 1040 368 1140 364" className="signal-path-e" />
-            <path d="M78 196 C228 188 298 140 468 164 C582 182 650 226 734 226 C908 228 1032 206 1138 188" className="signal-path-f" />
-            <circle cx="190" cy="220" r="5" className="route-dot dot-a" />
-            <circle cx="350" cy="206" r="4.5" className="route-dot dot-b" />
-            <circle cx="558" cy="254" r="4.5" className="route-dot dot-c" />
-            <circle cx="738" cy="230" r="4.5" className="route-dot dot-d" />
-            <circle cx="960" cy="234" r="5" className="route-dot dot-e" />
-            <circle cx="600" cy="272" r="12" className="fill-zinc-950/90" />
-          </svg>
-
-          <div className="grid gap-4 lg:grid-cols-[1.1fr_1.45fr_1.1fr]">
-            <article className="rounded-2xl border border-fuchsia-200 bg-white/85 p-4 backdrop-blur">
-              <p className="text-xs font-black uppercase tracking-[0.18em] text-fuchsia-600">01 • Context</p>
-              <h3 className="mt-2 text-base font-black text-zinc-950">{operationalFlowSteps[0].title}</h3>
-              <p className="mt-2 text-sm leading-relaxed text-zinc-700">{operationalFlowSteps[0].text}</p>
-              <div className="mt-4 flex flex-wrap gap-2 text-[11px] font-semibold text-zinc-600">
-                <span className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1">Updates</span>
-                <span className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1">Decisions</span>
-                <span className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1">Risks & signals</span>
+          {scatteredSignals.map(([source, signal], index) => {
+            const positions = [
+              "left-[1%] top-[5%]",
+              "right-[2%] top-[12%]",
+              "left-[0%] top-[42%]",
+              "right-[0%] top-[48%]",
+              "left-[10%] bottom-[3%]",
+              "right-[9%] bottom-[2%]",
+            ];
+            return (
+              <div
+                key={signal}
+                className={`absolute w-[190px] rounded-2xl border border-zinc-200 bg-white p-3 shadow-[0_18px_50px_rgba(24,24,27,.09)] ${positions[index]}`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-[#ff008c]" />
+                  <span className="text-[9px] font-black uppercase tracking-[0.16em] text-zinc-400">{source}</span>
+                </div>
+                <p className="mt-2 text-xs font-bold text-zinc-800">{signal}</p>
               </div>
-            </article>
+            );
+          })}
 
-            <article className="relative row-span-2 rounded-3xl border border-zinc-200 bg-white p-5 shadow-[0_20px_45px_rgba(0,0,0,0.10)]">
-              <div className="pointer-events-none absolute inset-0 rounded-3xl border border-fuchsia-300/30" />
-              <div className="pointer-events-none absolute inset-5 rounded-[1.25rem] border border-cyan-300/25" />
-              <div className="core-orbit pointer-events-none absolute left-1/2 top-1/2 h-48 w-48 -translate-x-1/2 -translate-y-1/2 rounded-full border border-fuchsia-300/35" />
-              <div className="core-orbit core-orbit-slow pointer-events-none absolute left-1/2 top-1/2 h-60 w-60 -translate-x-1/2 -translate-y-1/2 rounded-full border border-cyan-300/25" />
-              <div className="absolute left-1/2 top-0 h-16 w-px -translate-x-1/2 bg-gradient-to-b from-fuchsia-300/60 to-transparent" />
-              <p className="text-xs font-black uppercase tracking-[0.18em] text-cyan-700">03 • Action Signals</p>
-              <h3 className="mt-2 text-lg font-black text-zinc-950">{operationalFlowSteps[2].title}</h3>
-              <p className="mt-2 text-sm leading-relaxed text-zinc-700">{operationalFlowSteps[2].text}</p>
-              <div className="relative mt-5 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-                <div className="pointer-events-none absolute left-1/2 top-1/2 h-24 w-24 -translate-x-1/2 -translate-y-1/2 animate-pulse rounded-full bg-fuchsia-200/40 blur-2xl" />
-                <div className="core-blink pointer-events-none absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full bg-zinc-950/80" />
-                <p className="relative text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">PMFreak · Surfacing what needs attention</p>
-                <div className="relative mt-3 grid grid-cols-2 gap-2 text-xs font-semibold text-zinc-700">
-                  <span className="rounded-xl border border-zinc-200 bg-white px-3 py-2">Risks</span>
-                  <span className="rounded-xl border border-zinc-200 bg-white px-3 py-2">Blockers</span>
-                  <span className="rounded-xl border border-zinc-200 bg-white px-3 py-2">Overdue</span>
-                  <span className="rounded-xl border border-zinc-200 bg-white px-3 py-2">Escalate</span>
+          <svg viewBox="0 0 700 540" className="pointer-events-none absolute inset-0 h-full w-full" fill="none" aria-hidden>
+            <path d="M132 70 C228 96 250 172 305 220" stroke="rgba(255,0,140,.22)" strokeWidth="1.5" strokeDasharray="5 7" />
+            <path d="M574 92 C500 120 466 168 400 220" stroke="rgba(34,211,238,.28)" strokeWidth="1.5" strokeDasharray="5 7" />
+            <path d="M125 270 C212 264 252 270 305 270" stroke="rgba(24,24,27,.18)" strokeWidth="1.5" strokeDasharray="5 7" />
+            <path d="M578 300 C490 292 451 282 398 272" stroke="rgba(24,24,27,.18)" strokeWidth="1.5" strokeDasharray="5 7" />
+            <path d="M174 484 C226 420 267 374 318 320" stroke="rgba(34,211,238,.28)" strokeWidth="1.5" strokeDasharray="5 7" />
+            <path d="M532 486 C480 422 438 374 387 320" stroke="rgba(255,0,140,.22)" strokeWidth="1.5" strokeDasharray="5 7" />
+          </svg>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function CommandCenterSection() {
+  return (
+    <section id="how-it-works" className="scroll-mt-28 overflow-hidden bg-[#0b0b0d] text-white">
+      <div className="mx-auto w-full max-w-[1440px] px-5 py-24 md:px-8 lg:px-12 lg:py-32">
+        <div className="grid gap-10 lg:grid-cols-[0.72fr_1.28fr] lg:items-end">
+          <div>
+            <p className="text-[11px] font-black uppercase tracking-[0.24em] text-cyan-200">Command Center</p>
+            <h2 className="mt-4 text-4xl font-black leading-[0.94] tracking-[-0.05em] md:text-6xl">
+              See the project the way it actually is.
+            </h2>
+          </div>
+          <p className="max-w-xl text-base leading-7 text-zinc-400 lg:justify-self-end">
+            PMFreak puts current context, attention-worthy signals, decisions and agent activity in one operational surface instead of another undifferentiated dashboard.
+          </p>
+        </div>
+
+        <div className="relative mt-14 overflow-hidden rounded-[2rem] border border-white/10 bg-[#111114] p-3 shadow-[0_40px_120px_rgba(0,0,0,.5)] md:p-5">
+          <div className="pointer-events-none absolute -right-20 top-0 h-72 w-72 rounded-full bg-cyan-300/10 blur-[100px]" />
+          <div className="pointer-events-none absolute bottom-0 left-1/3 h-72 w-72 rounded-full bg-[#ff008c]/10 blur-[110px]" />
+
+          <div className="relative overflow-hidden rounded-[1.5rem] border border-white/10 bg-[#f8f8f6] text-zinc-950">
+            <div className="flex items-center justify-between border-b border-zinc-200 px-5 py-4">
+              <div className="flex items-center gap-3">
+                <span className="h-3 w-3 rounded-full bg-[#ff008c]" />
+                <span className="text-sm font-black">PMFreak / Command Center</span>
+              </div>
+              <span className="text-[10px] font-black uppercase tracking-[0.16em] text-zinc-400">Current operational state</span>
+            </div>
+
+            <div className="grid min-h-[600px] lg:grid-cols-[0.72fr_1.45fr_0.85fr]">
+              <aside className="border-b border-zinc-200 bg-[#efeee9] p-5 lg:border-b-0 lg:border-r">
+                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-400">Workspace</p>
+                <div className="mt-5 space-y-2">
+                  {[
+                    ["Platform migration", "2"],
+                    ["ERP rollout", ""],
+                    ["Data program", "1"],
+                    ["Customer portal", ""],
+                  ].map(([label, count], index) => (
+                    <div key={label} className={`flex items-center justify-between rounded-xl px-3 py-3 text-xs font-bold ${index === 0 ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-500"}`}>
+                      <span>{label}</span>
+                      {count ? <span className="rounded-full bg-[#fff0f8] px-2 py-0.5 text-[9px] text-[#c6006c]">{count}</span> : null}
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-10 border-t border-zinc-300 pt-5">
+                  <p className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-400">Project memory</p>
+                  <div className="mt-4 space-y-3 text-xs font-semibold text-zinc-500">
+                    <p>Evidence repository</p>
+                    <p>Decision history</p>
+                    <p>Commitments</p>
+                    <p>Outcomes</p>
+                  </div>
+                </div>
+              </aside>
+
+              <div className="p-5 md:p-7">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-[0.18em] text-[#ff008c]">Project intelligence</p>
+                    <h3 className="mt-2 text-3xl font-black tracking-[-0.04em]">What changed today?</h3>
+                  </div>
+                  <span className="rounded-full border border-zinc-200 bg-white px-3 py-2 text-[10px] font-bold text-zinc-500">Evidence grounded</span>
+                </div>
+
+                <div className="mt-7 grid gap-3 md:grid-cols-2">
+                  <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+                    <p className="text-[9px] font-black uppercase tracking-[0.16em] text-amber-600">Risk changed</p>
+                    <p className="mt-2 text-sm font-black">Release confidence decreased</p>
+                    <p className="mt-2 text-xs leading-5 text-zinc-500">A vendor date now overlaps the production window.</p>
+                  </div>
+                  <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+                    <p className="text-[9px] font-black uppercase tracking-[0.16em] text-cyan-700">Commitment</p>
+                    <p className="mt-2 text-sm font-black">API validation · Friday</p>
+                    <p className="mt-2 text-xs leading-5 text-zinc-500">Owner confirmed. Evidence source attached.</p>
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-[1.4rem] border border-zinc-200 bg-white p-5 shadow-sm">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-[9px] font-black uppercase tracking-[0.16em] text-zinc-400">Operational recommendation</p>
+                      <p className="mt-2 max-w-lg text-lg font-black tracking-[-0.025em]">
+                        Validate the dependency before keeping the current release date.
+                      </p>
+                    </div>
+                    <span className="mt-1 h-3 w-3 shrink-0 rounded-full bg-[#ff008c] shadow-[0_0_18px_rgba(255,0,140,.5)]" />
+                  </div>
+                  <div className="mt-5 flex flex-wrap gap-2">
+                    <span className="rounded-full bg-zinc-950 px-3 py-2 text-[10px] font-bold text-white">Review evidence</span>
+                    <span className="rounded-full border border-zinc-200 px-3 py-2 text-[10px] font-bold text-zinc-700">Open decision</span>
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-full border border-zinc-200 bg-[#f4f3ef] px-4 py-3 text-xs text-zinc-400">
+                  Ask PMFreak what changed, why it matters, or what should happen next...
                 </div>
               </div>
-              <div className="mt-4 grid gap-2 sm:grid-cols-2">
-                <div className="rounded-xl border border-fuchsia-100 bg-fuchsia-50/60 px-3 py-2 text-xs font-medium text-zinc-700">Risk heat shifts</div>
-                <div className="rounded-xl border border-cyan-100 bg-cyan-50/60 px-3 py-2 text-xs font-medium text-zinc-700">Stakeholder tension</div>
-              </div>
-              <div className="mt-4 flex items-center gap-2 text-xs text-zinc-600">
-                <span className="inline-block h-2.5 w-2.5 animate-ping rounded-full bg-fuchsia-500" />
-                Always watching for what needs attention
-              </div>
-            </article>
 
-            <article className="rounded-2xl border border-cyan-200 bg-white/90 p-4">
-              <p className="text-xs font-black uppercase tracking-[0.18em] text-cyan-700">05 • Keep Control</p>
-              <h3 className="mt-2 text-base font-black text-zinc-950">{operationalFlowSteps[4].title}</h3>
-              <p className="mt-2 text-sm leading-relaxed text-zinc-700">{operationalFlowSteps[4].text}</p>
-              <div className="mt-4 space-y-2 text-xs font-medium text-zinc-700">
-                <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2">Sensitive actions await approval</div>
-                <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2">Decisions recorded automatically</div>
-                <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2">Clear audit trail maintained</div>
-              </div>
-            </article>
-          </div>
+              <aside className="border-t border-zinc-200 bg-white p-5 lg:border-l lg:border-t-0">
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-400">Needs you</p>
+                  <span className="rounded-full bg-[#ff008c] px-2 py-0.5 text-[9px] font-black text-white">2</span>
+                </div>
 
-          <div className="relative mt-4 grid gap-4 lg:grid-cols-[1.1fr_1.45fr_1.1fr]">
-            <article className="rounded-2xl border border-zinc-200 bg-white p-4">
-              <p className="text-xs font-black uppercase tracking-[0.18em] text-cyan-700">02 • Memory</p>
-              <h3 className="mt-2 text-base font-black text-zinc-950">{operationalFlowSteps[1].title}</h3>
-              <p className="mt-2 text-sm leading-relaxed text-zinc-700">{operationalFlowSteps[1].text}</p>
-              <div className="mt-4 flex flex-wrap gap-2 text-[11px] font-semibold text-zinc-600">
-                <span className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1">Decisions</span>
-                <span className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1">Commitments</span>
-                <span className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1">Owners</span>
-                <span className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1">Status</span>
-              </div>
-            </article>
-            <div className="hidden items-center justify-center lg:flex">
-              <div className="h-[1px] w-full max-w-[420px] bg-gradient-to-r from-transparent via-zinc-300 to-transparent" />
+                <div className="mt-5 rounded-2xl border border-[#ffb6dd] bg-[#fff3f9] p-4">
+                  <p className="text-[9px] font-black uppercase tracking-[0.16em] text-[#c6006c]">Decision</p>
+                  <p className="mt-2 text-sm font-black">Production release</p>
+                  <p className="mt-2 text-xs leading-5 text-zinc-600">Evidence changed after the approved plan.</p>
+                </div>
+
+                <div className="mt-8">
+                  <p className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-400">Agents</p>
+                  <div className="mt-4 space-y-2">
+                    {agentRows.map(([agent, context, state]) => (
+                      <div key={agent} className="rounded-xl border border-zinc-200 p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-bold">{agent}</span>
+                          <span className="text-[9px] font-black uppercase tracking-[0.12em] text-zinc-400">{state}</span>
+                        </div>
+                        <p className="mt-1 text-[10px] leading-4 text-zinc-500">{context}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </aside>
             </div>
-            <article className="relative rounded-2xl border border-zinc-200 bg-white p-4 lg:row-span-2">
-              <div className="pointer-events-none absolute inset-0 rounded-2xl bg-[linear-gradient(130deg,rgba(236,72,153,0.05),rgba(34,211,238,0.06))]" />
-              <p className="relative text-xs font-black uppercase tracking-[0.18em] text-fuchsia-600">04 • Next Step</p>
-              <h3 className="relative mt-2 text-base font-black text-zinc-950">{operationalFlowSteps[3].title}</h3>
-              <p className="relative mt-2 text-sm leading-relaxed text-zinc-700">{operationalFlowSteps[3].text}</p>
-              <div className="relative mt-4 space-y-2 text-xs text-zinc-700">
-                <div className="rounded-xl border border-zinc-200 bg-white/80 px-3 py-2">Draft update ready for review</div>
-                <div className="rounded-xl border border-zinc-200 bg-white/80 px-3 py-2">Recommended action for a blocked task</div>
-                <div className="rounded-xl border border-zinc-200 bg-white/80 px-3 py-2">Suggested owner for an overdue commitment</div>
-              </div>
-              <svg viewBox="0 0 320 86" className="mt-3 hidden w-full lg:block" fill="none" aria-hidden>
-                <path d="M8 65 C58 28 110 70 160 38 C210 8 252 42 310 20" className="memory-mesh" />
-                <circle cx="58" cy="44" r="3.5" className="memory-node" />
-                <circle cx="112" cy="58" r="3.5" className="memory-node" />
-                <circle cx="168" cy="35" r="3.5" className="memory-node" />
-                <circle cx="226" cy="24" r="3.5" className="memory-node" />
-                <circle cx="288" cy="22" r="3.5" className="memory-node" />
-              </svg>
-            </article>
           </div>
         </div>
-        <style>{`
-          .signal-path-a, .signal-path-b, .signal-path-c, .signal-path-d {
-            stroke-width: 2.3;
-            stroke-dasharray: 8 10;
-            animation: flowDash 18s linear infinite;
-            fill: none;
-          }
-          .signal-path-a { stroke: rgba(236, 72, 153, 0.55); }
-          .signal-path-b { stroke: rgba(34, 211, 238, 0.55); animation-duration: 16s; }
-          .signal-path-c { stroke: rgba(236, 72, 153, 0.4); animation-duration: 20s; }
-          .signal-path-d { stroke: rgba(34, 211, 238, 0.4); animation-duration: 22s; }
-          .signal-path-e { stroke: rgba(244, 114, 182, 0.34); animation-duration: 26s; }
-          .signal-path-f { stroke: rgba(103, 232, 249, 0.35); animation-duration: 24s; }
-          .route-dot {
-            fill: rgba(24,24,27,0.7);
-            filter: drop-shadow(0 0 8px rgba(236,72,153,0.22));
-            animation: routeGlow 4.2s ease-in-out infinite;
-          }
-          .dot-b { animation-delay: .6s; }
-          .dot-c { animation-delay: 1.2s; }
-          .dot-d { animation-delay: 1.8s; }
-          .dot-e { animation-delay: 2.4s; }
-          .core-orbit {
-            animation: spinOrbit 18s linear infinite;
-            transform-origin: center;
-          }
-          .core-orbit-slow { animation-duration: 28s; animation-direction: reverse; }
-          .core-blink { animation: coreBlink 2.6s ease-in-out infinite; }
-          .memory-mesh {
-            stroke: rgba(82,82,91,0.45);
-            stroke-width: 1.4;
-            stroke-dasharray: 6 8;
-            animation: flowDash 26s linear infinite;
-          }
-          .memory-node {
-            fill: rgba(24,24,27,0.65);
-            animation: memoryPulse 3.8s ease-in-out infinite;
-          }
-          .memory-node:nth-of-type(2) { animation-delay: .5s; }
-          .memory-node:nth-of-type(3) { animation-delay: 1s; }
-          .memory-node:nth-of-type(4) { animation-delay: 1.5s; }
-          .memory-node:nth-of-type(5) { animation-delay: 2s; }
-          @keyframes flowDash {
-            from { stroke-dashoffset: 0; }
-            to { stroke-dashoffset: -360; }
-          }
-          @keyframes routeGlow {
-            0%, 100% { opacity: .45; transform: scale(1); }
-            50% { opacity: .95; transform: scale(1.18); }
-          }
-          @keyframes spinOrbit {
-            from { transform: translate(-50%, -50%) rotate(0deg); }
-            to { transform: translate(-50%, -50%) rotate(360deg); }
-          }
-          @keyframes coreBlink {
-            0%, 100% { opacity: .55; box-shadow: 0 0 0 rgba(236,72,153,0); }
-            50% { opacity: 1; box-shadow: 0 0 16px rgba(236,72,153,.42); }
-          }
-          @keyframes memoryPulse {
-            0%, 100% { opacity: .5; }
-            50% { opacity: .95; }
-          }
-        `}</style>
+
+        <div className="mt-6 grid gap-3 md:grid-cols-4">
+          {[
+            ["01", "Grounded in project evidence"],
+            ["02", "Knows what changed"],
+            ["03", "Escalates what needs judgment"],
+            ["04", "Agents work inside project context"],
+          ].map(([number, label]) => (
+            <div key={number} className="border-t border-white/15 pt-4">
+              <p className="text-[10px] font-black text-cyan-200">{number}</p>
+              <p className="mt-2 text-sm font-semibold text-zinc-300">{label}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function NeedsYouSection() {
+  return (
+    <section className="overflow-hidden bg-white">
+      <div className="mx-auto grid w-full max-w-[1320px] gap-16 px-5 py-24 md:px-8 lg:grid-cols-[0.85fr_1.15fr] lg:items-center lg:px-12 lg:py-32">
+        <div>
+          <p className="text-[11px] font-black uppercase tracking-[0.24em] text-[#ff008c]">Human judgment</p>
+          <h2 className="mt-4 max-w-xl text-5xl font-black leading-[0.92] tracking-[-0.055em] text-zinc-950 md:text-7xl">
+            Your attention is the scarce resource.
+          </h2>
+          <p className="mt-6 max-w-lg text-lg leading-8 text-zinc-500">
+            PMFreak handles the operational noise and brings forward the moments that need judgment, approval, or a real decision.
+          </p>
+        </div>
+
+        <div className="relative">
+          <div className="space-y-3">
+            {[
+              ["Evidence classified", "Complete"],
+              ["Timeline updated", "Complete"],
+              ["Project brief refreshed", "Complete"],
+              ["Agent research completed", "Complete"],
+              ["Risk state recalculated", "Complete"],
+            ].map(([label, state]) => (
+              <div key={label} className="flex items-center justify-between border-b border-zinc-200 py-4">
+                <div className="flex items-center gap-3">
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-50 text-[10px] font-black text-emerald-700">✓</span>
+                  <span className="text-sm font-semibold text-zinc-500">{label}</span>
+                </div>
+                <span className="text-[9px] font-black uppercase tracking-[0.16em] text-zinc-300">{state}</span>
+              </div>
+            ))}
+          </div>
+
+          <div className="relative mt-6 overflow-hidden rounded-[1.75rem] border border-zinc-800 bg-zinc-950 p-6 text-white shadow-[0_30px_90px_rgba(24,24,27,.22)] md:p-8">
+            <div className="pointer-events-none absolute right-0 top-0 h-36 w-36 rounded-full bg-[#ff008c]/15 blur-3xl" />
+            <p className="relative text-[10px] font-black uppercase tracking-[0.2em] text-[#ff77bd]">Decision required</p>
+            <div className="relative mt-5 grid gap-6 md:grid-cols-[1fr_0.8fr]">
+              <div>
+                <h3 className="text-3xl font-black tracking-[-0.04em]">Production release</h3>
+                <p className="mt-3 max-w-md text-sm leading-6 text-zinc-400">
+                  A new dependency was detected after the approved deployment plan.
+                </p>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                <p className="text-[9px] font-black uppercase tracking-[0.16em] text-cyan-200">PMFreak recommends</p>
+                <p className="mt-2 text-sm font-bold">Delay release until dependency validation is complete.</p>
+              </div>
+            </div>
+            <div className="relative mt-7 flex flex-wrap gap-2">
+              <span className="rounded-full bg-white px-4 py-2 text-xs font-bold text-zinc-950">Review evidence</span>
+              <span className="rounded-full border border-white/20 px-4 py-2 text-xs font-bold">Decide</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function MemorySection() {
+  return (
+    <section className="border-y border-zinc-200 bg-[#f5f3ee]">
+      <div className="mx-auto grid w-full max-w-[1320px] gap-14 px-5 py-24 md:px-8 lg:grid-cols-[0.72fr_1.28fr] lg:items-center lg:px-12 lg:py-32">
+        <div>
+          <p className="text-[11px] font-black uppercase tracking-[0.24em] text-[#ff008c]">Project memory</p>
+          <h2 className="mt-4 text-5xl font-black leading-[0.94] tracking-[-0.05em] text-zinc-950 md:text-6xl">
+            Your project shouldn&apos;t forget.
+          </h2>
+          <p className="mt-6 max-w-md text-lg leading-8 text-zinc-500">
+            Keep the history behind decisions, commitments and state changes reachable instead of rebuilding context every time the team changes.
+          </p>
+        </div>
+
+        <div className="relative rounded-[2rem] border border-zinc-200 bg-white p-5 shadow-[0_28px_90px_rgba(24,24,27,.10)] md:p-7">
+          <div className="absolute bottom-10 left-[72px] top-10 w-px bg-zinc-200" />
+          <div className="space-y-3">
+            {memoryEvents.map(([date, event, state], index) => (
+              <div key={date} className="relative grid grid-cols-[58px_1fr_auto] items-center gap-4 rounded-2xl px-2 py-3">
+                <span className="font-mono text-[10px] font-bold text-zinc-400">{date}</span>
+                <span className="relative pl-7 text-sm font-bold text-zinc-800">
+                  <span className={`absolute left-0 top-1/2 h-3 w-3 -translate-y-1/2 rounded-full border-[3px] border-white shadow-sm ${index === 3 ? "bg-zinc-300" : "bg-[#ff008c]"}`} />
+                  {event}
+                </span>
+                <span className={`rounded-full px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.12em] ${state === "Superseded" ? "bg-zinc-100 text-zinc-500" : state === "Confirmed" ? "bg-cyan-50 text-cyan-700" : "bg-[#fff0f8] text-[#c6006c]"}`}>
+                  {state}
+                </span>
+              </div>
+            ))}
+          </div>
+          <div className="mt-5 grid gap-3 border-t border-zinc-100 pt-5 sm:grid-cols-3">
+            {[
+              ["Source", "Decision record"],
+              ["Reason", "Dependency changed"],
+              ["Provenance", "Evidence linked"],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-xl bg-[#f7f6f3] p-3">
+                <p className="text-[9px] font-black uppercase tracking-[0.14em] text-zinc-400">{label}</p>
+                <p className="mt-1 text-xs font-bold text-zinc-700">{value}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function AgentsSection() {
+  return (
+    <section className="overflow-hidden bg-white">
+      <div className="mx-auto w-full max-w-[1320px] px-5 py-24 md:px-8 lg:px-12 lg:py-32">
+        <div className="mx-auto max-w-3xl text-center">
+          <p className="text-[11px] font-black uppercase tracking-[0.24em] text-[#ff008c]">AI-assisted work</p>
+          <h2 className="mt-4 text-5xl font-black leading-[0.94] tracking-[-0.05em] text-zinc-950 md:text-6xl">
+            Give agents context before giving them work.
+          </h2>
+          <p className="mx-auto mt-6 max-w-2xl text-lg leading-8 text-zinc-500">
+            Agents operate against project context, evidence and approval boundaries—not a disconnected prompt window.
+          </p>
+        </div>
+
+        <div className="relative mx-auto mt-16 max-w-5xl">
+          <div className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-gradient-to-b from-transparent via-zinc-200 to-transparent" />
+          <div className="relative mx-auto flex h-40 w-40 flex-col items-center justify-center rounded-full border border-zinc-200 bg-zinc-950 text-center text-white shadow-[0_24px_70px_rgba(24,24,27,.18)]">
+            <span className="text-[9px] font-black uppercase tracking-[0.18em] text-cyan-200">Project Brain</span>
+            <span className="mt-2 text-lg font-black">Grounded context</span>
+          </div>
+
+          <div className="relative mt-14 grid gap-5 md:grid-cols-3">
+            {agentRows.map(([agent, context, state], index) => (
+              <div key={agent} className="rounded-[1.5rem] border border-zinc-200 bg-[#f8f7f4] p-5 text-center shadow-sm">
+                <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-white text-sm font-black text-[#ff008c] shadow-sm">
+                  0{index + 1}
+                </div>
+                <h3 className="mt-4 text-lg font-black text-zinc-950">{agent}</h3>
+                <p className="mt-2 text-sm leading-6 text-zinc-500">{context}</p>
+                <span className="mt-5 inline-flex rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.14em] text-zinc-400">{state}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function DifferenceSection() {
+  return (
+    <section className="bg-zinc-950 text-white">
+      <div className="mx-auto w-full max-w-[1320px] px-5 py-24 md:px-8 lg:px-12 lg:py-32">
+        <p className="text-[11px] font-black uppercase tracking-[0.24em] text-cyan-200">The difference</p>
+        <div className="mt-8 grid gap-10 lg:grid-cols-[0.9fr_1.1fr] lg:items-center">
+          <div>
+            <p className="text-3xl font-black leading-tight tracking-[-0.04em] text-zinc-500 md:text-5xl">
+              Tasks<br />
+              Tickets<br />
+              Dashboards<br />
+              Documents<br />
+              Status updates
+            </p>
+          </div>
+
+          <div className="relative border-l border-white/10 pl-8 md:pl-12">
+            <span className="absolute -left-3 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-[#ff008c] text-xs font-black">→</span>
+            <p className="text-[11px] font-black uppercase tracking-[0.2em] text-[#ff77bd]">PMFreak</p>
+            <h2 className="mt-4 text-5xl font-black leading-[0.9] tracking-[-0.055em] md:text-7xl">
+              Evidence.<br />
+              Context.<br />
+              Memory.<br />
+              Decisions.<br />
+              Execution.
+            </h2>
+          </div>
+        </div>
+
+        <p className="mt-14 max-w-3xl text-xl leading-8 text-zinc-400 md:text-2xl">
+          Traditional PM software records work. <span className="font-bold text-white">PMFreak helps teams understand what the work means.</span>
+        </p>
       </div>
     </section>
   );
@@ -443,180 +474,93 @@ function OperationalFlowSection() {
 
 function GovernanceSection() {
   return (
-    <section
-      id="security"
-      className="rounded-3xl border border-zinc-800 bg-zinc-950 p-7 shadow-[0_24px_90px_rgba(15,23,42,0.24)] md:p-10"
-    >
-      <p className="text-xs font-bold uppercase tracking-[0.24em] text-cyan-200">
-        Governance and control
-      </p>
-
-      <h2 className="mt-3 text-3xl font-black text-white md:text-4xl">
-        Use AI without losing control.
-      </h2>
-
-      <p className="mt-3 max-w-3xl text-sm leading-relaxed text-zinc-300 md:text-base">
-        PMFreak helps teams use AI around project work without scattering
-        sensitive context or letting important actions happen without review.
-        Your team gets speed, memory, and clarity &mdash; with boundaries.
-      </p>
-
-      <div className="mt-10 grid gap-8 lg:grid-cols-[0.85fr_1fr] lg:items-center">
+    <section id="security" className="scroll-mt-28 bg-[#f6f5f2]">
+      <div className="mx-auto grid w-full max-w-[1320px] gap-14 px-5 py-24 md:px-8 lg:grid-cols-[0.8fr_1.2fr] lg:items-center lg:px-12 lg:py-32">
         <div>
-          <ul className="space-y-3">
-            {[
-              "Keep project context in controlled spaces",
-              "Route sensitive actions for approval",
-              "Preserve a clear history of decisions and changes",
-              "Reduce copy-paste into uncontrolled AI tools",
-              "Help teams reuse what they learn",
-            ].map((point) => (
-              <li
-                key={point}
-                className="rounded-xl border border-white/10 bg-white/[0.02] px-4 py-3 text-sm font-semibold text-zinc-100"
-              >
-                {point}
-              </li>
-            ))}
-          </ul>
+          <p className="text-[11px] font-black uppercase tracking-[0.24em] text-[#ff008c]">Governance & control</p>
+          <h2 className="mt-4 text-5xl font-black leading-[0.94] tracking-[-0.05em] text-zinc-950 md:text-6xl">
+            AI-assisted execution with boundaries.
+          </h2>
+          <p className="mt-6 max-w-md text-lg leading-8 text-zinc-500">
+            Recommendations, decisions, actions and outcomes stay distinct. Sensitive actions can require human approval, while the evidence behind important outputs remains reachable.
+          </p>
         </div>
 
-        <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-zinc-900 via-zinc-950 to-zinc-900 p-5">
-          <svg viewBox="0 0 580 320" className="h-full w-full" role="img" aria-label="Controlled boundary filtering project signals into project memory while leakage is blocked">
-            <defs>
-              <linearGradient id="flowLine" x1="0%" y1="0%" x2="100%" y2="0%">
-                <stop offset="0%" stopColor="rgba(34,211,238,0.2)" />
-                <stop offset="100%" stopColor="rgba(34,211,238,0.75)" />
-              </linearGradient>
-            </defs>
-            <text x="18" y="38" fill="rgba(161,161,170,0.9)" fontSize="13" fontWeight="700">Project signals</text>
-            <text x="216" y="40" fill="rgba(244,244,245,0.95)" fontSize="13" fontWeight="700">Controlled boundary</text>
-            <text x="430" y="40" fill="rgba(244,244,245,0.95)" fontSize="13" fontWeight="700">Project memory</text>
-            <text x="392" y="278" fill="rgba(244,114,182,0.95)" fontSize="12" fontWeight="700">Leakage blocked</text>
+        <div className="relative min-h-[500px] rounded-[2rem] border border-zinc-200 bg-white p-6 shadow-[0_28px_90px_rgba(24,24,27,.09)] md:p-8">
+          <div className="grid h-full gap-5 md:grid-cols-[1fr_auto_1fr] md:items-center">
+            <div className="space-y-3">
+              {["Project context", "Evidence", "Agent proposal"].map((label) => (
+                <div key={label} className="rounded-2xl border border-zinc-200 bg-[#f7f6f3] p-4 text-sm font-bold text-zinc-700">
+                  {label}
+                </div>
+              ))}
+            </div>
 
-            <rect x="210" y="58" width="168" height="180" rx="20" fill="rgba(39,39,42,0.62)" stroke="rgba(34,211,238,0.42)" strokeWidth="1.2" />
-            <circle cx="110" cy="108" r="8" fill="rgba(34,211,238,0.92)" />
-            <circle cx="110" cy="158" r="8" fill="rgba(34,211,238,0.74)" />
-            <circle cx="110" cy="208" r="8" fill="rgba(34,211,238,0.54)" />
-            <path d="M118 108 C158 108, 176 94, 210 102" stroke="url(#flowLine)" strokeWidth="2.6" fill="none" />
-            <path d="M118 158 C158 158, 176 156, 210 154" stroke="url(#flowLine)" strokeWidth="2.6" fill="none" />
-            <path d="M118 208 C158 208, 176 220, 210 210" stroke="url(#flowLine)" strokeWidth="2.6" fill="none" />
+            <div className="flex flex-col items-center gap-3">
+              <span className="text-[9px] font-black uppercase tracking-[0.15em] text-zinc-400">Boundary</span>
+              <div className="flex h-28 w-28 items-center justify-center rounded-full border border-[#ffb6dd] bg-[#fff2f9] text-center text-[11px] font-black uppercase tracking-[0.12em] text-[#c6006c] shadow-[0_16px_40px_rgba(255,0,140,.12)]">
+                Human<br />approval
+              </div>
+              <span className="text-xl text-zinc-300">→</span>
+            </div>
 
-            <rect x="406" y="90" width="144" height="118" rx="16" fill="rgba(8,47,73,0.24)" stroke="rgba(34,211,238,0.45)" strokeWidth="1.1" />
-            <path d="M378 154 C396 154, 398 150, 406 150" stroke="rgba(34,211,238,0.78)" strokeWidth="2.6" fill="none" />
-            <circle cx="438" cy="126" r="6" fill="rgba(34,211,238,0.8)" />
-            <circle cx="472" cy="150" r="6" fill="rgba(34,211,238,0.9)" />
-            <circle cx="506" cy="172" r="6" fill="rgba(34,211,238,0.68)" />
-            <path d="M438 126 L472 150 L506 172" stroke="rgba(34,211,238,0.55)" strokeWidth="1.8" fill="none" />
-
-            <path d="M286 238 C294 264, 336 276, 372 266" stroke="rgba(244,114,182,0.5)" strokeDasharray="6 6" strokeWidth="2" fill="none" />
-            <path d="M372 266 l-8 -2 l2 -8" stroke="rgba(244,114,182,0.74)" strokeWidth="2" fill="none" />
-          </svg>
+            <div className="rounded-[1.5rem] bg-zinc-950 p-5 text-white">
+              <p className="text-[9px] font-black uppercase tracking-[0.16em] text-cyan-200">Governed outcome</p>
+              <div className="mt-4 space-y-3">
+                {["Decision recorded", "Action authorized", "Evidence preserved"].map((label) => (
+                  <div key={label} className="flex items-center gap-3 border-b border-white/10 pb-3 text-sm font-semibold text-zinc-200 last:border-b-0 last:pb-0">
+                    <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                    {label}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </section>
   );
 }
 
-function ComparisonSection() {
+function FoundationSection() {
   return (
-    <section className={`${lightSectionClass} p-7 md:p-10`}>
-      <p className="text-xs font-bold uppercase tracking-[0.24em] text-[#ff008c]">
-        How PMFreak is different
-      </p>
-      <h2 className="mt-3 text-3xl font-black text-zinc-950 md:text-4xl">
-        Not another AI project management tool.
-      </h2>
-
-      <p className="mt-3 max-w-3xl text-sm leading-relaxed text-zinc-600 md:text-base">
-        Traditional tools track work. Generic AI tools generate suggestions.
-        PMFreak helps your team protect project knowledge, understand what
-        changed, and take the right next step without losing control.
-      </p>
-
-      <div className="mt-8 grid gap-4 md:grid-cols-3 md:items-stretch">
-        <article className="rounded-2xl border border-zinc-200 bg-zinc-50 p-6">
-          <h3 className="text-xs font-black uppercase tracking-[0.18em] text-zinc-500">
-            Traditional PM tools
-          </h3>
-          <ul className="mt-4 space-y-3 text-sm font-medium text-zinc-600">
-            {traditionalToolPoints.map((point) => (
-              <li key={point}>{point}</li>
-            ))}
-          </ul>
-        </article>
-
-        <article className="rounded-2xl border border-zinc-200 bg-zinc-50 p-6">
-          <h3 className="text-xs font-black uppercase tracking-[0.18em] text-zinc-500">
-            Generic AI tools
-          </h3>
-          <ul className="mt-4 space-y-3 text-sm font-medium text-zinc-600">
-            {genericAiToolPoints.map((point) => (
-              <li key={point}>{point}</li>
-            ))}
-          </ul>
-        </article>
-
-        <article className="rounded-2xl border border-zinc-900 bg-zinc-950 p-6 shadow-[0_20px_80px_rgba(15,23,42,0.18)]">
-          <h3 className="text-xs font-black uppercase tracking-[0.18em] text-cyan-200">
-            PMFreak
-          </h3>
-          <ul className="mt-4 space-y-3 text-sm font-semibold text-white">
-            {pmfreakPoints.map((point) => (
-              <li key={point}>{point}</li>
-            ))}
-          </ul>
-        </article>
+    <section className="border-y border-zinc-200 bg-white">
+      <div className="mx-auto flex w-full max-w-[1320px] flex-col gap-8 px-5 py-16 md:px-8 lg:flex-row lg:items-center lg:justify-between lg:px-12">
+        <div>
+          <p className="text-[10px] font-black uppercase tracking-[0.22em] text-[#ff008c]">Governance foundation</p>
+          <h2 className="mt-3 text-2xl font-black tracking-[-0.035em] text-zinc-950 md:text-3xl">
+            Built on Soberanía Protocol.
+          </h2>
+        </div>
+        <p className="max-w-2xl text-sm leading-7 text-zinc-500">
+          PMFreak applies governed identity, authority, approval and evidence concepts to project operations while keeping the product experience focused on the work teams need to run.
+        </p>
       </div>
-    </section>
-  );
-}
-
-function PoweredByAocSection() {
-  return (
-    <section className={`${lightSectionClass} p-7 md:p-9`}>
-      <p className="text-xs font-bold uppercase tracking-[0.24em] text-[#ff008c]">
-        Built on AOC
-      </p>
-
-      <h2 className="mt-3 text-2xl font-black text-zinc-950 md:text-3xl">
-        Built on AOC
-      </h2>
-
-      <p className="mt-3 max-w-3xl text-sm leading-relaxed text-zinc-600 md:text-base">
-        PMFreak is the first product built on AOC Protocol and AOC Enterprise
-        &mdash; the governance foundation behind how project knowledge,
-        AI-assisted actions, approvals, and audit-ready records are managed.
-      </p>
     </section>
   );
 }
 
 function FinalCtaSection() {
   return (
-    <section className="rounded-3xl border border-zinc-200 bg-zinc-950 p-7 shadow-[0_20px_80px_rgba(15,23,42,0.18)] md:p-10">
-      <p className="text-xs font-bold uppercase tracking-[0.24em] text-cyan-200">
-        Get started
-      </p>
-
-      <h2 className="mt-3 text-3xl font-black text-white md:text-4xl">
-        Stop losing what your projects already know.
-      </h2>
-
-      <p className="mt-3 max-w-3xl text-sm leading-relaxed text-zinc-300 md:text-base">
-        PMFreak helps your team turn scattered project work into organized
-        knowledge, safer AI-assisted action, and a project history people can
-        actually use.
-      </p>
-
-      <div className="mt-7 flex flex-wrap gap-3">
-        <Link href="/signup" className={primaryCtaClass}>
-          Request Founder Access
-        </Link>
-
-        <Link href="/command-center" className={secondaryCtaClass}>
-          Open Command Center
-        </Link>
+    <section className="relative overflow-hidden bg-[#ff008c] text-white">
+      <div className="pointer-events-none absolute inset-0 opacity-[0.14] [background-image:linear-gradient(rgba(255,255,255,.35)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.35)_1px,transparent_1px)] [background-size:36px_36px]" />
+      <div className="relative mx-auto flex min-h-[520px] w-full max-w-[1320px] flex-col items-center justify-center px-5 py-24 text-center md:px-8 lg:px-12">
+        <p className="text-[11px] font-black uppercase tracking-[0.24em] text-white/70">PMFreak</p>
+        <h2 className="mt-4 max-w-5xl text-5xl font-black leading-[0.88] tracking-[-0.06em] md:text-8xl">
+          Your project already has a brain.
+        </h2>
+        <p className="mt-6 text-xl font-semibold text-white/80 md:text-2xl">Make it operational.</p>
+        <div className="mt-9 flex flex-wrap justify-center gap-3">
+          <Link href="/command-center" className="rounded-full bg-zinc-950 px-6 py-3.5 text-sm font-bold text-white transition hover:-translate-y-0.5">
+            Open Command Center
+          </Link>
+          <Link href="/signup" className="rounded-full border border-white/40 bg-white px-6 py-3.5 text-sm font-bold text-[#c6006c] transition hover:-translate-y-0.5">
+            Start Free
+          </Link>
+        </div>
+        <p className="mt-10 text-[10px] font-black uppercase tracking-[0.2em] text-white/60">
+          Project intelligence · Memory · Decisions · Agents · Execution
+        </p>
       </div>
     </section>
   );
@@ -624,46 +568,40 @@ function FinalCtaSection() {
 
 function LandingFooter() {
   return (
-    <footer className="rounded-3xl border border-zinc-800 bg-zinc-950 px-7 py-8 text-zinc-300 md:px-9">
-      <div className="grid gap-7 sm:grid-cols-2 lg:grid-cols-4">
-        {footerColumns.map((column) => (
-          <div key={column.heading}>
-            <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-white">
-              {column.heading}
-            </h3>
+    <footer className="bg-zinc-950 px-5 py-12 text-zinc-400 md:px-8 lg:px-12">
+      <div className="mx-auto w-full max-w-[1320px]">
+        <div className="grid gap-8 sm:grid-cols-2 lg:grid-cols-4">
+          {footerColumns.map((column) => (
+            <div key={column.heading}>
+              <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-white">
+                {column.heading}
+              </h3>
+              <ul className="mt-4 space-y-2.5 text-sm">
+                {column.links.map((link) => (
+                  <li key={link.label}>
+                    {"disabled" in link ? (
+                      <span className="cursor-default text-zinc-600">{link.label}</span>
+                    ) : (
+                      <Link href={link.href} className="transition hover:text-white">
+                        {link.label}
+                      </Link>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
 
-            <ul className="mt-4 space-y-2.5 text-sm">
-              {column.links.map((link) => (
-                <li key={link.label}>
-                  {"disabled" in link ? (
-                    <span className="cursor-default text-zinc-500">
-                      {link.label}
-                    </span>
-                  ) : (
-                    <Link
-                      href={link.href}
-                      className="transition hover:text-cyan-200"
-                    >
-                      {link.label}
-                    </Link>
-                  )}
-                </li>
-              ))}
-            </ul>
+        <div className="mt-12 flex flex-col gap-3 border-t border-white/10 pt-7 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="text-sm font-black text-white">PMFreak</p>
+            <p className="mt-1 max-w-md text-xs leading-5 text-zinc-500">
+              Operational intelligence for project teams.
+            </p>
           </div>
-        ))}
-      </div>
-
-      <div className="mt-10 border-t border-white/10 pt-6">
-        <p className="text-sm font-semibold text-white">PMFreak</p>
-
-        <p className="mt-1 text-xs text-zinc-400">
-          PMFreak helps teams keep, protect, and use what they learn from every project.
-        </p>
-
-        <p className="mt-3 text-xs text-zinc-500">
-          © {new Date().getFullYear()} PMFreak. All rights reserved.
-        </p>
+          <p className="text-xs text-zinc-600">© {new Date().getFullYear()} PMFreak. All rights reserved.</p>
+        </div>
       </div>
     </footer>
   );
@@ -673,28 +611,19 @@ export default function Home() {
   return (
     <>
       <MarketingNavbar />
-
-      <main className="min-h-screen bg-white px-5 py-8 text-zinc-950 md:px-8 md:py-12">
-        <div className="mx-auto flex w-full max-w-6xl flex-col gap-9 md:gap-12">
-          <HeroSection />
-
-          <OperationalRealitySection />
-
-          <SolutionSection />
-
-          <OperationalFlowSection />
-
-          <ComparisonSection />
-
-          <GovernanceSection />
-
-          <PoweredByAocSection />
-
-          <FinalCtaSection />
-
-          <LandingFooter />
-        </div>
+      <main className="bg-white text-zinc-950">
+        <HeroSection />
+        <FragmentationSection />
+        <CommandCenterSection />
+        <NeedsYouSection />
+        <MemorySection />
+        <AgentsSection />
+        <DifferenceSection />
+        <GovernanceSection />
+        <FoundationSection />
+        <FinalCtaSection />
       </main>
+      <LandingFooter />
     </>
   );
 }

@@ -26,6 +26,15 @@ import {
 // authority for those redirects instead.
 // ─────────────────────────────────────────────────────────────────────────────
 
+const passthroughWithPathname = (request: NextRequest) => {
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set("x-pathname", request.nextUrl.pathname);
+
+  return NextResponse.next({
+    request: { headers: requestHeaders },
+  });
+};
+
 // Every redirect must carry the cookies updateSession wrote to the passthrough
 // response. Supabase ROTATES the refresh token server-side when it refreshes a
 // session, so building a fresh redirect response silently drops the Set-Cookie
@@ -40,14 +49,25 @@ const redirectPreservingSession = (destination: URL, sessionResponse: NextRespon
 };
 
 export async function proxy(request: NextRequest) {
-  const { response, user } = await updateSession(request);
   const pathname = request.nextUrl.pathname;
   const policy = getRouteAccessPolicy(pathname);
 
-  // API routes: let route handlers own authentication
-  if (policy === "api") {
-    return response;
+  // Public marketing/reset/callback surfaces must never depend on the auth
+  // provider being reachable just to render. This is especially important for
+  // preview deployments, where auth environment configuration may intentionally
+  // differ from production. Preserve x-pathname for downstream server
+  // components, but do not perform an unnecessary Supabase round trip.
+  if (policy === "public") {
+    return passthroughWithPathname(request);
   }
+
+  // API routes own authentication inside their route handlers. Avoid making
+  // every API request depend on an additional proxy-level auth round trip.
+  if (policy === "api") {
+    return passthroughWithPathname(request);
+  }
+
+  const { response, user } = await updateSession(request);
 
   // Debug routes blocked in production
   if (isInternalDebugRoute(pathname) && process.env.NODE_ENV === "production") {
@@ -87,6 +107,6 @@ export async function proxy(request: NextRequest) {
 
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|apple-icon.png|icon.png|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    "/((?!$|_next/static|_next/image|favicon.ico|apple-icon.png|icon.png|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };
