@@ -1,7 +1,21 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import { HeroSection } from "@/components/landing/hero-section";
+import {
+  Burst,
+  DecisionDoodle,
+  LinkDoodle,
+  Mascot,
+  PaperDoodle,
+  QuestionMark,
+  RiskDoodle,
+  Sparkle,
+  SquiggleArrow,
+  TaskDoodle,
+} from "@/components/landing/doodles";
+import { displayFont, markerFont } from "@/components/landing/fonts";
+import { Arrow, HeroSection, primaryCtaClass } from "@/components/landing/hero-section";
+import { ShowcaseProductWindow } from "@/components/landing/product-window";
 import { MarketingNavbar } from "@/components/marketing-navbar";
 
 type FooterLink =
@@ -15,30 +29,43 @@ type FooterColumn = {
 
 export const metadata: Metadata = {
   description:
-    "PMFreak is an operational command center for project memory, decisions, evidence and AI-assisted execution.",
+    "Freak out less. Manage more. PMFreak turns scattered project updates into one project memory: what changed, what needs you, and what to do next.",
 };
 
-const scatteredSignals = [
-  ["Slack", "Stakeholder escalation"],
-  ["Meeting", "Architecture changed"],
-  ["Docs", "New dependency"],
-  ["Email", "Vendor date moved"],
-  ["Issue", "Release blocker"],
-  ["AI", "Draft recommendation"],
+// Every point is something the product does today (see the Command Center's
+// Needs you / What changed panels and the governed decision path).
+const clarityPoints = [
+  "Keep decisions, risks and evidence in one project memory",
+  "See what changed, in plain language",
+  "Spot risks before they become escalations",
+  "Know which decisions are waiting on you, and why",
 ] as const;
 
-const memoryEvents = [
-  ["JUL 08", "Scope approved", "Confirmed"],
-  ["JUL 14", "Architecture changed", "Current"],
-  ["JUL 21", "Vendor dependency introduced", "Current"],
-  ["AUG 02", "Decision superseded", "Superseded"],
-  ["AUG 07", "Production plan approved", "Current"],
-] as const;
-
-const agentRows = [
-  ["Research agent", "Evidence + project context", "Complete"],
-  ["Planning agent", "Constraints + current decisions", "Working"],
-  ["Execution agent", "Approved action boundary", "Waiting"],
+const benefits = [
+  {
+    Doodle: TaskDoodle,
+    title: "Know what needs you",
+    text: "Decisions and reviews waiting on you, each with why it matters.",
+    tone: "text-calm-ink",
+  },
+  {
+    Doodle: RiskDoodle,
+    title: "Risks before they bite",
+    text: "Scope, schedule and budget risks surfaced from your own project evidence.",
+    tone: "text-freak-ink",
+  },
+  {
+    Doodle: LinkDoodle,
+    title: "Context that stays put",
+    text: "Notes, emails and documents kept in one project memory.",
+    tone: "text-calm-ink",
+  },
+  {
+    Doodle: DecisionDoodle,
+    title: "Decisions stay human",
+    text: "PMFreak recommends. Someone with the authority decides, and it’s on record.",
+    tone: "text-freak-ink",
+  },
 ] as const;
 
 const footerColumns = [
@@ -78,462 +105,155 @@ const footerColumns = [
   },
 ] as const satisfies readonly FooterColumn[];
 
-function FragmentationSection() {
+const sectionShell = "mx-auto w-full max-w-6xl px-5 md:px-8";
+
+/** A loose marker-brush swash used behind callouts. */
+function BrushSwash({ className = "" }: { className?: string }) {
   return (
-    <section id="intelligence" className="scroll-mt-28 overflow-hidden border-b border-zinc-200 bg-white">
-      <div className="mx-auto grid w-full max-w-[1320px] gap-14 px-5 py-24 md:px-8 lg:grid-cols-[0.75fr_1.25fr] lg:items-center lg:px-12 lg:py-32">
-        <div>
-          <p className="text-[11px] font-black uppercase tracking-[0.24em] text-[#ff008c]">
-            The operating problem
-          </p>
-          <h2 className="mt-4 max-w-xl text-4xl font-black leading-[0.96] tracking-[-0.045em] text-zinc-950 md:text-6xl">
-            Projects don&apos;t fail because they lack tasks.
-          </h2>
-          <p className="mt-6 max-w-lg text-lg leading-8 text-zinc-500">
-            They fail when the context behind the work gets fragmented. PMFreak reconnects the signals that explain what changed, why it matters, and what needs attention now.
-          </p>
-        </div>
-
-        <div className="relative min-h-[540px]">
-          <div className="absolute left-1/2 top-1/2 h-[330px] w-[330px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-zinc-200 bg-[#faf9f7] shadow-[0_30px_90px_rgba(24,24,27,.09)]">
-            <div className="absolute inset-8 rounded-full border border-dashed border-zinc-300" />
-            <div className="absolute inset-16 flex flex-col items-center justify-center rounded-full bg-zinc-950 text-center text-white shadow-[0_20px_70px_rgba(24,24,27,.22)]">
-              <span className="text-[10px] font-black uppercase tracking-[0.2em] text-cyan-200">PMFreak</span>
-              <span className="mt-2 text-2xl font-black tracking-[-0.04em]">Project Brain</span>
-              <span className="mt-2 max-w-[150px] text-xs leading-5 text-zinc-400">Grounded operational context</span>
-            </div>
-          </div>
-
-          {scatteredSignals.map(([source, signal], index) => {
-            const positions = [
-              "left-[1%] top-[5%]",
-              "right-[2%] top-[12%]",
-              "left-[0%] top-[42%]",
-              "right-[0%] top-[48%]",
-              "left-[10%] bottom-[3%]",
-              "right-[9%] bottom-[2%]",
-            ];
-            return (
-              <div
-                key={signal}
-                className={`absolute w-[190px] rounded-2xl border border-zinc-200 bg-white p-3 shadow-[0_18px_50px_rgba(24,24,27,.09)] ${positions[index]}`}
-              >
-                <div className="flex items-center gap-2">
-                  <span className="h-2 w-2 rounded-full bg-[#ff008c]" />
-                  <span className="text-[9px] font-black uppercase tracking-[0.16em] text-zinc-400">{source}</span>
-                </div>
-                <p className="mt-2 text-xs font-bold text-zinc-800">{signal}</p>
-              </div>
-            );
-          })}
-
-          <svg viewBox="0 0 700 540" className="pointer-events-none absolute inset-0 h-full w-full" fill="none" aria-hidden>
-            <path d="M132 70 C228 96 250 172 305 220" stroke="rgba(255,0,140,.22)" strokeWidth="1.5" strokeDasharray="5 7" />
-            <path d="M574 92 C500 120 466 168 400 220" stroke="rgba(34,211,238,.28)" strokeWidth="1.5" strokeDasharray="5 7" />
-            <path d="M125 270 C212 264 252 270 305 270" stroke="rgba(24,24,27,.18)" strokeWidth="1.5" strokeDasharray="5 7" />
-            <path d="M578 300 C490 292 451 282 398 272" stroke="rgba(24,24,27,.18)" strokeWidth="1.5" strokeDasharray="5 7" />
-            <path d="M174 484 C226 420 267 374 318 320" stroke="rgba(34,211,238,.28)" strokeWidth="1.5" strokeDasharray="5 7" />
-            <path d="M532 486 C480 422 438 374 387 320" stroke="rgba(255,0,140,.22)" strokeWidth="1.5" strokeDasharray="5 7" />
-          </svg>
-        </div>
-      </div>
-    </section>
+    <svg aria-hidden viewBox="0 0 400 200" preserveAspectRatio="none" className={`pointer-events-none absolute inset-0 h-full w-full ${className}`}>
+      <path
+        fill="currentColor"
+        d="M14 34 C60 10 150 22 230 12 C300 4 360 8 392 26 C398 70 388 120 396 168 C330 192 250 182 170 190 C100 196 40 188 8 176 C2 130 12 86 4 52 Z"
+      />
+    </svg>
   );
 }
 
-function CommandCenterSection() {
+function ChaosToClaritySection() {
   return (
-    <section id="how-it-works" className="scroll-mt-28 overflow-hidden bg-[#0b0b0d] text-white">
-      <div className="mx-auto w-full max-w-[1440px] px-5 py-24 md:px-8 lg:px-12 lg:py-32">
-        <div className="grid gap-10 lg:grid-cols-[0.72fr_1.28fr] lg:items-end">
-          <div>
-            <p className="text-[11px] font-black uppercase tracking-[0.24em] text-cyan-200">Command Center</p>
-            <h2 className="mt-4 text-4xl font-black leading-[0.94] tracking-[-0.05em] md:text-6xl">
-              See the project the way it actually is.
-            </h2>
-          </div>
-          <p className="max-w-xl text-base leading-7 text-zinc-400 lg:justify-self-end">
-            PMFreak puts current context, attention-worthy signals, decisions and agent activity in one operational surface instead of another undifferentiated dashboard.
-          </p>
-        </div>
-
-        <div className="relative mt-14 overflow-hidden rounded-[2rem] border border-white/10 bg-[#111114] p-3 shadow-[0_40px_120px_rgba(0,0,0,.5)] md:p-5">
-          <div className="pointer-events-none absolute -right-20 top-0 h-72 w-72 rounded-full bg-cyan-300/10 blur-[100px]" />
-          <div className="pointer-events-none absolute bottom-0 left-1/3 h-72 w-72 rounded-full bg-[#ff008c]/10 blur-[110px]" />
-
-          <div className="relative overflow-hidden rounded-[1.5rem] border border-white/10 bg-[#f8f8f6] text-zinc-950">
-            <div className="flex items-center justify-between border-b border-zinc-200 px-5 py-4">
-              <div className="flex items-center gap-3">
-                <span className="h-3 w-3 rounded-full bg-[#ff008c]" />
-                <span className="text-sm font-black">PMFreak / Command Center</span>
-              </div>
-              <span className="text-[10px] font-black uppercase tracking-[0.16em] text-zinc-400">Current operational state</span>
-            </div>
-
-            <div className="grid min-h-[600px] lg:grid-cols-[0.72fr_1.45fr_0.85fr]">
-              <aside className="border-b border-zinc-200 bg-[#efeee9] p-5 lg:border-b-0 lg:border-r">
-                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-400">Workspace</p>
-                <div className="mt-5 space-y-2">
-                  {[
-                    ["Platform migration", "2"],
-                    ["ERP rollout", ""],
-                    ["Data program", "1"],
-                    ["Customer portal", ""],
-                  ].map(([label, count], index) => (
-                    <div key={label} className={`flex items-center justify-between rounded-xl px-3 py-3 text-xs font-bold ${index === 0 ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-500"}`}>
-                      <span>{label}</span>
-                      {count ? <span className="rounded-full bg-[#fff0f8] px-2 py-0.5 text-[9px] text-[#c6006c]">{count}</span> : null}
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-10 border-t border-zinc-300 pt-5">
-                  <p className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-400">Project memory</p>
-                  <div className="mt-4 space-y-3 text-xs font-semibold text-zinc-500">
-                    <p>Evidence repository</p>
-                    <p>Decision history</p>
-                    <p>Commitments</p>
-                    <p>Outcomes</p>
-                  </div>
-                </div>
-              </aside>
-
-              <div className="p-5 md:p-7">
-                <div className="flex flex-wrap items-start justify-between gap-4">
-                  <div>
-                    <p className="text-[10px] font-black uppercase tracking-[0.18em] text-[#ff008c]">Project intelligence</p>
-                    <h3 className="mt-2 text-3xl font-black tracking-[-0.04em]">What changed today?</h3>
-                  </div>
-                  <span className="rounded-full border border-zinc-200 bg-white px-3 py-2 text-[10px] font-bold text-zinc-500">Evidence grounded</span>
-                </div>
-
-                <div className="mt-7 grid gap-3 md:grid-cols-2">
-                  <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
-                    <p className="text-[9px] font-black uppercase tracking-[0.16em] text-amber-600">Risk changed</p>
-                    <p className="mt-2 text-sm font-black">Release confidence decreased</p>
-                    <p className="mt-2 text-xs leading-5 text-zinc-500">A vendor date now overlaps the production window.</p>
-                  </div>
-                  <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
-                    <p className="text-[9px] font-black uppercase tracking-[0.16em] text-cyan-700">Commitment</p>
-                    <p className="mt-2 text-sm font-black">API validation · Friday</p>
-                    <p className="mt-2 text-xs leading-5 text-zinc-500">Owner confirmed. Evidence source attached.</p>
-                  </div>
-                </div>
-
-                <div className="mt-4 rounded-[1.4rem] border border-zinc-200 bg-white p-5 shadow-sm">
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <p className="text-[9px] font-black uppercase tracking-[0.16em] text-zinc-400">Operational recommendation</p>
-                      <p className="mt-2 max-w-lg text-lg font-black tracking-[-0.025em]">
-                        Validate the dependency before keeping the current release date.
-                      </p>
-                    </div>
-                    <span className="mt-1 h-3 w-3 shrink-0 rounded-full bg-[#ff008c] shadow-[0_0_18px_rgba(255,0,140,.5)]" />
-                  </div>
-                  <div className="mt-5 flex flex-wrap gap-2">
-                    <span className="rounded-full bg-zinc-950 px-3 py-2 text-[10px] font-bold text-white">Review evidence</span>
-                    <span className="rounded-full border border-zinc-200 px-3 py-2 text-[10px] font-bold text-zinc-700">Open decision</span>
-                  </div>
-                </div>
-
-                <div className="mt-4 rounded-full border border-zinc-200 bg-[#f4f3ef] px-4 py-3 text-xs text-zinc-400">
-                  Ask PMFreak what changed, why it matters, or what should happen next...
-                </div>
-              </div>
-
-              <aside className="border-t border-zinc-200 bg-white p-5 lg:border-l lg:border-t-0">
-                <div className="flex items-center justify-between">
-                  <p className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-400">Needs you</p>
-                  <span className="rounded-full bg-[#ff008c] px-2 py-0.5 text-[9px] font-black text-white">2</span>
-                </div>
-
-                <div className="mt-5 rounded-2xl border border-[#ffb6dd] bg-[#fff3f9] p-4">
-                  <p className="text-[9px] font-black uppercase tracking-[0.16em] text-[#c6006c]">Decision</p>
-                  <p className="mt-2 text-sm font-black">Production release</p>
-                  <p className="mt-2 text-xs leading-5 text-zinc-600">Evidence changed after the approved plan.</p>
-                </div>
-
-                <div className="mt-8">
-                  <p className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-400">Agents</p>
-                  <div className="mt-4 space-y-2">
-                    {agentRows.map(([agent, context, state]) => (
-                      <div key={agent} className="rounded-xl border border-zinc-200 p-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-bold">{agent}</span>
-                          <span className="text-[9px] font-black uppercase tracking-[0.12em] text-zinc-400">{state}</span>
-                        </div>
-                        <p className="mt-1 text-[10px] leading-4 text-zinc-500">{context}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </aside>
-            </div>
-          </div>
-        </div>
-
-        <div className="mt-6 grid gap-3 md:grid-cols-4">
-          {[
-            ["01", "Grounded in project evidence"],
-            ["02", "Knows what changed"],
-            ["03", "Escalates what needs judgment"],
-            ["04", "Agents work inside project context"],
-          ].map(([number, label]) => (
-            <div key={number} className="border-t border-white/15 pt-4">
-              <p className="text-[10px] font-black text-cyan-200">{number}</p>
-              <p className="mt-2 text-sm font-semibold text-zinc-300">{label}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function NeedsYouSection() {
-  return (
-    <section className="overflow-hidden bg-white">
-      <div className="mx-auto grid w-full max-w-[1320px] gap-16 px-5 py-24 md:px-8 lg:grid-cols-[0.85fr_1.15fr] lg:items-center lg:px-12 lg:py-32">
+    <section aria-labelledby="clarity-heading" className="relative overflow-hidden bg-off-white py-16 md:py-24">
+      <span id="intelligence" className="absolute -top-24" aria-hidden />
+      <div className={`${sectionShell} grid items-center gap-12 lg:grid-cols-[1fr_1.15fr_0.95fr] lg:gap-8`}>
         <div>
-          <p className="text-[11px] font-black uppercase tracking-[0.24em] text-[#ff008c]">Human judgment</p>
-          <h2 className="mt-4 max-w-xl text-5xl font-black leading-[0.92] tracking-[-0.055em] text-zinc-950 md:text-7xl">
-            Your attention is the scarce resource.
+          <h2 id="clarity-heading" className="font-display text-4xl font-extrabold leading-[1.02] tracking-[-0.02em] text-charcoal md:text-5xl">
+            From <span className="text-freak-ink">chaos</span>
+            <br />
+            to <span className="text-calm-ink">clarity.</span>
           </h2>
-          <p className="mt-6 max-w-lg text-lg leading-8 text-zinc-500">
-            PMFreak handles the operational noise and brings forward the moments that need judgment, approval, or a real decision.
+          <p className="mt-5 max-w-sm text-base leading-relaxed text-charcoal/80">
+            PMFreak keeps every moving part of a project in one memory &mdash; so you
+            can stop reconstructing what happened and move the work forward.
           </p>
-        </div>
-
-        <div className="relative">
-          <div className="space-y-3">
-            {[
-              ["Evidence classified", "Complete"],
-              ["Timeline updated", "Complete"],
-              ["Project brief refreshed", "Complete"],
-              ["Agent research completed", "Complete"],
-              ["Risk state recalculated", "Complete"],
-            ].map(([label, state]) => (
-              <div key={label} className="flex items-center justify-between border-b border-zinc-200 py-4">
-                <div className="flex items-center gap-3">
-                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-50 text-[10px] font-black text-emerald-700">✓</span>
-                  <span className="text-sm font-semibold text-zinc-500">{label}</span>
-                </div>
-                <span className="text-[9px] font-black uppercase tracking-[0.16em] text-zinc-300">{state}</span>
-              </div>
-            ))}
-          </div>
-
-          <div className="relative mt-6 overflow-hidden rounded-[1.75rem] border border-zinc-800 bg-zinc-950 p-6 text-white shadow-[0_30px_90px_rgba(24,24,27,.22)] md:p-8">
-            <div className="pointer-events-none absolute right-0 top-0 h-36 w-36 rounded-full bg-[#ff008c]/15 blur-3xl" />
-            <p className="relative text-[10px] font-black uppercase tracking-[0.2em] text-[#ff77bd]">Decision required</p>
-            <div className="relative mt-5 grid gap-6 md:grid-cols-[1fr_0.8fr]">
-              <div>
-                <h3 className="text-3xl font-black tracking-[-0.04em]">Production release</h3>
-                <p className="mt-3 max-w-md text-sm leading-6 text-zinc-400">
-                  A new dependency was detected after the approved deployment plan.
-                </p>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-                <p className="text-[9px] font-black uppercase tracking-[0.16em] text-cyan-200">PMFreak recommends</p>
-                <p className="mt-2 text-sm font-bold">Delay release until dependency validation is complete.</p>
-              </div>
-            </div>
-            <div className="relative mt-7 flex flex-wrap gap-2">
-              <span className="rounded-full bg-white px-4 py-2 text-xs font-bold text-zinc-950">Review evidence</span>
-              <span className="rounded-full border border-white/20 px-4 py-2 text-xs font-bold">Decide</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function MemorySection() {
-  return (
-    <section className="border-y border-zinc-200 bg-[#f5f3ee]">
-      <div className="mx-auto grid w-full max-w-[1320px] gap-14 px-5 py-24 md:px-8 lg:grid-cols-[0.72fr_1.28fr] lg:items-center lg:px-12 lg:py-32">
-        <div>
-          <p className="text-[11px] font-black uppercase tracking-[0.24em] text-[#ff008c]">Project memory</p>
-          <h2 className="mt-4 text-5xl font-black leading-[0.94] tracking-[-0.05em] text-zinc-950 md:text-6xl">
-            Your project shouldn&apos;t forget.
-          </h2>
-          <p className="mt-6 max-w-md text-lg leading-8 text-zinc-500">
-            Keep the history behind decisions, commitments and state changes reachable instead of rebuilding context every time the team changes.
-          </p>
-        </div>
-
-        <div className="relative rounded-[2rem] border border-zinc-200 bg-white p-5 shadow-[0_28px_90px_rgba(24,24,27,.10)] md:p-7">
-          <div className="absolute bottom-10 left-[72px] top-10 w-px bg-zinc-200" />
-          <div className="space-y-3">
-            {memoryEvents.map(([date, event, state], index) => (
-              <div key={date} className="relative grid grid-cols-[58px_1fr_auto] items-center gap-4 rounded-2xl px-2 py-3">
-                <span className="font-mono text-[10px] font-bold text-zinc-400">{date}</span>
-                <span className="relative pl-7 text-sm font-bold text-zinc-800">
-                  <span className={`absolute left-0 top-1/2 h-3 w-3 -translate-y-1/2 rounded-full border-[3px] border-white shadow-sm ${index === 3 ? "bg-zinc-300" : "bg-[#ff008c]"}`} />
-                  {event}
+          <ul className="mt-6 space-y-3">
+            {clarityPoints.map((point) => (
+              <li key={point} className="flex items-start gap-3 text-sm font-medium text-charcoal/90">
+                <span aria-hidden className="mt-0.5 inline-flex h-5 w-5 flex-none items-center justify-center rounded-full bg-freak-orange text-charcoal">
+                  <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3.5 8.5l3 3 6-7" />
+                  </svg>
                 </span>
-                <span className={`rounded-full px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.12em] ${state === "Superseded" ? "bg-zinc-100 text-zinc-500" : state === "Confirmed" ? "bg-cyan-50 text-cyan-700" : "bg-[#fff0f8] text-[#c6006c]"}`}>
-                  {state}
-                </span>
-              </div>
+                {point}
+              </li>
             ))}
-          </div>
-          <div className="mt-5 grid gap-3 border-t border-zinc-100 pt-5 sm:grid-cols-3">
-            {[
-              ["Source", "Decision record"],
-              ["Reason", "Dependency changed"],
-              ["Provenance", "Evidence linked"],
-            ].map(([label, value]) => (
-              <div key={label} className="rounded-xl bg-[#f7f6f3] p-3">
-                <p className="text-[9px] font-black uppercase tracking-[0.14em] text-zinc-400">{label}</p>
-                <p className="mt-1 text-xs font-bold text-zinc-700">{value}</p>
-              </div>
-            ))}
-          </div>
+          </ul>
         </div>
-      </div>
-    </section>
-  );
-}
 
-function AgentsSection() {
-  return (
-    <section className="overflow-hidden bg-white">
-      <div className="mx-auto w-full max-w-[1320px] px-5 py-24 md:px-8 lg:px-12 lg:py-32">
-        <div className="mx-auto max-w-3xl text-center">
-          <p className="text-[11px] font-black uppercase tracking-[0.24em] text-[#ff008c]">AI-assisted work</p>
-          <h2 className="mt-4 text-5xl font-black leading-[0.94] tracking-[-0.05em] text-zinc-950 md:text-6xl">
-            Give agents context before giving them work.
-          </h2>
-          <p className="mx-auto mt-6 max-w-2xl text-lg leading-8 text-zinc-500">
-            Agents operate against project context, evidence and approval boundaries—not a disconnected prompt window.
+        {/* The mascot carries the emotion: freaked debris on the left, calm marks on the right. */}
+        <div className="relative mx-auto aspect-square w-full max-w-[420px]">
+          <QuestionMark className="absolute left-[4%] top-[12%] h-12 w-9 -rotate-12 text-freak-orange" />
+          <PaperDoodle className="absolute left-[16%] top-[0%] h-14 w-14 -rotate-12 text-charcoal" />
+          <Burst className="absolute left-[2%] top-[42%] h-10 w-10 text-freak-orange" />
+          <PaperDoodle className="absolute bottom-[22%] left-[0%] h-12 w-12 rotate-[18deg] text-charcoal" />
+          <QuestionMark className="absolute bottom-[6%] left-[30%] h-9 w-7 rotate-12 text-freak-orange" />
+          <Sparkle className="absolute right-[10%] top-[6%] h-8 w-8 text-calm-teal" />
+          <TaskDoodle className="absolute right-[0%] top-[30%] h-16 w-16 rotate-6 text-calm-teal" />
+          <Sparkle className="absolute bottom-[26%] right-[6%] h-6 w-6 text-calm-teal" />
+          <PaperDoodle className="absolute bottom-[8%] right-[14%] h-12 w-12 -rotate-6 text-calm-ink" />
+          <Mascot size={420} className="absolute inset-[14%]" />
+          <p className="font-marker absolute -bottom-2 left-[2%] -rotate-6 text-sm uppercase leading-tight text-charcoal md:text-base">
+            <SquiggleArrow className="mb-1 h-8 w-14 -scale-y-100 text-charcoal" />
+            Less chaos.
+            <br />
+            More impact.
           </p>
         </div>
 
-        <div className="relative mx-auto mt-16 max-w-5xl">
-          <div className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-gradient-to-b from-transparent via-zinc-200 to-transparent" />
-          <div className="relative mx-auto flex h-40 w-40 flex-col items-center justify-center rounded-full border border-zinc-200 bg-zinc-950 text-center text-white shadow-[0_24px_70px_rgba(24,24,27,.18)]">
-            <span className="text-[9px] font-black uppercase tracking-[0.18em] text-cyan-200">Project Brain</span>
-            <span className="mt-2 text-lg font-black">Grounded context</span>
-          </div>
-
-          <div className="relative mt-14 grid gap-5 md:grid-cols-3">
-            {agentRows.map(([agent, context, state], index) => (
-              <div key={agent} className="rounded-[1.5rem] border border-zinc-200 bg-[#f8f7f4] p-5 text-center shadow-sm">
-                <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-white text-sm font-black text-[#ff008c] shadow-sm">
-                  0{index + 1}
-                </div>
-                <h3 className="mt-4 text-lg font-black text-zinc-950">{agent}</h3>
-                <p className="mt-2 text-sm leading-6 text-zinc-500">{context}</p>
-                <span className="mt-5 inline-flex rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.14em] text-zinc-400">{state}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function DifferenceSection() {
-  return (
-    <section className="bg-zinc-950 text-white">
-      <div className="mx-auto w-full max-w-[1320px] px-5 py-24 md:px-8 lg:px-12 lg:py-32">
-        <p className="text-[11px] font-black uppercase tracking-[0.24em] text-cyan-200">The difference</p>
-        <div className="mt-8 grid gap-10 lg:grid-cols-[0.9fr_1.1fr] lg:items-center">
-          <div>
-            <p className="text-3xl font-black leading-tight tracking-[-0.04em] text-zinc-500 md:text-5xl">
-              Tasks<br />
-              Tickets<br />
-              Dashboards<br />
-              Documents<br />
-              Status updates
+        <figure className="relative mx-auto max-w-sm px-8 py-10 text-charcoal">
+          <BrushSwash className="text-mint/45" />
+          <blockquote className="relative">
+            <p className="font-display text-xl font-bold leading-snug md:text-2xl">
+              &ldquo;Every PM has freaked out over status, risks, deadlines &mdash; and
+              being handed one more project.&rdquo;
             </p>
-          </div>
-
-          <div className="relative border-l border-white/10 pl-8 md:pl-12">
-            <span className="absolute -left-3 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-[#ff008c] text-xs font-black">→</span>
-            <p className="text-[11px] font-black uppercase tracking-[0.2em] text-[#ff77bd]">PMFreak</p>
-            <h2 className="mt-4 text-5xl font-black leading-[0.9] tracking-[-0.055em] md:text-7xl">
-              Evidence.<br />
-              Context.<br />
-              Memory.<br />
-              Decisions.<br />
-              Execution.
-            </h2>
-          </div>
-        </div>
-
-        <p className="mt-14 max-w-3xl text-xl leading-8 text-zinc-400 md:text-2xl">
-          Traditional PM software records work. <span className="font-bold text-white">PMFreak helps teams understand what the work means.</span>
-        </p>
+          </blockquote>
+          <figcaption className="relative mt-4 text-sm font-semibold text-charcoal/75">
+            Why it&rsquo;s called PMFreak. The name comes from that feeling; the product
+            is how you get past it.
+          </figcaption>
+        </figure>
       </div>
     </section>
   );
 }
 
-function GovernanceSection() {
+function ProductShowcaseSection() {
   return (
-    <section id="security" className="scroll-mt-28 bg-[#f6f5f2]">
-      <div className="mx-auto grid w-full max-w-[1320px] gap-14 px-5 py-24 md:px-8 lg:grid-cols-[0.8fr_1.2fr] lg:items-center lg:px-12 lg:py-32">
+    <section
+      id="how-it-works"
+      aria-labelledby="showcase-heading"
+      className="pmf-on-dark relative scroll-mt-20 overflow-hidden bg-charcoal py-16 text-off-white md:py-24"
+    >
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 bg-[radial-gradient(50%_60%_at_75%_50%,rgba(20,184,166,0.16),transparent_70%)]"
+      />
+      <div className={`${sectionShell} relative grid items-center gap-12 lg:grid-cols-[0.72fr_1.5fr]`}>
         <div>
-          <p className="text-[11px] font-black uppercase tracking-[0.24em] text-[#ff008c]">Governance & control</p>
-          <h2 className="mt-4 text-5xl font-black leading-[0.94] tracking-[-0.05em] text-zinc-950 md:text-6xl">
-            AI-assisted execution with boundaries.
-          </h2>
-          <p className="mt-6 max-w-md text-lg leading-8 text-zinc-500">
-            Recommendations, decisions, actions and outcomes stay distinct. Sensitive actions can require human approval, while the evidence behind important outputs remains reachable.
+          <p className="font-marker -rotate-2 text-sm uppercase leading-snug text-freak-orange md:text-base">
+            A single place for everything that matters
           </p>
-        </div>
-
-        <div className="relative min-h-[500px] rounded-[2rem] border border-zinc-200 bg-white p-6 shadow-[0_28px_90px_rgba(24,24,27,.09)] md:p-8">
-          <div className="grid h-full gap-5 md:grid-cols-[1fr_auto_1fr] md:items-center">
-            <div className="space-y-3">
-              {["Project context", "Evidence", "Agent proposal"].map((label) => (
-                <div key={label} className="rounded-2xl border border-zinc-200 bg-[#f7f6f3] p-4 text-sm font-bold text-zinc-700">
-                  {label}
-                </div>
-              ))}
-            </div>
-
-            <div className="flex flex-col items-center gap-3">
-              <span className="text-[9px] font-black uppercase tracking-[0.15em] text-zinc-400">Boundary</span>
-              <div className="flex h-28 w-28 items-center justify-center rounded-full border border-[#ffb6dd] bg-[#fff2f9] text-center text-[11px] font-black uppercase tracking-[0.12em] text-[#c6006c] shadow-[0_16px_40px_rgba(255,0,140,.12)]">
-                Human<br />approval
-              </div>
-              <span className="text-xl text-zinc-300">→</span>
-            </div>
-
-            <div className="rounded-[1.5rem] bg-zinc-950 p-5 text-white">
-              <p className="text-[9px] font-black uppercase tracking-[0.16em] text-cyan-200">Governed outcome</p>
-              <div className="mt-4 space-y-3">
-                {["Decision recorded", "Action authorized", "Evidence preserved"].map((label) => (
-                  <div key={label} className="flex items-center gap-3 border-b border-white/10 pb-3 text-sm font-semibold text-zinc-200 last:border-b-0 last:pb-0">
-                    <span className="h-2 w-2 rounded-full bg-emerald-400" />
-                    {label}
-                  </div>
-                ))}
-              </div>
-            </div>
+          <h2 id="showcase-heading" className="font-display mt-4 text-4xl font-extrabold leading-[1.02] tracking-[-0.02em] md:text-5xl">
+            Less juggling.
+            <br />
+            <span className="text-mint">More progress.</span>
+          </h2>
+          <p className="mt-5 max-w-sm text-base leading-relaxed text-off-white/80">
+            Open a project and PMFreak answers the first questions a PM asks: what needs
+            me, and what changed &mdash; each one backed by your own project evidence.
+          </p>
+          <div className="mt-8">
+            <Link href="/command-center" className={primaryCtaClass}>
+              Open Command Center <Arrow />
+            </Link>
           </div>
         </div>
+
+        <figure>
+          <ShowcaseProductWindow />
+          <figcaption className="mt-3 text-xs text-off-white/60">
+            The real Command Center panels, shown with a sample project. Names and items are illustrative.
+          </figcaption>
+        </figure>
       </div>
     </section>
   );
 }
 
-function FoundationSection() {
+function BenefitsSection() {
   return (
-    <section className="border-y border-zinc-200 bg-white">
-      <div className="mx-auto flex w-full max-w-[1320px] flex-col gap-8 px-5 py-16 md:px-8 lg:flex-row lg:items-center lg:justify-between lg:px-12">
-        <div>
-          <p className="text-[10px] font-black uppercase tracking-[0.22em] text-[#ff008c]">Governance foundation</p>
-          <h2 className="mt-3 text-2xl font-black tracking-[-0.035em] text-zinc-950 md:text-3xl">
-            Built on Soberanía Protocol.
-          </h2>
-        </div>
-        <p className="max-w-2xl text-sm leading-7 text-zinc-500">
-          PMFreak applies governed identity, authority, approval and evidence concepts to project operations while keeping the product experience focused on the work teams need to run.
+    <section id="security" aria-labelledby="benefits-heading" className="scroll-mt-20 bg-off-white py-16 md:py-20">
+      <div className={sectionShell}>
+        <h2 id="benefits-heading" className="sr-only">
+          What PMFreak does for you
+        </h2>
+        <ul className="grid gap-10 sm:grid-cols-2 lg:grid-cols-4 lg:gap-0">
+          {benefits.map(({ Doodle, title, text, tone }, index) => (
+            <li
+              key={title}
+              className={`relative px-2 text-center lg:px-7 ${index > 0 ? "lg:border-l lg:border-charcoal/15!" : ""}`}
+            >
+              <div className="relative mx-auto h-14 w-14">
+                <Doodle className={`h-14 w-14 ${tone}`} />
+                <Burst className={`absolute -right-6 -top-3 h-6 w-6 ${index % 2 ? "text-freak-orange" : "text-calm-teal"}`} />
+              </div>
+              <h3 className="font-display mt-4 text-xl font-bold text-charcoal">{title}</h3>
+              <p className="mx-auto mt-2 max-w-[16rem] text-sm leading-relaxed text-charcoal/75">{text}</p>
+            </li>
+          ))}
+        </ul>
+        <p className="mx-auto mt-12 max-w-2xl text-center text-xs leading-relaxed text-charcoal/65">
+          Built on Soberanía Protocol &mdash; the governance foundation behind how
+          project knowledge, AI-assisted actions, decisions and audit-ready records are managed.
         </p>
       </div>
     </section>
@@ -542,25 +262,40 @@ function FoundationSection() {
 
 function FinalCtaSection() {
   return (
-    <section className="relative overflow-hidden bg-[#ff008c] text-white">
-      <div className="pointer-events-none absolute inset-0 opacity-[0.14] [background-image:linear-gradient(rgba(255,255,255,.35)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.35)_1px,transparent_1px)] [background-size:36px_36px]" />
-      <div className="relative mx-auto flex min-h-[520px] w-full max-w-[1320px] flex-col items-center justify-center px-5 py-24 text-center md:px-8 lg:px-12">
-        <p className="text-[11px] font-black uppercase tracking-[0.24em] text-white/70">PMFreak</p>
-        <h2 className="mt-4 max-w-5xl text-5xl font-black leading-[0.88] tracking-[-0.06em] md:text-8xl">
-          Your project already has a brain.
-        </h2>
-        <p className="mt-6 text-xl font-semibold text-white/80 md:text-2xl">Make it operational.</p>
-        <div className="mt-9 flex flex-wrap justify-center gap-3">
-          <Link href="/command-center" className="rounded-full bg-zinc-950 px-6 py-3.5 text-sm font-bold text-white transition hover:-translate-y-0.5">
-            Open Command Center
-          </Link>
-          <Link href="/signup" className="rounded-full border border-white/40 bg-white px-6 py-3.5 text-sm font-bold text-[#c6006c] transition hover:-translate-y-0.5">
-            Start Free
-          </Link>
+    <section aria-labelledby="final-cta-heading" className="bg-off-white px-3 pb-16 md:pb-20">
+      <div className="relative mx-auto max-w-6xl">
+        <BrushSwash className="text-mint" />
+        <div className="relative grid items-center gap-6 px-6 py-12 text-center md:grid-cols-[auto_1fr_auto] md:px-12 md:text-left">
+          <Mascot size={160} className="mx-auto h-28 w-28 -rotate-6 md:h-36 md:w-36" />
+          <div className="md:text-center">
+            <h2 id="final-cta-heading" className="font-display text-3xl font-extrabold tracking-[-0.02em] text-charcoal md:text-4xl">
+              Your projects don&rsquo;t have to be chaotic.
+            </h2>
+            <p className="mt-2 text-sm font-medium text-charcoal/80 md:text-base">
+              Founder access is open for PMs who want to freak out less.
+            </p>
+            <div className="mt-5 flex flex-wrap justify-center gap-3">
+              <Link
+                href="/signup"
+                className="inline-flex items-center gap-2 rounded-full bg-charcoal px-6 py-3 text-sm font-bold text-off-white transition hover:bg-charcoal/85"
+              >
+                Request Founder Access <Arrow />
+              </Link>
+              <Link
+                href="/login"
+                className="inline-flex items-center gap-2 rounded-full border-2 border-charcoal! px-6 py-2.5 text-sm font-bold text-charcoal transition hover:bg-charcoal/5"
+              >
+                Sign in
+              </Link>
+            </div>
+          </div>
+          <p className="font-marker hidden -rotate-6 text-base uppercase leading-tight text-charcoal md:block">
+            Same human.
+            <br />
+            More progress.
+            <Sparkle className="ml-auto mt-2 h-6 w-6 text-calm-ink" />
+          </p>
         </div>
-        <p className="mt-10 text-[10px] font-black uppercase tracking-[0.2em] text-white/60">
-          Project intelligence · Memory · Decisions · Agents · Execution
-        </p>
       </div>
     </section>
   );
@@ -568,21 +303,27 @@ function FinalCtaSection() {
 
 function LandingFooter() {
   return (
-    <footer className="bg-zinc-950 px-5 py-12 text-zinc-400 md:px-8 lg:px-12">
-      <div className="mx-auto w-full max-w-[1320px]">
-        <div className="grid gap-8 sm:grid-cols-2 lg:grid-cols-4">
+    <footer className="pmf-on-dark bg-charcoal py-12 text-off-white/80">
+      <div className={sectionShell}>
+        <div className="grid gap-7 sm:grid-cols-2 lg:grid-cols-4">
           {footerColumns.map((column) => (
             <div key={column.heading}>
-              <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-white">
+              <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-off-white">
                 {column.heading}
               </h3>
+
               <ul className="mt-4 space-y-2.5 text-sm">
                 {column.links.map((link) => (
                   <li key={link.label}>
                     {"disabled" in link ? (
-                      <span className="cursor-default text-zinc-600">{link.label}</span>
+                      <span className="cursor-default text-off-white/50">
+                        {link.label}
+                      </span>
                     ) : (
-                      <Link href={link.href} className="transition hover:text-white">
+                      <Link
+                        href={link.href}
+                        className="transition hover:text-mint"
+                      >
                         {link.label}
                       </Link>
                     )}
@@ -593,14 +334,16 @@ function LandingFooter() {
           ))}
         </div>
 
-        <div className="mt-12 flex flex-col gap-3 border-t border-white/10 pt-7 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <p className="text-sm font-black text-white">PMFreak</p>
-            <p className="mt-1 max-w-md text-xs leading-5 text-zinc-500">
-              Operational intelligence for project teams.
-            </p>
-          </div>
-          <p className="text-xs text-zinc-600">© {new Date().getFullYear()} PMFreak. All rights reserved.</p>
+        <div className="mt-10 border-t border-white/10 pt-6">
+          <p className="text-sm font-semibold text-off-white">PMFreak</p>
+
+          <p className="mt-1 text-xs text-off-white/70">
+            PMFreak helps teams keep, protect, and use what they learn from every project.
+          </p>
+
+          <p className="mt-3 text-xs text-off-white/60">
+            © {new Date().getFullYear()} PMFreak. All rights reserved.
+          </p>
         </div>
       </div>
     </footer>
@@ -609,21 +352,18 @@ function LandingFooter() {
 
 export default function Home() {
   return (
-    <>
-      <MarketingNavbar />
-      <main className="bg-white text-zinc-950">
+    <div className={`${displayFont.variable} ${markerFont.variable} pmf-landing flex min-h-screen flex-col bg-charcoal`}>
+      <MarketingNavbar brand="palette2026" />
+
+      <main className="text-charcoal">
         <HeroSection />
-        <FragmentationSection />
-        <CommandCenterSection />
-        <NeedsYouSection />
-        <MemorySection />
-        <AgentsSection />
-        <DifferenceSection />
-        <GovernanceSection />
-        <FoundationSection />
+        <ChaosToClaritySection />
+        <ProductShowcaseSection />
+        <BenefitsSection />
         <FinalCtaSection />
       </main>
+
       <LandingFooter />
-    </>
+    </div>
   );
 }
