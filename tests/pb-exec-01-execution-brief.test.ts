@@ -1446,7 +1446,7 @@ test("Q5b: every CI job that runs the suite fetches the history Q5 needs", () =>
     const suiteJobs = jobs.filter((job) => runsSuite.test(job));
     assert.equal(suiteJobs.length, 1, `${file}: exactly one job runs the suite`);
     const job = suiteJobs[0];
-    const fetch = job.search(/run: git fetch --no-tags --unshallow origin "\$GITHUB_SHA"/);
+    const fetch = job.search(/run: git (?:-c [^\n]+? )?fetch --no-tags --unshallow origin "\$GITHUB_SHA"/);
     assert.ok(fetch > job.indexOf("uses: actions/checkout@") && fetch < job.search(runsSuite), `${file}: deepen history after checkout and before the suite`);
   }
 });

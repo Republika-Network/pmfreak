@@ -39,8 +39,12 @@ jobs:
       # tests/pb-exec-01-execution-brief.test.ts Q5 diffs PB-EXEC-01's merged commits, which a
       # depth-1 checkout lacks. Deepen HEAD's own history only: fetching by SHA writes no
       # remote-tracking ref, so checks guarded on origin/main keep their current behaviour.
+      # Checkout persists no credentials here, so this one command authenticates inline with
+      # the job's read-only token; nothing is written to .git/config for later steps.
       - name: Fetch full commit history
-        run: git fetch --no-tags --unshallow origin "$GITHUB_SHA"
+        env:
+          FETCH_TOKEN: ${{ github.token }}
+        run: git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$FETCH_TOKEN" | base64 -w0)" fetch --no-tags --unshallow origin "$GITHUB_SHA"
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
