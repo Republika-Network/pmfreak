@@ -1,187 +1,110 @@
+import Image from "next/image";
 import Link from "next/link";
 
-const inputSignals = [
-  ["Decision", "Architecture baseline approved"],
-  ["Risk", "Vendor dependency changed"],
-  ["Commitment", "API owner · Friday"],
-] as const;
+import { Burst, Mascot, Sparkle } from "./doodles";
+import { HeroProductWindow } from "./product-window";
 
-const timeline = [
-  ["09:14", "Evidence connected"],
-  ["09:18", "Risk state changed"],
-  ["09:21", "Recommendation prepared"],
-] as const;
+// Hero: the approved composition — a PM seen from behind, operational chaos on the
+// left in orange/amber, calm execution on the right in teal/mint, with the seam
+// running through the PM. Everything legible is real HTML: headline, CTAs, the
+// mascot (canonical artwork) and the product window (real Command Center panel).
+//
+// UPSCALED ART: `hero-scene.webp` is the approved 1371px artwork, Lanczos-upscaled
+// to 2640px with a feathered #0F1113 overlay (45%) over the copy zone, then installed
+// by design/pmfreak-art-direction-pack/scripts/install-hero-plate.mjs. Upscaling adds
+// no detail; replace it with native ≥2400px artwork per hero-plate-brief.md.
+const HERO_PLATE = "/brand/landing/hero-scene.webp";
+
+export const primaryCtaClass =
+  "inline-flex items-center gap-2 rounded-full bg-mint px-6 py-3 text-sm font-bold text-charcoal shadow-[0_8px_24px_-8px_rgba(127,225,193,0.8)] transition hover:bg-calm-teal";
+export const secondaryOnDarkCtaClass =
+  "inline-flex items-center gap-2 rounded-full border border-off-white/40! px-6 py-3 text-sm font-bold text-off-white transition hover:border-off-white/80! hover:bg-off-white/5";
+
+export function Arrow() {
+  return (
+    <svg aria-hidden viewBox="0 0 20 20" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 10h11M11 5l5 5-5 5" />
+    </svg>
+  );
+}
 
 export function HeroSection() {
   return (
-    <section className="relative isolate overflow-hidden border-y border-zinc-200 bg-[#f7f6f3]">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_78%_12%,rgba(255,0,140,0.12),transparent_27%),radial-gradient(circle_at_62%_78%,rgba(34,211,238,0.14),transparent_30%)]" />
-      <div className="pointer-events-none absolute inset-0 opacity-[0.42] [background-image:linear-gradient(rgba(24,24,27,0.045)_1px,transparent_1px),linear-gradient(90deg,rgba(24,24,27,0.045)_1px,transparent_1px)] [background-size:34px_34px]" />
+    <section
+      aria-labelledby="hero-heading"
+      className="pmf-on-dark relative isolate overflow-hidden bg-charcoal text-off-white"
+    >
+      {/* Calm light spilling from the right, behind the product window. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(60%_70%_at_88%_55%,rgba(20,184,166,0.22),transparent_70%),radial-gradient(40%_60%_at_10%_40%,rgba(255,138,0,0.10),transparent_70%)]"
+      />
 
-      <div className="relative mx-auto grid min-h-[760px] w-full max-w-[1440px] gap-14 px-5 py-16 md:px-8 lg:grid-cols-[0.8fr_1.2fr] lg:items-center lg:px-12 lg:py-24">
-        <div className="max-w-xl">
-          <div className="mb-7 flex items-center gap-3 text-[11px] font-black uppercase tracking-[0.24em] text-zinc-500">
-            <span className="h-2 w-2 rounded-full bg-[#ff008c] shadow-[0_0_18px_rgba(255,0,140,.7)]" />
-            Operational intelligence for project teams
-          </div>
-
-          <h1 className="text-[clamp(3.4rem,7vw,6.9rem)] font-black leading-[0.86] tracking-[-0.065em] text-zinc-950">
-            Run projects with an
-            <span className="block text-[#ff008c]">operational brain.</span>
+      <div className="relative mx-auto flex w-full max-w-[1600px] flex-col xl:block xl:aspect-[1440/760]">
+        {/* Copy: centred over the dark band of the scene on desktop, first on mobile. */}
+        <div className="relative z-20 px-5 pt-12 text-center xl:absolute xl:left-[30%] xl:top-[2.5%] xl:w-[35%] xl:px-0 xl:pt-0">
+          <h1
+            id="hero-heading"
+            className="font-display text-[2.9rem] font-extrabold leading-[0.95] tracking-[-0.02em] sm:text-6xl xl:text-[clamp(2.4rem,3.7vw,4.2rem)]"
+          >
+            <span className="block text-off-white">Freak out less.</span>
+            <span className="relative mt-1 inline-block">
+              <span className="text-freak-orange">Manage</span>{" "}
+              <span className="text-mint">more.</span>
+              <svg aria-hidden viewBox="0 0 300 14" preserveAspectRatio="none" className="absolute -bottom-2.5 left-[41%] h-3 w-[56%] text-mint">
+                <path d="M3 10 C70 3 160 2 297 6" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" />
+              </svg>
+            </span>
           </h1>
-
-          <p className="mt-8 max-w-lg text-base leading-7 text-zinc-600 md:text-lg">
-            PMFreak turns project activity, evidence, decisions and AI-assisted work into continuously grounded operational context.
+          <p className="mt-5 text-lg font-semibold text-off-white md:text-xl xl:mt-3 xl:text-lg 2xl:text-xl">Project clarity for real humans.</p>
+          <p className="mx-auto mt-2 max-w-[25rem] text-sm leading-relaxed text-off-white/75 md:text-base xl:text-sm 2xl:text-base">
+            Turn scattered updates into one project memory: what changed, what
+            needs you, and what to do next.
           </p>
-
-          <div className="mt-9 flex flex-wrap gap-3">
-            <Link
-              href="/command-center"
-              className="rounded-full bg-zinc-950 px-6 py-3.5 text-sm font-bold text-white transition hover:-translate-y-0.5 hover:bg-zinc-800"
-            >
-              Open Command Center
+          <div className="mt-6 flex flex-wrap justify-center gap-3 xl:mt-4">
+            <Link href="/signup" className={primaryCtaClass}>
+              Request Founder Access <Arrow />
             </Link>
-            <Link
-              href="/signup"
-              className="rounded-full border border-zinc-300 bg-white/80 px-6 py-3.5 text-sm font-bold text-zinc-950 backdrop-blur transition hover:-translate-y-0.5 hover:border-zinc-400"
-            >
-              Start Free
+            <Link href="#how-it-works" className={secondaryOnDarkCtaClass}>
+              See how it works
             </Link>
-          </div>
-
-          <div className="mt-10 flex flex-wrap gap-x-6 gap-y-2 text-xs font-semibold text-zinc-500">
-            <span>Project memory</span>
-            <span>Decision support</span>
-            <span>Human approval</span>
-            <span>Evidence trails</span>
           </div>
         </div>
 
-        <div className="relative min-h-[600px] lg:min-h-[660px]">
-          <div className="absolute left-[4%] top-[8%] w-[78%] rotate-[-1.5deg] rounded-[2rem] border border-zinc-200 bg-white p-3 shadow-[0_40px_120px_rgba(24,24,27,.18)] md:p-4">
-            <div className="overflow-hidden rounded-[1.45rem] border border-zinc-200 bg-[#fbfbfa]">
-              <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3">
-                <div>
-                  <p className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-400">Project</p>
-                  <p className="mt-1 text-sm font-bold text-zinc-950">Platform migration</p>
-                </div>
-                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[10px] font-bold text-emerald-700">Live context</span>
-              </div>
+        {/* The scene: chaos, the PM, and the seam. */}
+        {/* Phones show the lower right of the plate (the PM and the seam), zoomed in;
+            desktop shows the whole plate. */}
+        <div className="relative z-0 mt-8 aspect-[460/330] w-full overflow-hidden xl:absolute xl:bottom-0 xl:left-0 xl:mt-0 xl:aspect-[660/552] xl:w-[64%] md:aspect-[660/330] pmf-hero-plate">
+          <Image
+            src={HERO_PLATE}
+            alt="A project manager, seen from behind at their desk. To the left, a wall of sticky notes: risks, delays, “where is this file?!”. To the right, the same desk in calm teal light."
+            width={660}
+            height={552}
+            preload
+            sizes="(min-width: 1280px) 64vw, (min-width: 768px) 100vw, 144vw"
+            className="absolute bottom-0 right-0 h-auto w-[143.5%] max-w-none md:w-full"
+          />
+          <div aria-hidden className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-charcoal to-transparent xl:hidden" />
+          <div aria-hidden className="absolute inset-x-0 top-0 h-12 bg-gradient-to-b from-charcoal to-transparent xl:hidden" />
+        </div>
 
-              <div className="grid min-h-[430px] md:grid-cols-[0.72fr_1.35fr_0.8fr]">
-                <div className="border-b border-zinc-200 bg-zinc-50 p-4 md:border-b-0 md:border-r">
-                  <p className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-400">Projects</p>
-                  <div className="mt-4 space-y-2">
-                    {["Platform migration", "ERP rollout", "Data program"].map((item, index) => (
-                      <div
-                        key={item}
-                        className={`rounded-xl px-3 py-2.5 text-xs font-semibold ${index === 0 ? "bg-zinc-950 text-white" : "text-zinc-500"}`}
-                      >
-                        {item}
-                      </div>
-                    ))}
-                  </div>
-
-                  <p className="mt-8 text-[10px] font-black uppercase tracking-[0.18em] text-zinc-400">Memory</p>
-                  <div className="mt-3 space-y-2 text-[11px] font-medium text-zinc-500">
-                    <p>Evidence</p>
-                    <p>Decisions</p>
-                    <p>Commitments</p>
-                    <p>Outcomes</p>
-                  </div>
-                </div>
-
-                <div className="relative p-4 md:p-5">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-[10px] font-black uppercase tracking-[0.18em] text-[#ff008c]">Project Brain</p>
-                      <h2 className="mt-1 text-lg font-black tracking-[-0.03em] text-zinc-950">What changed?</h2>
-                    </div>
-                    <span className="h-9 w-9 rounded-full border border-zinc-200 bg-white shadow-sm" />
-                  </div>
-
-                  <div className="mt-5 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-zinc-400">Signal detected</p>
-                        <p className="mt-1 text-sm font-bold text-zinc-950">Deployment dependency changed</p>
-                      </div>
-                      <span className="rounded-full bg-amber-50 px-2 py-1 text-[9px] font-black uppercase tracking-[0.12em] text-amber-700">Review</span>
-                    </div>
-                    <p className="mt-3 text-xs leading-5 text-zinc-500">
-                      The approved rollout plan references a dependency whose delivery date moved beyond the release window.
-                    </p>
-                    <div className="mt-4 h-px bg-zinc-100" />
-                    <p className="mt-3 text-[10px] font-bold uppercase tracking-[0.15em] text-zinc-400">Grounded in 4 evidence items</p>
-                  </div>
-
-                  <div className="mt-4 rounded-2xl bg-zinc-950 p-4 text-white shadow-[0_18px_50px_rgba(24,24,27,.18)]">
-                    <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-cyan-200">Recommendation</p>
-                    <p className="mt-2 text-sm font-bold">Hold release until dependency validation is complete.</p>
-                    <div className="mt-4 flex gap-2">
-                      <span className="rounded-full bg-white px-3 py-1.5 text-[10px] font-bold text-zinc-950">Review evidence</span>
-                      <span className="rounded-full border border-white/20 px-3 py-1.5 text-[10px] font-bold text-white">Decide</span>
-                    </div>
-                  </div>
-
-                  <div className="absolute bottom-5 left-5 right-5 rounded-full border border-zinc-200 bg-white px-4 py-3 text-xs font-medium text-zinc-400 shadow-sm">
-                    Ask PMFreak about this project...
-                  </div>
-                </div>
-
-                <div className="border-t border-zinc-200 bg-[#f5f4f1] p-4 md:border-l md:border-t-0">
-                  <p className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-400">Needs you</p>
-                  <div className="mt-4 rounded-2xl border border-[#ffb3db] bg-[#fff2f9] p-3">
-                    <p className="text-[10px] font-black uppercase tracking-[0.15em] text-[#c6006c]">Decision</p>
-                    <p className="mt-1 text-xs font-bold text-zinc-950">Production release</p>
-                    <p className="mt-2 text-[11px] leading-4 text-zinc-600">Evidence changed after approval.</p>
-                  </div>
-
-                  <p className="mt-7 text-[10px] font-black uppercase tracking-[0.18em] text-zinc-400">Agents</p>
-                  <div className="mt-3 space-y-2">
-                    {[
-                      ["Research", "Done"],
-                      ["Planning", "Working"],
-                      ["Execution", "Waiting"],
-                    ].map(([name, state]) => (
-                      <div key={name} className="flex items-center justify-between rounded-xl border border-zinc-200 bg-white px-3 py-2">
-                        <span className="text-[11px] font-semibold text-zinc-700">{name}</span>
-                        <span className="text-[9px] font-bold uppercase tracking-[0.1em] text-zinc-400">{state}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
+        {/* Calm side: the mascot and the product, already in order. */}
+        <div className="relative z-10 mx-auto w-full px-5 pb-14 pt-2 md:max-w-2xl xl:absolute xl:max-w-none xl:right-[2.5%] xl:top-[3%] xl:w-[31%] xl:p-0">
+          <div className="relative flex items-end justify-end gap-3 pr-2 xl:h-[clamp(120px,13vw,190px)]">
+            <p className="font-marker mb-6 max-w-[11rem] -rotate-6 text-right text-sm leading-tight text-mint xl:text-base">
+              Same brain. Just more clarity.
+            </p>
+            <Sparkle className="absolute right-[34%] top-2 h-5 w-5 text-mint" />
+            <Burst className="absolute -left-1 bottom-10 hidden h-8 w-8 -scale-x-100 text-warm-amber xl:block" />
+            <Mascot
+              onDark
+              size={180}
+              preload
+              alt="The PMFreak mascot: one half freaked out, the other calm and in control"
+              className="relative z-10 -mb-3 mr-2 h-28 w-28 shrink-0 rotate-6 xl:h-[clamp(120px,12vw,180px)] xl:w-[clamp(120px,12vw,180px)]"
+            />
           </div>
-
-          <div className="absolute right-[2%] top-[3%] w-[42%] rotate-[3deg] rounded-2xl border border-zinc-200 bg-white/95 p-4 shadow-[0_24px_70px_rgba(24,24,27,.14)] backdrop-blur">
-            <p className="text-[9px] font-black uppercase tracking-[0.18em] text-zinc-400">Incoming signals</p>
-            <div className="mt-3 space-y-2">
-              {inputSignals.map(([type, value]) => (
-                <div key={value} className="rounded-xl bg-zinc-50 px-3 py-2.5">
-                  <p className="text-[9px] font-black uppercase tracking-[0.14em] text-[#ff008c]">{type}</p>
-                  <p className="mt-1 text-[11px] font-semibold text-zinc-700">{value}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="absolute bottom-[2%] left-[18%] w-[48%] rotate-[1.5deg] rounded-2xl border border-zinc-800 bg-zinc-950 p-4 text-white shadow-[0_28px_80px_rgba(24,24,27,.24)]">
-            <div className="flex items-center justify-between">
-              <p className="text-[9px] font-black uppercase tracking-[0.18em] text-cyan-200">Operational trail</p>
-              <span className="h-2 w-2 rounded-full bg-emerald-400" />
-            </div>
-            <div className="mt-3 space-y-2">
-              {timeline.map(([time, label]) => (
-                <div key={time} className="flex items-center gap-3 text-[10px]">
-                  <span className="font-mono text-zinc-500">{time}</span>
-                  <span className="h-px w-5 bg-white/15" />
-                  <span className="font-semibold text-zinc-200">{label}</span>
-                </div>
-              ))}
-            </div>
-          </div>
+          <HeroProductWindow />
         </div>
       </div>
     </section>

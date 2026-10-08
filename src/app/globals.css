@@ -12,6 +12,30 @@
   --font-mono: "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
+/*
+ * PMFreak brand palette (approved 2026-10). Additive tokens: they generate
+ * utilities such as bg-freak-orange or text-calm-ink and change nothing until used.
+ * Story: orange/amber = freaked (overload, urgency) -> teal/mint = calm (control).
+ * Contrast: every accent passes AA as text on charcoal; none passes on off-white,
+ * so text on light surfaces uses the *-ink variants (4.6:1 on off-white).
+ */
+@theme {
+  --color-freak-orange: #FF8A00;
+  --color-warm-amber: #FFC05E;
+  --color-calm-teal: #14B8A6;
+  --color-mint: #7FE1C1;
+  --color-charcoal: #0F1113;
+  --color-off-white: #F4EFE6;
+  --color-freak-ink: #A35800;
+  --color-calm-ink: #0D796E;
+}
+
+/* Landing type (variables set by next/font in src/components/landing/fonts.ts). */
+@theme inline {
+  --font-display: var(--font-pmf-display), "Outfit", ui-sans-serif, system-ui, sans-serif;
+  --font-marker: var(--font-pmf-marker), "Comic Sans MS", cursive;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
@@ -208,4 +232,23 @@ html {
 @keyframes progressMove {
   0%, 100% { transform: translateX(0); }
   50% { transform: translateX(140%); }
+}
+
+/* Landing-only focus ring in the brand palette (the global cyan ring above stays for the app). */
+.pmf-landing :focus-visible {
+  outline-color: var(--color-calm-ink);
+}
+.pmf-landing .pmf-on-dark :focus-visible {
+  outline-color: var(--color-mint);
+}
+.pmf-landing ::selection {
+  background: rgb(20 184 166 / 0.25);
+}
+
+/* Landing hero plate: fade into the product side; on very wide screens also fade its left edge. */
+@media (min-width: 80rem) {
+  .pmf-hero-plate { mask-image: linear-gradient(to right, black 86%, transparent); }
+}
+@media (min-width: 100rem) {
+  .pmf-hero-plate { mask-image: linear-gradient(to right, transparent, black 10%, black 86%, transparent); }
 }
