@@ -20,11 +20,12 @@ of branch `feat/design-system-public-pages`; not used by the app.
 | Name | URL | Notes |
 |---|---|---|
 | `home` | `/` | Approved homepage. Only two approved changes: CTA wording ("Get started free", the final-CTA line, navbar "Sign in" / "Get started") and, at 820, the navbar menu button instead of wrapped links. Verified by swapping the old strings back in the DOM: 0 differing pixels against the pre-change render at 1440, 1024, 820 and 390. |
-| `pricing` | `/pricing` | |
+| `pricing` | `/pricing` | With paid checkout released (`PMFREAK_BILLING_CHECKOUT_ENABLED=true`). |
+| `pricing-checkout-off` | `/pricing` | **Default** state: release control off. Plans and prices shown, "Not available yet" instead of purchase links, free signup offered. No `before/`. |
 | `login`, `login-error`, `login-success` | `/login`, `?error=…`, `?success=…` | |
-| `login-checkout` | `/login?next=%2Fbilling` | New state: signed-out plan choice. No `before/`. |
+| `login-checkout` | `/login?next=%2Fbilling` | New state: signed-out plan choice (shown only while checkout is released). No `before/`. |
 | `signup`, `signup-error` | `/signup`, `?error=…` | |
-| `signup-checkout` | `/signup?next=%2Fbilling` | New state. No `before/`. |
+| `signup-checkout` | `/signup?next=%2Fbilling` | New state (shown only while checkout is released). No `before/`. |
 | `confirm-email` | `/signup/confirm-email?email=…` | |
 | `forgot-password`, `reset-password` | `/forgot-password`, `/auth/reset-password` | |
 

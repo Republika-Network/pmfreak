@@ -127,6 +127,9 @@ test.beforeEach(() => {
   state.membershipRow = undefined;
   state.stripeCalls = [];
   state.subscription = { plan: "free", subscriptionStatus: "inactive", stripeCustomerId: "cus_existing", stripeSubscriptionId: null, currentPeriodEnd: null };
+  // Authorization is tested with paid checkout released; the default-OFF state is
+  // covered by tests/billing-release-control.test.mjs.
+  process.env.PMFREAK_BILLING_CHECKOUT_ENABLED = "true";
   process.env.STRIPE_SECRET_KEY = "sk_test_123";
   process.env.STRIPE_WEBHOOK_SECRET = "whsec_test_123";
   process.env.STRIPE_PRO_PRICE_ID = "price_pro";

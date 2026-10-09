@@ -20,6 +20,11 @@ import {
 import { ABUSE_PROTECTION_REGISTRY } from "../src/lib/security/abuse-protection-registry.ts";
 import { handleCreateCheckoutSession } from "../src/app/api/billing/create-checkout-session/route.ts";
 import { handleCreatePortalSession } from "../src/app/api/billing/create-portal-session/route.ts";
+
+// These suites test abuse limits on the billing routes, which only run once the
+// billing release control is on (src/lib/billing-release.ts; default OFF).
+// tests/billing-release-control.test.mjs covers the disabled state.
+process.env.PMFREAK_BILLING_CHECKOUT_ENABLED = "true";
 import { requireBillingManageMembership } from "../src/lib/workspace-access.ts";
 import { PUBLIC_ROUTE_ALLOWLIST } from "../src/lib/security/route-guard-registry.ts";
 

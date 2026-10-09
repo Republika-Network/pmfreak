@@ -9,13 +9,15 @@ type Props = {
   workspaceId: string | null;
   /** Server-resolved owner/admin check; the billing routes enforce it again. */
   canManageBilling: boolean;
+  /** Release control (src/lib/billing-release.ts). Off: the billing routes refuse; offer nothing. */
+  checkoutEnabled: boolean;
   /** Plan from /billing?plan=…, validated server-side. */
   requestedPlan: PaidPlanTier | null;
 };
 
 const NO_WORKSPACE_MESSAGE = "We couldn't find a workspace for your account yet. Finish setting up your workspace, then try again.";
 
-export default function BillingClient({ subscription, workspaceId, canManageBilling, requestedPlan }: Props) {
+export default function BillingClient({ subscription, workspaceId, canManageBilling, checkoutEnabled, requestedPlan }: Props) {
   const [isCreatingCheckout, setIsCreatingCheckout] = useState(false);
   const [isCreatingPortal, setIsCreatingPortal] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -132,9 +134,13 @@ export default function BillingClient({ subscription, workspaceId, canManageBill
       {chosenPlan ? (
         <div className="mt-5 rounded-xl border border-slate-300 bg-white p-4" aria-labelledby="chosen-plan-heading">
           <h3 id="chosen-plan-heading" className="text-sm font-semibold text-slate-900">
-            {!canManageBilling ? "Plan changes need a workspace owner or admin" : hasPaidPlan ? "You already have a paid plan" : `You chose ${PAID_PLANS[chosenPlan].name}`}
+            {!checkoutEnabled ? "Paid plans aren\u2019t available yet" : !canManageBilling ? "Plan changes need a workspace owner or admin" : hasPaidPlan ? "You already have a paid plan" : `You chose ${PAID_PLANS[chosenPlan].name}`}
           </h3>
-          {!canManageBilling ? (
+          {!checkoutEnabled ? (
+            <p className="mt-1 text-sm text-slate-700">
+              You chose {PAID_PLANS[chosenPlan].name}, but paid checkout isn&rsquo;t open yet, so nothing can be charged. Your workspace stays on its current plan.
+            </p>
+          ) : !canManageBilling ? (
             <p className="mt-1 text-sm text-slate-700">
               You chose {PAID_PLANS[chosenPlan].name}, but only workspace owners and admins can start a subscription. Ask one of them to upgrade from this page.
             </p>
@@ -172,6 +178,11 @@ export default function BillingClient({ subscription, workspaceId, canManageBill
 
       {error ? <p role="alert" className="mt-4 text-sm text-rose-800">{error}</p> : null}
 
+      {checkoutEnabled ? null : (
+        <p className="mt-5 text-sm text-slate-700">Plan upgrades and subscription management aren&rsquo;t available in PMFreak yet.</p>
+      )}
+
+      {checkoutEnabled ? (
       <div className="mt-5 flex flex-wrap gap-3">
         {subscription.plan === "free" && !chosenPlan ? (
           <button
@@ -193,6 +204,7 @@ export default function BillingClient({ subscription, workspaceId, canManageBill
           {isCreatingPortal ? "Opening portal..." : "Manage Subscription"}
         </button>
       </div>
+      ) : null}
     </section>
   );
 }

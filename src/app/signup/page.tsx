@@ -3,6 +3,7 @@ import { signupAction } from "./actions";
 import { AuthShell } from "@/components/auth/auth-shell";
 import AuthSubmitButton from "@/components/auth-submit-button";
 import { isCheckoutContinuation } from "@/lib/billing-plans";
+import { isBillingCheckoutEnabled } from "@/lib/billing-release";
 import { AuthField, AuthNotice, authLinkClass } from "@/ui-core";
 
 export default async function SignupPage({
@@ -21,7 +22,7 @@ export default async function SignupPage({
         <div className="mb-5"><AuthNotice tone="error">{params.error}</AuthNotice></div>
       )}
 
-      {isCheckoutContinuation(params.next) ? (
+      {isCheckoutContinuation(params.next) && isBillingCheckoutEnabled() ? (
         <p className="mb-5 text-sm text-charcoal/75">
           Your plan choice is saved in this browser. Once your workspace is set up, you&rsquo;ll find it on the Billing page.
         </p>

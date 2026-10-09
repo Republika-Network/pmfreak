@@ -100,7 +100,7 @@ test("clearPendingPlan removes the record, and unavailable storage never throws"
 
 // ── Wiring ──────────────────────────────────────────────────────────────────
 
-const pricing = readFileSync("src/app/pricing/page.tsx", "utf8");
+const pricing = readFileSync("src/app/pricing/pricing-view.tsx", "utf8");
 const billingClient = readFileSync("src/app/(protected)/billing/billing-client.tsx", "utf8");
 const billingPage = readFileSync("src/app/(protected)/billing/page.tsx", "utf8");
 

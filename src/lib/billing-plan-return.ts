@@ -6,7 +6,9 @@ import { canManageBilling, type WorkspaceRole } from "@/lib/workspace-access";
  * Whether the app shell may offer "return to Billing with the plan you chose
  * before signing up" (see PendingPlanReturn and src/lib/billing-plans.ts).
  *
- * Server-side and fail-closed. All three must hold:
+ * Server-side and fail-closed. All four must hold:
+ *   - paid checkout is released (src/lib/billing-release.ts) — otherwise there
+ *     is nothing to return to;
  *   - onboarding is COMPLETE ("active"), so mandatory onboarding is never
  *     interrupted — earlier states keep their own next-step surfaces;
  *   - the workspace role can actually manage billing (owner/admin, the same
@@ -18,10 +20,12 @@ import { canManageBilling, type WorkspaceRole } from "@/lib/workspace-access";
  * /billing plus the checkout route re-check everything server-side.
  */
 export function isEligibleForPlanReturn(input: {
+  checkoutEnabled: boolean;
   onboardingState: OnboardingState;
   role: WorkspaceRole | null;
   pathname: string | null;
 }): boolean {
+  if (!input.checkoutEnabled) return false;
   if (!isOnboardingComplete(input.onboardingState)) return false;
   if (!input.role || !canManageBilling(input.role)) return false;
   const path = input.pathname ?? "";

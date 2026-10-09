@@ -62,6 +62,7 @@ test.beforeEach(() => {
   state.memberships = { [WORKSPACE]: { role: "owner" } };
   state.subscription = { plan: "free", subscriptionStatus: "inactive", stripeCustomerId: null, stripeSubscriptionId: null, currentPeriodEnd: null };
   state.stripeCalls = [];
+  process.env.PMFREAK_BILLING_CHECKOUT_ENABLED = "true"; // released; the OFF state is tests/billing-release-control.test.mjs
   process.env.STRIPE_SECRET_KEY = "sk_test_fake";
   process.env.STRIPE_WEBHOOK_SECRET = "whsec_test_fake";
   process.env.STRIPE_PRO_PRICE_ID = "price_test_pro";
@@ -149,8 +150,8 @@ test("an owner opens the billing portal with the same workspace context", async 
 
 // ── Post-onboarding return offer ────────────────────────────────────────────
 
-test("the return-to-Billing offer needs complete onboarding, a billing role, and not being on /billing", () => {
-  const ok = { onboardingState: "active", role: "owner", pathname: "/command-center" };
+test("the return-to-Billing offer needs released checkout, complete onboarding, a billing role, and not being on /billing", () => {
+  const ok = { checkoutEnabled: true, onboardingState: "active", role: "owner", pathname: "/command-center" };
   assert.equal(isEligibleForPlanReturn(ok), true);
   assert.equal(isEligibleForPlanReturn({ ...ok, role: "admin" }), true);
   for (const onboardingState of ["no_workspace", "needs_project", "needs_task", "execution_started", "trial_blocked"]) {
@@ -163,11 +164,12 @@ test("the return-to-Billing offer needs complete onboarding, a billing role, and
     assert.equal(isEligibleForPlanReturn({ ...ok, pathname }), false, pathname);
   }
   assert.equal(isEligibleForPlanReturn({ ...ok, pathname: null }), true);
+  assert.equal(isEligibleForPlanReturn({ ...ok, checkoutEnabled: false }), false, "nothing to return to while checkout is off");
 });
 
 test("the layout only adds the offer: no redirect or gate depends on it", () => {
   const layout = readFileSync("src/app/(protected)/layout.tsx", "utf8");
-  assert.match(layout, /const offerPlanReturn = isEligibleForPlanReturn\(\{ onboardingState, role: resolvedWorkspace\.role, pathname: routedHeaders\.get\("x-pathname"\) \}\);/);
+  assert.match(layout, /const offerPlanReturn = isEligibleForPlanReturn\(\{ checkoutEnabled: isBillingCheckoutEnabled\(\), onboardingState, role: resolvedWorkspace\.role, pathname: routedHeaders\.get\("x-pathname"\) \}\);/);
   assert.match(layout, /\{offerPlanReturn \? <PendingPlanReturn \/> : null\}\{children\}/);
   assert.equal((layout.match(/offerPlanReturn/g) ?? []).length, 2, "used once, for rendering only");
   const component = readFileSync("src/components/billing/pending-plan-return.tsx", "utf8");

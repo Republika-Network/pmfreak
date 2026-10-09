@@ -1,5 +1,6 @@
 import { getCompanySubscription } from "@/lib/billing";
 import { parsePaidPlanTier } from "@/lib/billing-plans";
+import { isBillingCheckoutEnabled } from "@/lib/billing-release";
 import { requireAuthUser } from "@/lib/auth";
 import { canManageBilling } from "@/lib/workspace-access";
 import { resolvePreferredWorkspace } from "@/lib/workspaces/preferred-workspace";
@@ -26,7 +27,7 @@ export default async function BillingPage({
       <p className="mt-2 text-sm text-slate-700">Manage your Stripe subscription for {user.companyName}.</p>
 
       <div className="mt-8">
-        <BillingClient subscription={subscription} workspaceId={workspaceId} canManageBilling={canManage} requestedPlan={requestedPlan} />
+        <BillingClient subscription={subscription} workspaceId={workspaceId} canManageBilling={canManage} checkoutEnabled={isBillingCheckoutEnabled()} requestedPlan={requestedPlan} />
       </div>
     </main>
   );
