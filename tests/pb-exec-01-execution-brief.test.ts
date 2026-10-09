@@ -1415,10 +1415,40 @@ test("Q4: the route's body is closed — intent/targetRef only; no renderFor, me
   assert.match(appendMessage, /metadata: input\.metadata \?\? null/, "appendMessage is unchanged");
 });
 
-test("Q5: no migration and no new API route", { skip: (() => { try { execFileSync("git", ["rev-parse", "--verify", "--quiet", "origin/main"], { stdio: "ignore" }); return false; } catch { return "no origin/main"; } })() }, () => {
-  const changed = execFileSync("git", ["diff", "--name-only", "origin/main", "--", "supabase", "src/app/api"], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
-  const untracked = execFileSync("git", ["ls-files", "--others", "--exclude-standard", "supabase", "src/app/api"], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
-  assert.deepEqual([...changed, ...untracked].sort(), ["src/app/api/projects/[id]/brain/turns/route.ts"]);
+// Q5 pins PB-EXEC-01's own change set: what its merge (#632) landed on main relative to the
+// merge's first parent. It used to diff against origin/main, a moving ref that described
+// PB-EXEC-01 only while the branch was unmerged: on main the diff became empty and every push
+// failed, and on later branches it measured unrelated work. These commits are immutable, so Q5
+// means the same on a PR, on a push to main and locally. CI deepens history for it (Q5b); a
+// checkout without the commits FAILS with a diagnostic and never skips.
+const PB_EXEC_01_MERGE = "cfd601f7f8290ced75d59690c5cccd8362103e5d";
+const git = (args: string[]) => execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+const hasCommit = (rev: string) => { try { execFileSync("git", ["cat-file", "-e", `${rev}^{commit}`], { stdio: "ignore" }); return true; } catch { return false; } };
+
+test("Q5: no migration and no new API route", () => {
+  const base = `${PB_EXEC_01_MERGE}^1`;
+  assert.ok(
+    hasCommit(PB_EXEC_01_MERGE) && hasCommit(base),
+    `Q5 baseline missing: PB-EXEC-01 merge ${PB_EXEC_01_MERGE} or its first parent is not in this checkout ` +
+      `(shallow: ${git(["rev-parse", "--is-shallow-repository"])}). Fetch full history, e.g. \`git fetch --unshallow origin\`.`,
+  );
+  assert.equal(git(["rev-parse", `${PB_EXEC_01_MERGE}^2`]), "0164306e43d57017b3917af7d9bff9d9c6200943", "the pinned merge is PB-EXEC-01 (#632)");
+  const landed = git(["diff", "--no-renames", "--name-status", base, PB_EXEC_01_MERGE, "--", "supabase", "src/app/api"]).split("\n").filter(Boolean);
+  assert.deepEqual(landed, ["M\tsrc/app/api/projects/[id]/brain/turns/route.ts"], "PB-EXEC-01 adds no migration and no API route; it only extends the existing turn route");
+});
+
+test("Q5b: every CI job that runs the suite fetches the history Q5 needs", () => {
+  for (const [file, runsSuite] of [
+    [".github/workflows/ci-governance.yml", /run: npm test\b/],
+    [".github/workflows/release-governance.yml", /run: npm run check:beta-release\b/],
+  ] as const) {
+    const jobs = readFileSync(file, "utf8").replace(/\r\n/g, "\n").split(/\n(?= {2}[\w-]+:\n)/);
+    const suiteJobs = jobs.filter((job) => runsSuite.test(job));
+    assert.equal(suiteJobs.length, 1, `${file}: exactly one job runs the suite`);
+    const job = suiteJobs[0];
+    const fetch = job.search(/run: git (?:-c [^\n]+? )?fetch --no-tags --unshallow origin "\$GITHUB_SHA"/);
+    assert.ok(fetch > job.indexOf("uses: actions/checkout@") && fetch < job.search(runsSuite), `${file}: deepen history after checkout and before the suite`);
+  }
 });
 
 test("Q6: the UI offers Copy only — no execute, send, delegate, PR, merge or deploy control", () => {
