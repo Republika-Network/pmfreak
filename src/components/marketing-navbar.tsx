@@ -11,8 +11,9 @@ const navLinks = [
   { label: "Command Center", href: "/command-center" },
 ];
 
-// brand="palette2026" opts a page into the 2026 palette (used by the landing).
-// The default keeps the original styling for pages not yet migrated (pricing).
+// brand="palette2026" opts a page into the 2026 palette (landing, pricing).
+// The full nav needs ~1000px, so it shows from lg; tablets get the menu button.
+// The default keeps the original pink styling; no page uses it any more.
 export function MarketingNavbar({ brand = "original" }: { brand?: "original" | "palette2026" } = {}) {
   const [isOpen, setIsOpen] = useState(false);
   const v2 = brand === "palette2026";
@@ -35,7 +36,7 @@ export function MarketingNavbar({ brand = "original" }: { brand?: "original" | "
           {v2 ? <LogoLockupOnDark preload /> : <LogoMark size="navbar" priority />}
         </div>
 
-        <nav className="hidden items-center gap-10 md:flex" aria-label="Main">
+        <nav className="hidden items-center gap-10 lg:flex" aria-label="Main">
           {navLinks.map((link) => (
             <Link key={link.label} href={link.href} className={`${v2 ? "text-base" : "text-lg"} font-semibold ${textClass} transition ${linkHover}`}>
               {link.label}
@@ -43,23 +44,23 @@ export function MarketingNavbar({ brand = "original" }: { brand?: "original" | "
           ))}
         </nav>
 
-        <div className="hidden items-center gap-3 md:flex">
+        <div className="hidden items-center gap-3 lg:flex">
           <Link href="/login" className={v2 ? "rounded-full border border-transparent px-4 py-2 text-base font-semibold text-off-white transition hover:border-mint/50!" : "rounded-full border border-transparent px-4 py-2 text-lg font-semibold text-zinc-900 transition hover:border-cyan-300/50 hover:text-cyan-700"}>
-            <span className={v2 ? "font-semibold" : "font-semibold text-zinc-900"}>Sign In</span>
+            <span className={v2 ? "font-semibold" : "font-semibold text-zinc-900"}>Sign in</span>
           </Link>
           <Link href="/signup" className={ctaClass}>
-            Get Started
+            Get started
           </Link>
         </div>
 
-        <button type="button" className={`mr-4 inline-flex h-12 w-12 items-center justify-center rounded-2xl md:hidden ${v2 ? "text-off-white" : "text-black"}`} aria-label="Toggle menu" aria-controls="mobile-main-menu" aria-expanded={isOpen} onClick={() => setIsOpen((v) => !v)}>
+        <button type="button" className={`mr-4 inline-flex h-12 w-12 items-center justify-center rounded-2xl lg:hidden ${v2 ? "text-off-white" : "text-black"}`} aria-label="Toggle menu" aria-controls="mobile-main-menu" aria-expanded={isOpen} onClick={() => setIsOpen((v) => !v)}>
           <svg viewBox="0 0 24 24" className="h-8 w-8 stroke-[3]" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <path d="M4 7h16M4 12h16M4 17h16" />
           </svg>
         </button>
       </div>
 
-      <div id="mobile-main-menu" className={`grid transition-all duration-300 md:hidden ${isOpen ? "grid-rows-[1fr] opacity-100" : "pointer-events-none grid-rows-[0fr] opacity-0"}`}>
+      <div id="mobile-main-menu" inert={!isOpen} className={`grid transition-all duration-300 lg:hidden ${isOpen ? "grid-rows-[1fr] opacity-100" : "pointer-events-none grid-rows-[0fr] opacity-0"}`}>
         <div className={`overflow-hidden px-4 pb-4 ${v2 ? "border-t border-off-white/10! bg-charcoal" : "border-t border-zinc-200 bg-white/95"}`}>
           <div className="mt-3 flex flex-col gap-2 rounded-2xl border border-zinc-200/80 bg-white/90 p-3 backdrop-blur-xl">
             {navLinks.map((link) => (
@@ -68,10 +69,10 @@ export function MarketingNavbar({ brand = "original" }: { brand?: "original" | "
               </Link>
             ))}
             <Link href="/login" className="rounded-lg border border-zinc-200 px-3 py-2.5 text-center text-lg font-semibold text-zinc-900" onClick={() => setIsOpen(false)}>
-              <span className="font-semibold text-zinc-900">Sign In</span>
+              <span className="font-semibold text-zinc-900">Sign in</span>
             </Link>
             <Link href="/signup" className={mobileCtaClass} onClick={() => setIsOpen(false)}>
-              Get Started
+              Get started
             </Link>
           </div>
         </div>

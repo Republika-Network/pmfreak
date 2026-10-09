@@ -234,14 +234,18 @@ html {
   50% { transform: translateX(140%); }
 }
 
-/* Landing-only focus ring in the brand palette (the global cyan ring above stays for the app). */
-.pmf-landing :focus-visible {
+/* Brand-scoped focus ring in the brand palette (the global cyan ring above stays for the app).
+ * .pmf-landing is the homepage; .pmf-brand opts in other migrated public pages (pricing, auth). */
+.pmf-landing :focus-visible,
+.pmf-brand :focus-visible {
   outline-color: var(--color-calm-ink);
 }
-.pmf-landing .pmf-on-dark :focus-visible {
+.pmf-landing .pmf-on-dark :focus-visible,
+.pmf-brand .pmf-on-dark :focus-visible {
   outline-color: var(--color-mint);
 }
-.pmf-landing ::selection {
+.pmf-landing ::selection,
+.pmf-brand ::selection {
   background: rgb(20 184 166 / 0.25);
 }
 

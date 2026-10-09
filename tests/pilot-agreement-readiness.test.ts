@@ -72,7 +72,9 @@ test("acceptance storage migration exists with RLS", () => {
 });
 
 test("landing footer legal links stay disabled until real documents exist", () => {
-  const src = readFileSync("src/app/page.tsx", "utf8");
+  // The landing and pricing share one footer; guard its source, and that the landing uses it.
+  assert.match(readFileSync("src/app/page.tsx", "utf8"), /<MarketingFooter onHomepage \/>/);
+  const src = readFileSync("src/components/marketing/marketing-footer.tsx", "utf8");
   const privacyBlock = src.match(/\{ label: "Privacy Policy"[^}]*\}/)?.[0] ?? "";
   const tosBlock = src.match(/\{ label: "Terms of Service"[^}]*\}/)?.[0] ?? "";
   assert.ok(privacyBlock.includes("disabled: true"), "Privacy Policy link must stay disabled until published");

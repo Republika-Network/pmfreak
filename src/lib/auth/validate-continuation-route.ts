@@ -5,7 +5,9 @@ const BLOCKED_PREFIXES = ["/login", "/signup", "/auth", "/debug", "/api", "/_nex
 // canonical Command Center would fail the continuation check, and a user whose
 // session expired on a deep link would be returned to the bare entry point
 // instead of the workspace they were actually looking at.
-const ALLOWED_PREFIXES = ["/workspace", "/workspaces", "/projects", "/dashboard", "/portfolio", "/upload", "/command-center", "/create-command-center", "/create-pmo", "/pmo"];
+// "/billing" lets a visitor who chose a plan on /pricing land back on the
+// purchase flow after signing in (the proxy bounces /billing to /login?next=/billing).
+const ALLOWED_PREFIXES = ["/workspace", "/workspaces", "/projects", "/dashboard", "/portfolio", "/upload", "/command-center", "/create-command-center", "/create-pmo", "/pmo", "/billing"];
 
 export function isSafeContinuationRoute(route: string): boolean {
   if (typeof route !== "string") return false;

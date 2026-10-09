@@ -3,6 +3,7 @@ import { getCompanySubscription } from "@/lib/billing";
 import { denyResponse } from "@/lib/security/deny-response";
 import { requireBillingManageMembership, WorkspaceMembershipError } from "@/lib/workspace-access";
 import { getStripeServerClient } from "@/lib/stripe";
+import { BILLING_CHECKOUT_DISABLED_MESSAGE, isBillingCheckoutEnabled } from "@/lib/billing-release";
 import { abuseDenyResponse, buildAbuseKey, enforceAbuseLimit } from "@/lib/security/abuse-protection";
 
 const ROUTE_ID = "/api/billing/create-portal-session";
@@ -13,6 +14,7 @@ export type CreatePortalSessionDeps = {
   getCompanySubscription: typeof getCompanySubscription;
   getStripeServerClient: typeof getStripeServerClient;
   enforceAbuseLimit: typeof enforceAbuseLimit;
+  isBillingCheckoutEnabled: () => boolean;
 };
 
 const defaultDeps: CreatePortalSessionDeps = {
@@ -21,6 +23,7 @@ const defaultDeps: CreatePortalSessionDeps = {
   getCompanySubscription,
   getStripeServerClient,
   enforceAbuseLimit,
+  isBillingCheckoutEnabled: () => isBillingCheckoutEnabled(),
 };
 
 /**
@@ -32,6 +35,14 @@ const defaultDeps: CreatePortalSessionDeps = {
  */
 export async function handleCreatePortalSession(request: Request, depsOverride: Partial<CreatePortalSessionDeps> = {}): Promise<Response> {
   const deps: CreatePortalSessionDeps = { ...defaultDeps, ...depsOverride };
+
+  // Release control (src/lib/billing-release.ts): while paid checkout is not
+  // released, no Stripe session is created — even with Stripe credentials set,
+  // and before any auth, membership, abuse-limit or Stripe work runs.
+  if (!deps.isBillingCheckoutEnabled()) {
+    return Response.json({ error: BILLING_CHECKOUT_DISABLED_MESSAGE, code: "billing_checkout_disabled" }, { status: 503 });
+  }
+
   const user = await deps.getAuthUser();
 
   if (!user) {

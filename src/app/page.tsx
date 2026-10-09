@@ -16,16 +16,8 @@ import {
 import { displayFont, markerFont } from "@/components/landing/fonts";
 import { Arrow, HeroSection, primaryCtaClass } from "@/components/landing/hero-section";
 import { ShowcaseProductWindow } from "@/components/landing/product-window";
+import { MarketingFooter } from "@/components/marketing/marketing-footer";
 import { MarketingNavbar } from "@/components/marketing-navbar";
-
-type FooterLink =
-  | { label: string; href: string }
-  | { label: string; disabled: true };
-
-type FooterColumn = {
-  heading: string;
-  links: readonly FooterLink[];
-};
 
 export const metadata: Metadata = {
   description:
@@ -67,43 +59,6 @@ const benefits = [
     tone: "text-freak-ink",
   },
 ] as const;
-
-const footerColumns = [
-  {
-    heading: "Product",
-    links: [
-      { label: "Product", href: "#intelligence" },
-      { label: "How it Works", href: "#how-it-works" },
-      { label: "Pricing", href: "/pricing" },
-      { label: "Command Center", href: "/command-center" },
-    ],
-  },
-  {
-    heading: "Use Cases",
-    links: [
-      { label: "PMOs", disabled: true },
-      { label: "Delivery Teams", disabled: true },
-      { label: "Technical PMs", disabled: true },
-      { label: "Consulting Teams", disabled: true },
-    ],
-  },
-  {
-    heading: "Company",
-    links: [
-      { label: "About", disabled: true },
-      { label: "Contact", disabled: true },
-      { label: "Roadmap", disabled: true },
-    ],
-  },
-  {
-    heading: "Legal",
-    links: [
-      { label: "Privacy Policy", disabled: true },
-      { label: "Terms of Service", disabled: true },
-      { label: "Security", href: "#security" },
-    ],
-  },
-] as const satisfies readonly FooterColumn[];
 
 const sectionShell = "mx-auto w-full max-w-6xl px-5 md:px-8";
 
@@ -272,14 +227,14 @@ function FinalCtaSection() {
               Your projects don&rsquo;t have to be chaotic.
             </h2>
             <p className="mt-2 text-sm font-medium text-charcoal/80 md:text-base">
-              Founder access is open for PMs who want to freak out less.
+              Create a free account and bring in your first project.
             </p>
             <div className="mt-5 flex flex-wrap justify-center gap-3">
               <Link
                 href="/signup"
                 className="inline-flex items-center gap-2 rounded-full bg-charcoal px-6 py-3 text-sm font-bold text-off-white transition hover:bg-charcoal/85"
               >
-                Request Founder Access <Arrow />
+                Get started free <Arrow />
               </Link>
               <Link
                 href="/login"
@@ -301,55 +256,6 @@ function FinalCtaSection() {
   );
 }
 
-function LandingFooter() {
-  return (
-    <footer className="pmf-on-dark bg-charcoal py-12 text-off-white/80">
-      <div className={sectionShell}>
-        <div className="grid gap-7 sm:grid-cols-2 lg:grid-cols-4">
-          {footerColumns.map((column) => (
-            <div key={column.heading}>
-              <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-off-white">
-                {column.heading}
-              </h3>
-
-              <ul className="mt-4 space-y-2.5 text-sm">
-                {column.links.map((link) => (
-                  <li key={link.label}>
-                    {"disabled" in link ? (
-                      <span className="cursor-default text-off-white/50">
-                        {link.label}
-                      </span>
-                    ) : (
-                      <Link
-                        href={link.href}
-                        className="transition hover:text-mint"
-                      >
-                        {link.label}
-                      </Link>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-
-        <div className="mt-10 border-t border-white/10 pt-6">
-          <p className="text-sm font-semibold text-off-white">PMFreak</p>
-
-          <p className="mt-1 text-xs text-off-white/70">
-            PMFreak helps teams keep, protect, and use what they learn from every project.
-          </p>
-
-          <p className="mt-3 text-xs text-off-white/60">
-            © {new Date().getFullYear()} PMFreak. All rights reserved.
-          </p>
-        </div>
-      </div>
-    </footer>
-  );
-}
-
 export default function Home() {
   return (
     <div className={`${displayFont.variable} ${markerFont.variable} pmf-landing flex min-h-screen flex-col bg-charcoal`}>
@@ -363,7 +269,7 @@ export default function Home() {
         <FinalCtaSection />
       </main>
 
-      <LandingFooter />
+      <MarketingFooter onHomepage />
     </div>
   );
 }
