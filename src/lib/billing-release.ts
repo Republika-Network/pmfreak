@@ -13,10 +13,10 @@
  * BEFORE ENABLING, both must be done:
  *   1. Verify signed-in owner/admin checkout and the webhook return flow in an
  *      isolated Stripe test-mode environment.
- *   2. Resolve the billed-tenant binding (PR #636 review, P1): checkout
- *      authorizes against a workspace membership but bills the caller's own
- *      `user.companyId`, and workspaces carry no company id. An admin of
- *      another company's workspace would subscribe their own company.
+ *   2. Fix security advisory GHSA-qrjm-vqq5-mjmj (private; from the PR #636
+ *      review, P1): the billing routes authorize on a caller-named workspace
+ *      but act on the caller's own `user.companyId`, and workspaces carry no
+ *      company id. The authorized tenant and the billed tenant must be bound.
  *
  * Read on the server only (route handlers and server components). It is not a
  * NEXT_PUBLIC_ variable, so client bundles never see it; client UI receives the
