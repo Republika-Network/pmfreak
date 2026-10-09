@@ -44,7 +44,7 @@ jobs:
       - name: Fetch full commit history
         env:
           FETCH_TOKEN: ${{ github.token }}
-        run: git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$FETCH_TOKEN" | base64 -w0)" fetch --no-tags --unshallow origin "$GITHUB_SHA"
+        run: git -c http.https://github.com/.extraheader="AUTHORIZATION:basic $(printf 'x-access-token:%s' "$FETCH_TOKEN" | base64 -w0)" fetch --no-tags --unshallow origin "$GITHUB_SHA"
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
