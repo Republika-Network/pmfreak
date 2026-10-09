@@ -10,6 +10,14 @@
  * config.ts): default OFF, and only the literal string "true" enables. Missing,
  * empty, "TRUE", "1", " true" or any other value keeps checkout disabled.
  *
+ * BEFORE ENABLING, both must be done:
+ *   1. Verify signed-in owner/admin checkout and the webhook return flow in an
+ *      isolated Stripe test-mode environment.
+ *   2. Resolve the billed-tenant binding (PR #636 review, P1): checkout
+ *      authorizes against a workspace membership but bills the caller's own
+ *      `user.companyId`, and workspaces carry no company id. An admin of
+ *      another company's workspace would subscribe their own company.
+ *
  * Read on the server only (route handlers and server components). It is not a
  * NEXT_PUBLIC_ variable, so client bundles never see it; client UI receives the
  * resolved boolean as a prop.

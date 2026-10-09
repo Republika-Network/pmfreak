@@ -60,7 +60,7 @@ export function MarketingNavbar({ brand = "original" }: { brand?: "original" | "
         </button>
       </div>
 
-      <div id="mobile-main-menu" className={`grid transition-all duration-300 lg:hidden ${isOpen ? "grid-rows-[1fr] opacity-100" : "pointer-events-none grid-rows-[0fr] opacity-0"}`}>
+      <div id="mobile-main-menu" inert={!isOpen} className={`grid transition-all duration-300 lg:hidden ${isOpen ? "grid-rows-[1fr] opacity-100" : "pointer-events-none grid-rows-[0fr] opacity-0"}`}>
         <div className={`overflow-hidden px-4 pb-4 ${v2 ? "border-t border-off-white/10! bg-charcoal" : "border-t border-zinc-200 bg-white/95"}`}>
           <div className="mt-3 flex flex-col gap-2 rounded-2xl border border-zinc-200/80 bg-white/90 p-3 backdrop-blur-xl">
             {navLinks.map((link) => (

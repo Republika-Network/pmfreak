@@ -187,3 +187,31 @@ test("/billing uses the shell's validated workspace and spends a choice it canno
   assert.equal((client.match(/billingRequestInit\(workspaceId/g) ?? []).length, 2);
   assert.doesNotMatch(client, /useEffect\([^)]*createCheckoutSession/, "checkout is never started automatically");
 });
+
+// ── PR #636 review fixes ────────────────────────────────────────────────────
+
+test("billing actions are only offered to roles that can manage billing", () => {
+  const client = readFileSync("src/app/(protected)/billing/billing-client.tsx", "utf8");
+  assert.match(client, /\{checkoutEnabled && canManageBilling \? \(\n\s*<div className="mt-5 flex flex-wrap gap-3">/);
+  assert.match(client, /checkoutEnabled && !canManageBilling && !chosenPlan \? \(/);
+  assert.match(client, /Only workspace owners and admins can change the plan or manage the subscription\./);
+});
+
+test("Manage Subscription's first checkout honours the chosen tier instead of defaulting to Pro", () => {
+  const client = readFileSync("src/app/(protected)/billing/billing-client.tsx", "utf8");
+  const manage = client.slice(client.indexOf("const onManageSubscription"), client.indexOf("return (", client.indexOf("const onManageSubscription")));
+  assert.match(manage, /await createCheckoutSession\(chosenPlan \?\? "pro"\);/);
+  assert.doesNotMatch(manage, /await createCheckoutSession\(\);/);
+});
+
+test("the chosen plan survives a canceled Stripe checkout and is spent only on success", () => {
+  const client = readFileSync("src/app/(protected)/billing/billing-client.tsx", "utf8");
+  const checkoutFn = client.slice(client.indexOf("const createCheckoutSession"), client.indexOf("const createPortalSession"));
+  assert.doesNotMatch(checkoutFn, /clearPendingPlan/, "not cleared before payment completes");
+  assert.match(client, /get\("success"\) === "true"\) \{\n\s*clearPendingPlan\(window\.localStorage\);/);
+});
+
+test("the collapsed marketing menu is inert, so its links leave the tab order", () => {
+  const navbar = readFileSync("src/components/marketing-navbar.tsx", "utf8");
+  assert.match(navbar, /<div id="mobile-main-menu" inert=\{!isOpen\}/);
+});

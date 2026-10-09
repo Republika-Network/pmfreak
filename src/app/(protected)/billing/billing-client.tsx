@@ -26,6 +26,11 @@ export default function BillingClient({ subscription, workspaceId, canManageBill
   const [chosenPlan, setChosenPlan] = useState<PaidPlanTier | null>(requestedPlan);
 
   useEffect(() => {
+    // Stripe returns here with ?success=true after payment: the choice is spent.
+    if (new URLSearchParams(window.location.search).get("success") === "true") {
+      clearPendingPlan(window.localStorage);
+      return;
+    }
     if (requestedPlan) return;
     const pending = readPendingPlan(window.localStorage);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- localStorage is client-only; reading it during render would break hydration.
@@ -64,7 +69,8 @@ export default function BillingClient({ subscription, workspaceId, canManageBill
         return;
       }
 
-      clearPendingPlan(window.localStorage);
+      // Keep the choice until payment succeeds: a canceled Stripe checkout
+      // returns to /billing?canceled=true and should offer the same plan again.
       window.location.href = payload.url;
     } catch {
       setError("Unable to create checkout session.");
@@ -105,7 +111,9 @@ export default function BillingClient({ subscription, workspaceId, canManageBill
       return;
     }
 
-    await createCheckoutSession();
+    // No Stripe customer yet, so this is a first checkout: honour the tier the
+    // user chose rather than silently defaulting to Pro.
+    await createCheckoutSession(chosenPlan ?? "pro");
   };
 
   return (
@@ -182,7 +190,11 @@ export default function BillingClient({ subscription, workspaceId, canManageBill
         <p className="mt-5 text-sm text-slate-700">Plan upgrades and subscription management aren&rsquo;t available in PMFreak yet.</p>
       )}
 
-      {checkoutEnabled ? (
+      {checkoutEnabled && !canManageBilling && !chosenPlan ? (
+        <p className="mt-5 text-sm text-slate-700">Only workspace owners and admins can change the plan or manage the subscription.</p>
+      ) : null}
+
+      {checkoutEnabled && canManageBilling ? (
       <div className="mt-5 flex flex-wrap gap-3">
         {subscription.plan === "free" && !chosenPlan ? (
           <button

@@ -156,7 +156,7 @@ test("UI follows the server's resolved flag on every surface", () => {
   assert.match(view, /href="\/signup"/, "free signup stays available");
   assert.match(readFileSync("src/app/(protected)/billing/page.tsx", "utf8"), /checkoutEnabled=\{isBillingCheckoutEnabled\(\)\}/);
   const client = readFileSync("src/app/(protected)/billing/billing-client.tsx", "utf8");
-  assert.match(client, /\{checkoutEnabled \? \(\n\s*<div className="mt-5 flex flex-wrap gap-3">/, "upgrade/manage buttons only when released");
+  assert.match(client, /\{checkoutEnabled && canManageBilling \? \(\n\s*<div className="mt-5 flex flex-wrap gap-3">/, "upgrade/manage buttons only when released (and only for billing roles)");
   assert.match(client, /!checkoutEnabled \? \(\n\s*<p className="mt-1 text-sm text-slate-700">\n\s*You chose \{PAID_PLANS\[chosenPlan\]\.name\}, but paid checkout isn&rsquo;t open yet/);
   for (const file of ["src/app/login/page.tsx", "src/app/signup/page.tsx"]) {
     assert.match(readFileSync(file, "utf8"), /isCheckoutContinuation\(params\.next\) && isBillingCheckoutEnabled\(\)/, file);
