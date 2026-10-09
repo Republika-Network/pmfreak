@@ -63,7 +63,7 @@ export function HeroSection() {
           </p>
           <div className="mt-6 flex flex-wrap justify-center gap-3 xl:mt-4">
             <Link href="/signup" className={primaryCtaClass}>
-              Request Founder Access <Arrow />
+              Get started free <Arrow />
             </Link>
             <Link href="#how-it-works" className={secondaryOnDarkCtaClass}>
               See how it works

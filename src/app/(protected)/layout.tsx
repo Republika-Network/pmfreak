@@ -18,6 +18,8 @@ import { parseCanonicalProjectRoute } from "@/lib/projects/project-paths";
 import { parseCanonicalWorkspaceRoute } from "@/lib/workspaces/workspace-paths";
 import { resolveRoutedWorkspace } from "@/lib/workspaces/routed-workspace";
 import { resolveRoutedProject } from "@/lib/projects/routed-project";
+import { isEligibleForPlanReturn } from "@/lib/billing-plan-return";
+import { PendingPlanReturn } from "@/components/billing/pending-plan-return";
 
 export default async function ProtectedLayout({ children }: { children: React.ReactNode }) {
   const continuity = await assertRuntimeAuthContinuity();
@@ -237,5 +239,9 @@ export default async function ProtectedLayout({ children }: { children: React.Re
   }
 
   const capabilityProfile = resolveCapabilityProfile({ isFounderOrInternal: isFounderOrInternalUser(user) });
-  return <OperationalShell user={{ fullName: user.fullName, role: user.role, companyName: user.companyName }} capabilityProfile={capabilityProfile} workspaceId={resolvedWorkspace.workspaceId}>{children}</OperationalShell>;
+  // Optional return to a plan chosen on /pricing before signup. Additive only:
+  // it changes no redirect above, and appears only after onboarding is complete
+  // for a role that can manage billing (see isEligibleForPlanReturn).
+  const offerPlanReturn = isEligibleForPlanReturn({ onboardingState, role: resolvedWorkspace.role, pathname: routedHeaders.get("x-pathname") });
+  return <OperationalShell user={{ fullName: user.fullName, role: user.role, companyName: user.companyName }} capabilityProfile={capabilityProfile} workspaceId={resolvedWorkspace.workspaceId}>{offerPlanReturn ? <PendingPlanReturn /> : null}{children}</OperationalShell>;
 }

@@ -2,6 +2,8 @@ import Link from "next/link";
 import { signupAction } from "./actions";
 import { AuthShell } from "@/components/auth/auth-shell";
 import AuthSubmitButton from "@/components/auth-submit-button";
+import { isCheckoutContinuation } from "@/lib/billing-plans";
+import { AuthField, AuthNotice, authLinkClass } from "@/ui-core";
 
 export default async function SignupPage({
   searchParams,
@@ -16,26 +18,34 @@ export default async function SignupPage({
       subtitle="Get project visibility and meeting prep support in minutes."
     >
       {params.error && (
-        <p className="mb-4 text-sm text-red-600">{params.error}</p>
+        <div className="mb-5"><AuthNotice tone="error">{params.error}</AuthNotice></div>
       )}
 
-      <form action={signupAction} className="space-y-4">
+      {isCheckoutContinuation(params.next) ? (
+        <p className="mb-5 text-sm text-charcoal/75">
+          Your plan choice is saved in this browser. Once your workspace is set up, you&rsquo;ll find it on the Billing page.
+        </p>
+      ) : null}
+
+      <form action={signupAction} className="space-y-5">
         {params.next ? <input type="hidden" name="next" value={params.next} /> : null}
-        <input name="fullName" placeholder="Full name" required className="w-full rounded-xl border-2 border-black px-4 py-3 text-sm" />
+        <div className="grid gap-5 sm:grid-cols-2">
+          <AuthField label="Full name" id="signup-full-name" name="fullName" autoComplete="name" required />
 
-        <input name="companyName" placeholder="Company name" required className="w-full rounded-xl border-2 border-black px-4 py-3 text-sm" />
+          <AuthField label="Company name" id="signup-company" name="companyName" autoComplete="organization" required />
+        </div>
 
-        <input name="email" type="email" placeholder="Email" required className="w-full rounded-xl border-2 border-black px-4 py-3 text-sm" />
+        <AuthField label="Email" id="signup-email" name="email" type="email" autoComplete="email" required />
 
-        <input name="password" type="password" placeholder="Password" required className="w-full rounded-xl border-2 border-black px-4 py-3 text-sm" />
+        <AuthField label="Password" id="signup-password" name="password" type="password" autoComplete="new-password" required />
 
-        <AuthSubmitButton idleLabel="Start Free" pendingLabel="Creating..." />
+        <AuthSubmitButton idleLabel="Create free account" pendingLabel="Creating account..." />
       </form>
 
-      <p className="mt-6 text-sm">
+      <p className="mt-8 border-t border-charcoal/10! pt-6 text-sm text-charcoal/75">
         Already have an account?{" "}
-        <Link href={params.next ? `/login?next=${encodeURIComponent(params.next)}` : "/login"} className="font-bold">
-          Continue
+        <Link href={params.next ? `/login?next=${encodeURIComponent(params.next)}` : "/login"} className={authLinkClass}>
+          Sign in
         </Link>
       </p>
     </AuthShell>

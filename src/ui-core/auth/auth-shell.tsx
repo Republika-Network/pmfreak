@@ -1,5 +1,16 @@
 import { ReactNode } from "react";
-import Image from "next/image";
+
+import { LogoLockupOnDark } from "@/components/brand/logo-mark";
+import { Mascot, Sparkle } from "@/components/landing/doodles";
+import { displayFont, markerFont } from "@/components/landing/fonts";
+
+// The calm side of the 2026 brand: the landing's charcoal + mint, without its
+// chaos. Every point is something the product does today (mirrors the landing).
+const calmPoints = [
+  "See what changed, in plain language",
+  "Know which decisions are waiting on you",
+  "Keep decisions, risks and evidence in one project memory",
+] as const;
 
 export function AuthShell({
   title,
@@ -11,48 +22,57 @@ export function AuthShell({
   children: ReactNode;
 }) {
   return (
-    <main className="flex min-h-screen items-center justify-center bg-[#f8f5ef] px-6 py-12 text-[#161616]">
-      <div className="grid w-full max-w-6xl overflow-hidden rounded-3xl border border-zinc-200 shadow-[0_24px_80px_rgba(15,23,42,0.12)] md:grid-cols-2">
-        <div className="hidden flex-col justify-between bg-zinc-50 p-10 md:flex">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.3em] text-pink-600">
-              PMFreak
-            </p>
+    <main
+      className={`${displayFont.variable} ${markerFont.variable} pmf-brand grid min-h-screen grid-rows-[auto_1fr] bg-off-white text-charcoal lg:grid-rows-none lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]`}
+    >
+      <aside className="pmf-on-dark relative isolate overflow-hidden bg-charcoal px-5 py-4 text-off-white sm:px-8 lg:flex lg:flex-col lg:justify-between lg:px-12 lg:py-10">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(70%_55%_at_30%_70%,rgba(20,184,166,0.20),transparent_70%)]"
+        />
+        <LogoLockupOnDark />
 
-            <h2 className="mt-4 text-3xl font-black leading-tight">
-              Keep projects aligned.
-              <br />
-              Lead with clarity.
-            </h2>
-
-            <p className="mt-4 text-sm font-medium text-black/70">
-              PMFreak helps you spot risks early, align stakeholders, and move projects forward with confidence.
+        <div className="hidden lg:block">
+          <div className="relative w-fit">
+            <Mascot size={176} onDark className="h-44 w-44" />
+            <Sparkle className="absolute -right-6 top-2 h-6 w-6 text-mint" />
+            <p className="font-marker absolute -right-36 bottom-4 max-w-[9rem] -rotate-6 text-sm leading-tight text-mint">
+              Same brain. Just more clarity.
             </p>
           </div>
-
-          <div className="mt-10">
-            <Image
-              src="/Brain-Transparente.png"
-              alt="PMFreak"
-              width={200}
-              height={200}
-              className="object-contain"
-            />
-          </div>
+          <p className="font-display mt-10 text-4xl font-extrabold leading-[1.02] tracking-[-0.02em] xl:text-5xl">
+            Freak out less.
+            <br />
+            <span className="text-mint">Manage more.</span>
+          </p>
+          <ul className="mt-8 space-y-3">
+            {calmPoints.map((point) => (
+              <li key={point} className="flex items-start gap-3 text-sm font-medium text-off-white/85">
+                <span aria-hidden className="mt-0.5 inline-flex h-5 w-5 flex-none items-center justify-center rounded-full bg-mint text-charcoal">
+                  <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3.5 8.5l3 3 6-7" />
+                  </svg>
+                </span>
+                {point}
+              </li>
+            ))}
+          </ul>
         </div>
 
-        <div className="bg-white p-8 md:p-10">
-          <p className="text-xs font-black uppercase tracking-[0.2em] text-pink-600">
-            PMFreak
-          </p>
+        <p className="hidden text-xs text-off-white/60 lg:block">
+          Project clarity for real humans.
+        </p>
+      </aside>
 
-          <h1 className="mt-3 text-2xl font-black">{title}</h1>
-
-          <p className="mt-2 text-sm font-medium text-black/70">{subtitle}</p>
-
+      <section className="flex items-start justify-center px-5 py-10 sm:px-8 sm:py-16 lg:items-center lg:py-12">
+        <div className="w-full max-w-md">
+          <h1 className="font-display text-3xl font-extrabold leading-tight tracking-[-0.02em] text-charcoal sm:text-4xl">
+            {title}
+          </h1>
+          <p className="mt-2 text-base text-charcoal/75">{subtitle}</p>
           <div className="mt-8">{children}</div>
         </div>
-      </div>
+      </section>
     </main>
   );
 }

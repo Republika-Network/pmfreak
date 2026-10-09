@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { AuthShell } from "@/ui-core/auth/auth-shell";
+import { isCheckoutContinuation } from "@/lib/billing-plans";
+import { AuthButton, AuthField, AuthNotice, AuthShell, authLinkClass } from "@/ui-core";
 
 export default async function LoginPage({
   searchParams,
@@ -10,24 +11,27 @@ export default async function LoginPage({
 
   return (
     <AuthShell title="Welcome back" subtitle="Continue where you left off and stay ahead this week.">
-      {params.error ? <p className="mb-4 text-sm text-red-600">{params.error}</p> : null}
+      {params.error ? <div className="mb-5"><AuthNotice tone="error">{params.error}</AuthNotice></div> : null}
+      {!params.error && params.success ? <div className="mb-5"><AuthNotice tone="success">{params.success}</AuthNotice></div> : null}
+      {isCheckoutContinuation(params.next) ? (
+        <p className="mb-5 text-sm text-charcoal/75">Sign in to continue to checkout. Your plan choice is saved in this browser.</p>
+      ) : null}
 
-      <form action="/api/login" method="post" className="space-y-4">
+      <form action="/api/login" method="post" className="space-y-5">
         {params.next ? <input type="hidden" name="next" value={params.next} /> : null}
-        <input name="email" type="email" placeholder="Email" required className="w-full rounded-xl border-2 border-black px-4 py-3 text-sm" />
-        <input name="password" type="password" placeholder="Password" required className="w-full rounded-xl border-2 border-black px-4 py-3 text-sm" />
+        <AuthField label="Email" id="login-email" name="email" type="email" autoComplete="email" required />
+        <div>
+          <AuthField label="Password" id="login-password" name="password" type="password" autoComplete="current-password" required />
+          <p className="mt-2 text-right text-sm">
+            <Link href="/forgot-password" className={authLinkClass}>Forgot password?</Link>
+          </p>
+        </div>
 
-        <button type="submit" className="w-full rounded-xl border-2 border-black bg-pink-500 px-4 py-3 text-sm font-black text-white shadow-[4px_4px_0_#161616]">
-          Continue
-        </button>
+        <AuthButton type="submit">Continue</AuthButton>
       </form>
 
-      <p className="mt-4 text-sm">
-        <Link href="/forgot-password" className="font-bold">Forgot password?</Link>
-      </p>
-
-      <p className="mt-6 text-sm">
-        No account? <Link href={params.next ? `/signup?next=${encodeURIComponent(params.next)}` : "/signup"} className="font-bold">Start Free</Link>
+      <p className="mt-8 border-t border-charcoal/10! pt-6 text-sm text-charcoal/75">
+        No account? <Link href={params.next ? `/signup?next=${encodeURIComponent(params.next)}` : "/signup"} className={authLinkClass}>Create a free account</Link>
       </p>
     </AuthShell>
   );

@@ -4,6 +4,8 @@ import { useState } from "react";
 import Link from "next/link";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { AuthShell } from "@/components/auth/auth-shell";
+import { AuthButton, authLinkClass } from "@/ui-core/forms/auth-button";
+import { AuthField, AuthNotice } from "@/ui-core/forms/auth-field";
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
@@ -37,19 +39,19 @@ export default function ForgotPasswordPage() {
 
   return (
     <AuthShell title="Reset your access" subtitle="Enter your email and we’ll send you a reset link.">
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <input type="email" placeholder="Email" required value={email} onChange={(e) => setEmail(e.target.value)} className="w-full rounded-xl border-2 border-black px-4 py-3 text-sm" />
+      <form onSubmit={handleSubmit} className="space-y-5">
+        <AuthField label="Email" id="forgot-email" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
 
-        <button type="submit" disabled={loading} className="w-full rounded-xl border-2 border-black bg-pink-500 px-4 py-3 text-sm font-black text-white shadow-[4px_4px_0_#161616] disabled:opacity-70">
+        <AuthButton type="submit" disabled={loading} aria-busy={loading}>
           {loading ? "Sending..." : "Send reset link"}
-        </button>
+        </AuthButton>
       </form>
 
-      {successMessage ? <p className="mt-4 text-sm font-medium text-emerald-700">{successMessage}</p> : null}
-      {errorMessage ? <p className="mt-4 text-sm font-medium text-red-600">{errorMessage}</p> : null}
+      {successMessage ? <div className="mt-5"><AuthNotice tone="success">{successMessage}</AuthNotice></div> : null}
+      {errorMessage ? <div className="mt-5"><AuthNotice tone="error">{errorMessage}</AuthNotice></div> : null}
 
-      <p className="mt-6 text-sm">
-        Back to <Link href="/login" className="font-bold">login</Link>
+      <p className="mt-8 border-t border-charcoal/10! pt-6 text-sm text-charcoal/75">
+        Back to <Link href="/login" className={authLinkClass}>login</Link>
       </p>
     </AuthShell>
   );

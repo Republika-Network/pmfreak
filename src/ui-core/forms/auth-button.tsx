@@ -1,10 +1,14 @@
 import { ButtonHTMLAttributes } from "react";
 
+// Primary action on the light auth panel: charcoal for maximum contrast (mint is
+// reserved for CTAs on dark surfaces, where it passes AA).
+export const authButtonClass =
+  "inline-flex w-full items-center justify-center gap-2 rounded-full bg-charcoal px-6 py-3 text-sm font-bold text-off-white transition hover:bg-charcoal/85 disabled:cursor-not-allowed disabled:opacity-60";
+
 export function AuthButton(props: ButtonHTMLAttributes<HTMLButtonElement>) {
-  return (
-    <button
-      {...props}
-      className={`w-full rounded-xl border-2 border-black bg-pink-500 px-4 py-3 text-sm font-black text-white shadow-[4px_4px_0_#161616] transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-70 ${props.className ?? ""}`}
-    />
-  );
+  return <button {...props} className={`${authButtonClass} ${props.className ?? ""}`} />;
 }
+
+/** Inline text links inside auth forms (calm-ink passes AA on off-white). */
+export const authLinkClass =
+  "font-semibold text-calm-ink underline decoration-calm-ink/40 underline-offset-4 transition hover:text-charcoal hover:decoration-charcoal";

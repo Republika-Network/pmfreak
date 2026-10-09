@@ -1,6 +1,7 @@
 "use client";
 
 import { useFormStatus } from "react-dom";
+import { authButtonClass } from "@/ui-core/forms/auth-button";
 
 type AuthSubmitButtonProps = {
   idleLabel: string;
@@ -18,7 +19,7 @@ export default function AuthSubmitButton({
       type="submit"
       disabled={pending}
       aria-disabled={pending}
-      className="w-full rounded-xl bg-cyan-300/90 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-200 disabled:cursor-not-allowed disabled:opacity-70"
+      className={authButtonClass}
     >
       {pending ? pendingLabel : idleLabel}
     </button>
