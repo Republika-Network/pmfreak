@@ -1,13 +1,14 @@
 import Image from "next/image";
 import Link from "next/link";
 
-import { Burst, Mascot, Sparkle } from "./doodles";
+import { Burst, Sparkle } from "./doodles";
 import { HeroProductWindow } from "./product-window";
 
 // Hero: the approved composition — a PM seen from behind, operational chaos on the
 // left in orange/amber, calm execution on the right in teal/mint, with the seam
 // running through the PM. Everything legible is real HTML: headline, CTAs, the
-// mascot (canonical artwork) and the product window (real Command Center panel).
+// brain illustration beside "Same brain. Just more clarity." and the product window
+// (real Command Center panel).
 //
 // UPSCALED ART: `hero-scene.webp` is the approved 1371px artwork, Lanczos-upscaled
 // to 2640px with a feathered #0F1113 overlay (45%) over the copy zone, then installed
@@ -88,7 +89,7 @@ export function HeroSection() {
           <div aria-hidden className="absolute inset-x-0 top-0 h-12 bg-gradient-to-b from-charcoal to-transparent xl:hidden" />
         </div>
 
-        {/* Calm side: the mascot and the product, already in order. */}
+        {/* Calm side: the brain line and the product, already in order. */}
         <div className="relative z-10 mx-auto w-full px-5 pb-14 pt-2 md:max-w-2xl xl:absolute xl:max-w-none xl:right-[2.5%] xl:top-[3%] xl:w-[31%] xl:p-0">
           <div className="relative flex items-end justify-end gap-3 pr-2 xl:h-[clamp(120px,13vw,190px)]">
             <p className="font-marker mb-6 max-w-[11rem] -rotate-6 text-right text-sm leading-tight text-mint xl:text-base">
@@ -96,12 +97,14 @@ export function HeroSection() {
             </p>
             <Sparkle className="absolute right-[34%] top-2 h-5 w-5 text-mint" />
             <Burst className="absolute -left-1 bottom-10 hidden h-8 w-8 -scale-x-100 text-warm-amber xl:block" />
-            <Mascot
-              onDark
-              size={180}
+            {/* The brain illustrates the line beside it; the mascot already leads the navbar. */}
+            <Image
+              src="/Brain-Transparente.png"
+              alt=""
+              width={180}
+              height={180}
               preload
-              alt="The PMFreak mascot: one half freaked out, the other calm and in control"
-              className="relative z-10 -mb-3 mr-2 h-28 w-28 shrink-0 rotate-6 xl:h-[clamp(120px,12vw,180px)] xl:w-[clamp(120px,12vw,180px)]"
+              className="relative z-10 -mb-3 mr-2 h-28 w-28 shrink-0 rotate-6 object-contain xl:h-[clamp(120px,12vw,180px)] xl:w-[clamp(120px,12vw,180px)]"
             />
           </div>
           <HeroProductWindow />
