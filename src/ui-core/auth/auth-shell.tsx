@@ -1,6 +1,7 @@
+import Image from "next/image";
+import Link from "next/link";
 import { ReactNode } from "react";
 
-import { LogoLockupOnDark } from "@/components/brand/logo-mark";
 import { Mascot, Sparkle } from "@/components/landing/doodles";
 import { displayFont, markerFont } from "@/components/landing/fonts";
 
@@ -25,22 +26,40 @@ export function AuthShell({
     <main
       className={`${displayFont.variable} ${markerFont.variable} pmf-brand grid min-h-screen grid-rows-[auto_1fr] bg-off-white text-charcoal lg:grid-rows-none lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]`}
     >
-      <aside className="pmf-on-dark relative isolate overflow-hidden bg-charcoal px-5 py-4 text-off-white sm:px-8 lg:flex lg:flex-col lg:justify-between lg:px-12 lg:py-10">
+      <aside className="pmf-on-dark relative isolate overflow-hidden bg-charcoal px-5 py-5 text-off-white sm:px-8 lg:flex lg:flex-col lg:justify-center lg:px-12 lg:py-10">
         <div
           aria-hidden
           className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(70%_55%_at_30%_70%,rgba(20,184,166,0.20),transparent_70%)]"
         />
-        <LogoLockupOnDark />
+        {/* One brand mark per page: the face with the wordmark beside it (no corner lockup).
+            It stays the link home, which the auth pages otherwise lack. */}
+        <Link href="/" aria-label="PMFreak home" className="relative mx-auto flex w-fit items-center gap-3 lg:mx-0 lg:gap-4 xl:gap-5">
+          <span className="inline-flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-off-white p-1.5 ring-2 ring-mint/60 lg:hidden">
+            <Image src="/brand/palette-2026/pmfreak-face-trimmed.png" alt="" width={112} height={102} preload className="h-full w-full object-contain" />
+          </span>
+          <span className="hidden shrink-0 lg:block">
+            <Mascot size={176} onDark className="h-28 w-28 xl:h-40 xl:w-40 2xl:h-44 2xl:w-44" />
+          </span>
+          <span className="flex flex-col items-start">
+            <Image
+              src="/brand/palette-2026/pmfreak-lettering-trimmed.png"
+              alt="PMFreak"
+              width={711}
+              height={196}
+              preload
+              className="h-10 w-auto lg:h-12 xl:h-16 2xl:h-[4.5rem]"
+            />
+            <span className="font-marker mt-3 hidden -rotate-3 text-sm leading-tight text-mint lg:block xl:text-base">
+              Same brain.
+              <br />
+              Just more clarity.
+            </span>
+          </span>
+          <Sparkle className="absolute -right-5 -top-2 hidden h-6 w-6 text-mint lg:block" />
+        </Link>
 
         <div className="hidden lg:block">
-          <div className="relative w-fit">
-            <Mascot size={176} onDark className="h-44 w-44" />
-            <Sparkle className="absolute -right-6 top-2 h-6 w-6 text-mint" />
-            <p className="font-marker absolute -right-36 bottom-4 max-w-[9rem] -rotate-6 text-sm leading-tight text-mint">
-              Same brain. Just more clarity.
-            </p>
-          </div>
-          <p className="font-display mt-10 text-4xl font-extrabold leading-[1.02] tracking-[-0.02em] xl:text-5xl">
+          <p className="font-display mt-12 text-4xl font-extrabold leading-[1.02] tracking-[-0.02em] xl:text-5xl">
             Freak out less.
             <br />
             <span className="text-mint">Manage more.</span>
@@ -59,7 +78,7 @@ export function AuthShell({
           </ul>
         </div>
 
-        <p className="hidden text-xs text-off-white/60 lg:block">
+        <p className="absolute bottom-10 left-12 hidden text-xs text-off-white/60 lg:block">
           Project clarity for real humans.
         </p>
       </aside>
