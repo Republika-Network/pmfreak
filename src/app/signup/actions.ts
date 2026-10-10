@@ -10,6 +10,7 @@ import { resolveCanonicalWorkspace } from "@/lib/workspaces/canonical-workspace-
 import { buildSignupProfile } from "./build-signup-profile";
 import { buildAbuseKey, enforceAbuseLimit, getClientIpFromHeaders } from "@/lib/security/abuse-protection";
 import { logContinuityIssue } from "@/lib/auth/auth-continuity-diagnostics";
+import { buildSignupEmailRedirectTo } from "@/lib/auth/email-confirmation";
 
 export async function signupAction(formData: FormData) {
   const { email, password, fullName, companyName, requestedRoute, role } = buildSignupProfile(formData);
@@ -35,13 +36,12 @@ export async function signupAction(formData: FormData) {
   }
 
   const supabase = await createSupabaseServerClient();
-  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
 
   const { data, error } = await supabase.auth.signUp({
     email,
     password,
     options: {
-      emailRedirectTo: `${siteUrl}/auth/callback`,
+      emailRedirectTo: buildSignupEmailRedirectTo(),
       data: {
         full_name: fullName,
         company_name: companyName,
