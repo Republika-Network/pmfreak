@@ -1,80 +1,80 @@
 /**
- * Security hotfix after PR #640 — entitlement must be decided on the COMPLETE
- * membership set.
+ * Security hotfix after PR #640 — entitlement must be decided against EVERY
+ * membership, in one consistent read.
  *
  * PR #640's resolver read at most 20 memberships, unordered, and then treated
- * "no trial license among those workspaces" as a self-serve Free account. A
- * user with more than 20 memberships could therefore have the workspace
- * holding their expired/revoked trial left out of the read and be granted
- * access.
+ * "no trial license among those workspaces" as a self-serve Free account. The
+ * first hardening pass paginated the memberships client-side; review then
+ * showed two residual gaps in any client-side approach: separate page requests
+ * do not share a snapshot (a concurrent membership change can shift offsets
+ * and skip a workspace without changing the count), and comparing
+ * `created_at` in JavaScript truncates Postgres' microseconds.
  *
- * The fake below behaves like PostgREST for the calls the resolver makes:
- * ORDER BY, OFFSET/LIMIT via range(), an exact count, a server-side `max-rows`
- * cap that silently shortens pages, `IN (...)` filters, and injectable faults.
- * The same scenarios run against real PostgREST in
- * scripts/check-entitlement-hardening-live-db.mjs.
+ * The resolver now asks Postgres one question in one statement: the most
+ * recent trial license on any workspace this user is a member of
+ * (trial_licenses ⋈ workspaces ⋈ workspace_memberships, ordered and limited
+ * server-side). These tests pin that query shape and its fail-closed handling
+ * with a fake that evaluates the join; the same scenarios — including
+ * microsecond ordering and more memberships than PostgREST's max-rows — run
+ * against real PostgREST/Postgres in scripts/check-entitlement-hardening-live-db.mjs.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { resolveTrialEntitlement, resolveOnboardingState, ENTITLEMENT_PAGE_SIZE } from "../src/lib/auth/resolve-onboarding-state.ts";
+import { resolveTrialEntitlement, resolveOnboardingState } from "../src/lib/auth/resolve-onboarding-state.ts";
 
 const USER = "user-1";
 const DAY = 24 * 60 * 60 * 1000;
 const iso = (offsetMs) => new Date(Date.now() + offsetMs).toISOString();
-const wsId = (i) => `ws-${String(i).padStart(4, "0")}`;
+const wsId = (i) => `ws-${String(i).padStart(5, "0")}`;
+const MEMBERSHIP_FILTER = "workspaces.workspace_memberships.user_id";
 
 /**
  * world:
- *   memberships: workspace ids
+ *   memberships: [{ user_id, workspace_id }]
  *   trials: [{ id, workspace_id, trial_status, trial_end_at, created_at }]
- *   maxRows: server-side row cap (PostgREST max-rows)
- *   faults: { membershipErrorOnPage, membershipMissingCount, membershipCountDrift,
- *             membershipShortBy, membershipDuplicate, trialErrorOnChunk, trialMalformed }
+ *     created_at uses fixed 6-digit microseconds so string order = time order.
+ *   faults: { membershipError, trialError, trialNotArray, trialMalformedId }
  */
-function postgrest(world) {
-  const calls = { membershipPages: 0, trialChunks: 0, inSizes: [] };
+function postgres(world) {
+  const queries = [];
   const trials = (world.trials ?? []).map((t) => ({ ...t }));
-  const client = {
-    calls,
+  return {
+    queries,
     from(table) {
       const ops = [];
+      queries.push({ table, ops });
       const run = (single) => {
         const op = (name) => ops.find((o) => o.name === name);
         const f = world.faults ?? {};
         if (table === "workspace_memberships") {
-          const page = calls.membershipPages++;
-          if (f.membershipErrorOnPage === page) return { data: null, error: { message: "timeout" }, count: null };
-          let rows = [...world.memberships].sort().map((workspace_id) => ({ workspace_id }));
-          let count = rows.length;
-          if (f.membershipShortBy) rows = rows.slice(0, rows.length - f.membershipShortBy);
-          if (f.membershipDuplicate && rows.length > 1) rows[rows.length - 1] = rows[0];
-          if (f.membershipCountDrift && page > 0) count += 1;
-          const [from, to] = op("range").args;
-          const cap = world.maxRows ?? 1000;
-          const data = rows.slice(from, Math.min(to + 1, from + cap));
-          return { data, error: null, count: f.membershipMissingCount ? null : count };
+          if (f.membershipError) return { data: null, error: { message: "timeout" } };
+          const user = ops.find((o) => o.name === "eq" && o.args[0] === "user_id").args[1];
+          const rows = world.memberships.filter((m) => m.user_id === user);
+          return { data: rows.slice(0, op("limit")?.args[0] ?? rows.length), error: null };
         }
         if (table === "trial_licenses") {
           if (op("update")) {
             const id = ops.find((o) => o.name === "eq" && o.args[0] === "id").args[1];
-            const cutoff = op("lt").args[1];
             const t = trials.find((x) => x.id === id);
-            if (t && t.trial_status === "active" && t.trial_end_at < cutoff) t.trial_status = "expired";
+            if (t && t.trial_status === "active" && t.trial_end_at < op("lt").args[1]) t.trial_status = "expired";
             return { data: null, error: null };
           }
           if (single) {
             const id = ops.find((o) => o.name === "eq" && o.args[0] === "id").args[1];
             return { data: trials.find((x) => x.id === id) ?? null, error: null };
           }
-          const chunk = calls.trialChunks++;
-          if (f.trialErrorOnChunk === chunk) return { data: null, error: { message: "timeout" } };
-          const ids = op("in").args[1];
-          calls.inSizes.push(ids.length);
-          const matches = trials
-            .filter((t) => ids.includes(t.workspace_id))
-            .sort((a, b) => (a.created_at === b.created_at ? (a.id < b.id ? 1 : -1) : a.created_at < b.created_at ? 1 : -1));
-          if (f.trialMalformed && matches[0]) return { data: [{ ...matches[0], created_at: "not-a-date" }], error: null };
-          return { data: matches.slice(0, op("limit").args[0]), error: null };
+          if (f.trialError) return { data: null, error: { message: "timeout" } };
+          if (f.trialNotArray) return { data: { id: "x" }, error: null };
+          // Evaluate the !inner join: license rows whose workspace has a
+          // membership for the filtered user.
+          const user = ops.find((o) => o.name === "eq" && o.args[0] === MEMBERSHIP_FILTER)?.args[1];
+          const memberOf = new Set(world.memberships.filter((m) => m.user_id === user).map((m) => m.workspace_id));
+          const rows = trials
+            .filter((t) => memberOf.has(t.workspace_id))
+            .sort((a, b) => (a.created_at === b.created_at ? (a.id < b.id ? 1 : -1) : a.created_at < b.created_at ? 1 : -1))
+            .slice(0, op("limit").args[0]);
+          if (f.trialMalformedId && rows[0]) return { data: [{ ...rows[0], id: 42 }], error: null };
+          return { data: rows, error: null };
         }
         return { data: [], error: null };
       };
@@ -94,139 +94,110 @@ function postgrest(world) {
       return builder;
     },
   };
-  return client;
 }
 
-const memberships = (n) => Array.from({ length: n }, (_, i) => wsId(i));
-const trial = (id, workspace_id, trial_status, endOffset, createdAt = "2026-09-01T00:00:00.000000+00:00") => ({
-  id,
-  workspace_id,
-  trial_status,
-  trial_end_at: iso(endOffset),
-  created_at: createdAt,
+const memberOf = (n, user = USER) => Array.from({ length: n }, (_, i) => ({ user_id: user, workspace_id: wsId(i) }));
+const at = (micros) => `2026-09-01T00:00:00.${String(micros).padStart(6, "0")}+00:00`;
+const trial = (id, workspace_id, trial_status, endOffset, created_at = at(0)) => ({ id, workspace_id, trial_status, trial_end_at: iso(endOffset), created_at });
+const licenseLookup = (client) => client.queries.find((q) => q.table === "trial_licenses" && !q.ops.some((o) => o.name === "update") && q.ops.some((o) => o.name === "limit"));
+
+// ─── Query shape: one server-side statement over every membership ────────────
+
+test("the license lookup is ONE statement joining through the user's memberships, ordered and limited by Postgres", async () => {
+  const client = postgres({ memberships: memberOf(150) });
+  await resolveTrialEntitlement(client, USER);
+  const lookup = licenseLookup(client);
+  const select = lookup.ops.find((o) => o.name === "select").args[0];
+  assert.match(select, /workspaces!inner\(workspace_memberships!inner\(user_id\)\)/, "both embeds must be !inner so the filter restricts license rows");
+  assert.deepEqual(lookup.ops.find((o) => o.name === "eq").args, [MEMBERSHIP_FILTER, USER]);
+  assert.deepEqual(lookup.ops.filter((o) => o.name === "order").map((o) => o.args), [["created_at", { ascending: false }], ["id", { ascending: false }]]);
+  assert.deepEqual(lookup.ops.find((o) => o.name === "limit").args, [1]);
+  for (const forbidden of ["in", "range"]) {
+    assert.ok(!client.queries.some((q) => q.ops.some((o) => o.name === forbidden)), `no client-side ${forbidden}() over membership ids`);
+  }
+  assert.equal(client.queries.filter((q) => q.table === "trial_licenses").length, 1, "Free account: exactly one license query");
 });
 
 // ─── Free accounts at every size ─────────────────────────────────────────────
 
-for (const n of [1, 20, 21, 100, 101, 150, 250]) {
-  test(`${n} membership(s), no trial anywhere → entitled (Free), every membership examined`, async () => {
-    const client = postgrest({ memberships: memberships(n) });
-    assert.equal(await resolveTrialEntitlement(client, USER), "entitled");
-    assert.equal(client.calls.membershipPages, Math.max(1, Math.ceil(n / ENTITLEMENT_PAGE_SIZE)));
-    assert.equal(client.calls.inSizes.reduce((a, b) => a + b, 0), n, "every workspace id must be checked for a trial");
+for (const n of [1, 20, 21, 100, 101, 150, 1200]) {
+  test(`${n} membership(s), no trial anywhere → entitled (Free)`, async () => {
+    assert.equal(await resolveTrialEntitlement(postgres({ memberships: memberOf(n) }), USER), "entitled");
   });
 }
 
-// ─── Expired / revoked trial outside the first 20 (and first page) ───────────
+// ─── Expired / revoked trial anywhere in the membership set ──────────────────
 
 for (const [n, status, end] of [
   [21, "expired", -DAY],
   [21, "revoked", 30 * DAY],
   [101, "expired", -DAY],
   [150, "revoked", 30 * DAY],
-  [250, "expired", -DAY],
-  [250, "active", -DAY], // active but past trial_end_at
+  [1200, "expired", -DAY],
+  [1200, "active", -DAY], // active but past trial_end_at
 ]) {
-  test(`${n} memberships, ${status} trial on the LAST workspace → blocked`, async () => {
-    const client = postgrest({ memberships: memberships(n), trials: [trial("t-last", wsId(n - 1), status, end)] });
+  test(`${n} memberships, ${status}${status === "active" ? " (past end)" : ""} trial on the LAST workspace → blocked`, async () => {
+    const client = postgres({ memberships: memberOf(n), trials: [trial("t-last", wsId(n - 1), status, end)] });
     assert.equal(await resolveTrialEntitlement(client, USER), "blocked");
   });
 }
 
-test("a server max-rows cap smaller than the page size still reads every membership", async () => {
-  const client = postgrest({ memberships: memberships(150), maxRows: 7, trials: [trial("t", wsId(149), "expired", -DAY)] });
-  assert.equal(await resolveTrialEntitlement(client, USER), "blocked");
-  assert.equal(client.calls.membershipPages, Math.ceil(150 / 7));
-});
+// ─── Mixed trials; ordering decided by Postgres at full precision ────────────
 
-test("a server max-rows cap smaller than the page size still grants a genuine Free account", async () => {
-  const client = postgrest({ memberships: memberships(150), maxRows: 7 });
+test("mixed: newest active, older expired and revoked → entitled", async () => {
+  const client = postgres({
+    memberships: memberOf(250),
+    trials: [trial("t-exp", wsId(3), "expired", -DAY, at(1)), trial("t-rev", wsId(120), "revoked", 30 * DAY, at(2)), trial("t-act", wsId(240), "active", 30 * DAY, at(3))],
+  });
   assert.equal(await resolveTrialEntitlement(client, USER), "entitled");
 });
 
-// ─── Incomplete or failed reads fail closed ──────────────────────────────────
+test("mixed: newest revoked, older active → blocked", async () => {
+  const client = postgres({ memberships: memberOf(250), trials: [trial("t-rev", wsId(2), "revoked", 30 * DAY, at(9)), trial("t-act", wsId(240), "active", 30 * DAY, at(1))] });
+  assert.equal(await resolveTrialEntitlement(client, USER), "blocked");
+});
 
-const failClosed = [
-  ["membership read fails on the first page", { membershipErrorOnPage: 0 }, 1],
-  ["membership read fails on a later page", { membershipErrorOnPage: 1 }, 150],
-  ["membership count is missing", { membershipMissingCount: true }, 21],
-  ["membership count changes between pages", { membershipCountDrift: true }, 150],
-  ["server returns fewer rows than it counted", { membershipShortBy: 3 }, 150],
-  ["server returns fewer rows than it counted (single page)", { membershipShortBy: 1 }, 21],
-  ["duplicate membership rows", { membershipDuplicate: true }, 21],
-  ["trial read fails on the first chunk", { trialErrorOnChunk: 0 }, 21],
-  ["trial read fails on a later chunk", { trialErrorOnChunk: 1 }, 150],
-  ["trial row has an unparseable created_at", { trialMalformed: true }, 21],
-];
+test("licenses 1µs apart: the newer (revoked) wins even though the older (active) has the higher id", async () => {
+  const client = postgres({
+    memberships: memberOf(250),
+    trials: [trial("ffff-older-active", wsId(5), "active", 30 * DAY, at(123455)), trial("0000-newer-revoked", wsId(245), "revoked", 30 * DAY, at(123456))],
+  });
+  assert.equal(await resolveTrialEntitlement(client, USER), "blocked");
+});
 
-for (const [name, faults, n] of failClosed) {
-  test(`fail closed: ${name} → blocked (even for a would-be Free account)`, async () => {
-    const trials = faults.trialMalformed ? [trial("t", wsId(0), "active", 30 * DAY)] : [];
-    const client = postgrest({ memberships: memberships(n), trials, faults });
+test("identical created_at is broken by id, server-side", async () => {
+  const client = postgres({ memberships: memberOf(10), trials: [trial("t-a", wsId(1), "active", 30 * DAY), trial("t-b", wsId(2), "revoked", 30 * DAY)] });
+  assert.equal(await resolveTrialEntitlement(client, USER), "blocked", "t-b > t-a, so the revoked license is the most recent");
+});
+
+test("isolation: another user's expired trial on a workspace this user is not in has no effect", async () => {
+  const client = postgres({
+    memberships: [...memberOf(3), { user_id: "user-2", workspace_id: "ws-other" }],
+    trials: [trial("t-other", "ws-other", "expired", -DAY)],
+  });
+  assert.equal(await resolveTrialEntitlement(client, USER), "entitled");
+  assert.equal(await resolveTrialEntitlement(client, "user-2"), "blocked");
+});
+
+// ─── Fail closed ─────────────────────────────────────────────────────────────
+
+for (const [name, faults] of [
+  ["membership read fails", { membershipError: true }],
+  ["license read fails", { trialError: true }],
+  ["license read returns a non-array", { trialNotArray: true }],
+  ["license row has a malformed id", { trialMalformedId: true }],
+]) {
+  test(`fail closed: ${name} → blocked`, async () => {
+    const client = postgres({ memberships: memberOf(21), trials: [trial("t", wsId(0), "active", 30 * DAY)], faults });
     assert.equal(await resolveTrialEntitlement(client, USER), "blocked");
   });
 }
 
 test("fail closed propagates through resolveOnboardingState as trial_blocked", async () => {
-  const client = postgrest({ memberships: memberships(150), faults: { membershipErrorOnPage: 1 } });
+  const client = postgres({ memberships: memberOf(150), faults: { trialError: true } });
   assert.equal(await resolveOnboardingState({ id: USER, email: "u@example.test" }, wsId(0), { getClient: () => client }), "trial_blocked");
 });
 
 test("zero memberships → blocked", async () => {
-  assert.equal(await resolveTrialEntitlement(postgrest({ memberships: [] }), USER), "blocked");
-});
-
-// ─── Mixed active / expired / revoked trials across chunks ───────────────────
-
-test("mixed: newest trial active (in a later chunk), older expired and revoked → entitled", async () => {
-  const client = postgrest({
-    memberships: memberships(250),
-    trials: [
-      trial("t-exp", wsId(3), "expired", -DAY, "2026-06-01T00:00:00+00:00"),
-      trial("t-rev", wsId(120), "revoked", 30 * DAY, "2026-07-01T00:00:00+00:00"),
-      trial("t-act", wsId(240), "active", 30 * DAY, "2026-09-01T00:00:00+00:00"),
-    ],
-  });
-  assert.equal(await resolveTrialEntitlement(client, USER), "entitled");
-});
-
-test("mixed: newest trial revoked (in an earlier chunk), older active → blocked", async () => {
-  const client = postgrest({
-    memberships: memberships(250),
-    trials: [
-      trial("t-rev", wsId(2), "revoked", 30 * DAY, "2026-09-01T00:00:00+00:00"),
-      trial("t-act", wsId(240), "active", 30 * DAY, "2026-06-01T00:00:00+00:00"),
-    ],
-  });
-  assert.equal(await resolveTrialEntitlement(client, USER), "blocked");
-});
-
-test("mixed: newest trial expired in the last chunk, older active in the first → blocked", async () => {
-  const client = postgrest({
-    memberships: memberships(250),
-    trials: [
-      trial("t-act", wsId(1), "active", 30 * DAY, "2026-06-01T00:00:00+00:00"),
-      trial("t-exp", wsId(249), "expired", -DAY, "2026-09-01T00:00:00+00:00"),
-    ],
-  });
-  assert.equal(await resolveTrialEntitlement(client, USER), "blocked");
-});
-
-test("mixed: identical created_at across chunks is broken by id, independent of chunk order", async () => {
-  const at = "2026-09-01T00:00:00+00:00";
-  const a = postgrest({ memberships: memberships(250), trials: [trial("t-a", wsId(10), "active", 30 * DAY, at), trial("t-b", wsId(210), "revoked", 30 * DAY, at)] });
-  const b = postgrest({ memberships: memberships(250), trials: [trial("t-b", wsId(10), "revoked", 30 * DAY, at), trial("t-a", wsId(210), "active", 30 * DAY, at)] });
-  assert.equal(await resolveTrialEntitlement(a, USER), "blocked", "t-b > t-a, so the revoked license is the most recent");
-  assert.equal(await resolveTrialEntitlement(b, USER), "blocked");
-});
-
-test("an active trial past trial_end_at in a later chunk is expired on read and blocks", async () => {
-  const client = postgrest({ memberships: memberships(150), trials: [trial("t", wsId(140), "active", -DAY)] });
-  assert.equal(await resolveTrialEntitlement(client, USER), "blocked");
-});
-
-test("no IN filter ever exceeds the page size", async () => {
-  const client = postgrest({ memberships: memberships(250) });
-  await resolveTrialEntitlement(client, USER);
-  assert.ok(client.calls.inSizes.every((n) => n > 0 && n <= ENTITLEMENT_PAGE_SIZE));
+  assert.equal(await resolveTrialEntitlement(postgres({ memberships: [] }), USER), "blocked");
 });

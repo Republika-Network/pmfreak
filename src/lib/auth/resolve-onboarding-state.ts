@@ -148,16 +148,16 @@ export type TrialEntitlement = "entitled" | "blocked";
  *     switching workspace cannot dodge an expired trial) is expired/revoked,
  *     or is "active" but past `trial_end_at`;
  *   - the user holds no workspace membership at all;
- *   - entitlement cannot be fully established — any read fails, or the
- *     membership/trial evidence is incomplete. Absence of a trial license only
- *     means Free when the COMPLETE membership set was examined; a truncated or
- *     inconsistent result is never treated as "no trial".
+ *   - entitlement cannot be established — any read fails or returns
+ *     malformed data. Absence of a trial license only means Free when the
+ *     license lookup covered EVERY membership (see `findLatestTrialLicense`,
+ *     a single server-side statement); a failed read is never "no trial".
  *
  * "Most recent" is a deliberate choice and is unchanged from the original
  * gate: a re-invited user gets a new license that supersedes an older expired
  * one, and a newer expired/revoked license supersedes an older active one.
- * Ties on `created_at` are broken by id so the decision never depends on row
- * order.
+ * Postgres orders on full-precision `created_at` and breaks ties by id, so
+ * the decision never depends on row order.
  *
  * Invite accounts are only distinguishable from self-serve accounts once
  * activation has linked their license to a workspace: an invitee signs up
@@ -170,11 +170,10 @@ export async function resolveTrialEntitlement(
   supabase: OnboardingStateQueryClient,
   userId: string,
 ): Promise<TrialEntitlement> {
-  const workspaceIds = await listAllMembershipWorkspaceIds(supabase, userId);
-  if (workspaceIds === null) return "blocked";
-  if (workspaceIds.length === 0) return "blocked";
+  const membership = await hasAnyMembership(supabase, userId);
+  if (membership !== true) return "blocked";
 
-  const latestTrial = await findLatestTrialLicense(supabase, workspaceIds);
+  const latestTrial = await findLatestTrialLicense(supabase, userId);
   if (latestTrial === "unavailable") return "blocked";
 
   // Self-serve Free-plan account: no trial license on any of its workspaces.
@@ -204,96 +203,49 @@ export async function resolveTrialEntitlement(
 }
 
 /**
- * Page size for entitlement reads. Kept well below PostgREST's `max-rows`
- * (1000 on Supabase), but correctness does not depend on that: pagination
- * advances by the rows actually returned and is checked against an exact
- * count, so a server cap smaller than this only means more pages.
+ * Whether the user holds at least one workspace membership: `true`, `false`,
+ * or "unavailable" when the read fails.
  */
-export const ENTITLEMENT_PAGE_SIZE = 100;
-const MAX_MEMBERSHIP_PAGES = 1000;
-
-/**
- * Every workspace id the user is a member of, or `null` when the complete set
- * cannot be established (read error, missing count, a page that ends before
- * the counted total, the count changing between pages, duplicates, or an
- * implausible page count). `null` must be treated as "entitlement unknown",
- * never as "no memberships".
- */
-async function listAllMembershipWorkspaceIds(supabase: OnboardingStateQueryClient, userId: string): Promise<string[] | null> {
-  const ids: string[] = [];
-  let expected: number | null = null;
-
-  for (let page = 0; page < MAX_MEMBERSHIP_PAGES; page++) {
-    const { data, error, count } = await supabase
-      .from("workspace_memberships")
-      .select("workspace_id", { count: "exact" })
-      .eq("user_id", userId)
-      // (workspace_id, user_id) is the primary key, so for one user this is a
-      // stable total order — offsets cannot skip or repeat rows between pages.
-      .order("workspace_id", { ascending: true })
-      .range(ids.length, ids.length + ENTITLEMENT_PAGE_SIZE - 1);
-
-    if (error || !Array.isArray(data) || typeof count !== "number") return null;
-    if (expected === null) expected = count;
-    else if (count !== expected) return null;
-
-    for (const row of data as Array<{ workspace_id: unknown }>) {
-      if (typeof row.workspace_id !== "string" || row.workspace_id.length === 0) return null;
-      ids.push(row.workspace_id);
-    }
-
-    if (ids.length >= expected) {
-      if (ids.length !== expected || new Set(ids).size !== ids.length) return null;
-      return ids;
-    }
-    // Fewer rows than counted, and the server returned nothing more.
-    if (data.length === 0) return null;
-  }
-
-  return null;
+async function hasAnyMembership(supabase: OnboardingStateQueryClient, userId: string): Promise<boolean | "unavailable"> {
+  const { data, error } = await supabase.from("workspace_memberships").select("workspace_id").eq("user_id", userId).limit(1);
+  if (error || !Array.isArray(data)) return "unavailable";
+  return data.length > 0;
 }
 
-type LatestTrial = { id: string; trial_end_at: string | null; created_at: string };
+type LatestTrial = { id: string; trial_end_at: string | null };
 
 /**
- * The most recently created trial license on any of `workspaceIds`, `null`
- * when there is none, or "unavailable" when any chunk cannot be read.
+ * The most recently created trial license on ANY workspace the user is a
+ * member of — `null` when there is none, "unavailable" when it cannot be read.
+ *
+ * This is ONE statement: trial_licenses inner-joined through workspaces to the
+ * user's memberships, ordered and limited server-side. That is what makes the
+ * answer complete and consistent:
+ *   - there is no client-side list of membership ids to truncate, page or
+ *     chunk, so no PostgREST row cap, page boundary or concurrent membership
+ *     change between requests can drop the workspace holding the license —
+ *     the whole evaluation reads one database snapshot;
+ *   - "most recent" is decided by Postgres on the full-precision
+ *     `created_at` (ties broken by id), never by a JavaScript Date, which
+ *     would truncate microseconds.
+ * The `!inner` embeds make the membership filter restrict the license rows
+ * themselves, not just the embedded payload.
  */
 async function findLatestTrialLicense(
   supabase: OnboardingStateQueryClient,
-  workspaceIds: string[],
+  userId: string,
 ): Promise<LatestTrial | null | "unavailable"> {
-  let latest: LatestTrial | null = null;
+  const { data, error } = await supabase
+    .from("trial_licenses")
+    .select("id, trial_status, trial_end_at, created_at, workspaces!inner(workspace_memberships!inner(user_id))")
+    .eq("workspaces.workspace_memberships.user_id", userId)
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(1);
 
-  for (let offset = 0; offset < workspaceIds.length; offset += ENTITLEMENT_PAGE_SIZE) {
-    const chunk = workspaceIds.slice(offset, offset + ENTITLEMENT_PAGE_SIZE);
-    const { data, error } = await supabase
-      .from("trial_licenses")
-      .select("id, workspace_id, trial_status, trial_end_at, created_at")
-      .in("workspace_id", chunk)
-      .order("created_at", { ascending: false })
-      .order("id", { ascending: false })
-      .limit(1);
-
-    if (error || !Array.isArray(data)) return "unavailable";
-    const candidate = data[0] as { id?: unknown; trial_end_at?: unknown; created_at?: unknown } | undefined;
-    if (!candidate) continue;
-    if (typeof candidate.id !== "string" || typeof candidate.created_at !== "string" || Number.isNaN(Date.parse(candidate.created_at))) {
-      return "unavailable";
-    }
-    const trial: LatestTrial = {
-      id: candidate.id,
-      trial_end_at: typeof candidate.trial_end_at === "string" ? candidate.trial_end_at : null,
-      created_at: candidate.created_at,
-    };
-    if (!latest || isNewerTrial(trial, latest)) latest = trial;
-  }
-
-  return latest;
-}
-
-function isNewerTrial(a: LatestTrial, b: LatestTrial): boolean {
-  const delta = Date.parse(a.created_at) - Date.parse(b.created_at);
-  if (delta !== 0) return delta > 0;
-  return a.id > b.id;
+  if (error || !Array.isArray(data)) return "unavailable";
+  const row = data[0] as { id?: unknown; trial_end_at?: unknown } | undefined;
+  if (!row) return null;
+  if (typeof row.id !== "string" || row.id.length === 0) return "unavailable";
+  return { id: row.id, trial_end_at: typeof row.trial_end_at === "string" ? row.trial_end_at : null };
 }

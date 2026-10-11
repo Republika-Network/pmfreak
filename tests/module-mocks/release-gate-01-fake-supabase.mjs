@@ -118,9 +118,6 @@ export function makeFakeAdminQueryClient(tableResponses = {}, rpcResponses = {})
   function makeChain(table) {
     const response = tableResponses[table] ?? { data: [], error: null };
     const rows = Array.isArray(response.data) ? response.data : response.data == null ? [] : [response.data];
-    // range() and the exact count model PostgREST pagination, which the
-    // entitlement resolver relies on to read every membership.
-    let window = null;
     const chain = {
       select: () => chain,
       eq: () => chain,
@@ -131,17 +128,8 @@ export function makeFakeAdminQueryClient(tableResponses = {}, rpcResponses = {})
       update: () => chain,
       lt: () => chain,
       gte: () => chain,
-      range: (from, to) => {
-        window = [from, to];
-        return chain;
-      },
       maybeSingle: async () => ({ data: rows[0] ?? null, error: response.error ?? null }),
-      then: (resolve, reject) =>
-        Promise.resolve({
-          data: window && Array.isArray(response.data) ? rows.slice(window[0], window[1] + 1) : response.data,
-          error: response.error ?? null,
-          count: response.error ? null : rows.length,
-        }).then(resolve, reject),
+      then: (resolve, reject) => Promise.resolve({ data: response.data, error: response.error ?? null }).then(resolve, reject),
     };
     return chain;
   }

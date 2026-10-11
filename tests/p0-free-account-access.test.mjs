@@ -55,8 +55,8 @@ function fakeClient(world) {
             }
             const row = trial ? { created_at: "2026-09-01T00:00:00.000000+00:00", ...trial } : null;
             if (single) return { data: row, error: null };
-            const inChunk = op("in")?.args[1] ?? [];
-            return { data: row && inChunk.includes(row.workspace_id) ? [row] : [], error: null };
+            // trial_licenses ⋈ the user's memberships (the resolver's !inner join).
+            return { data: row && (world.memberships ?? []).includes(row.workspace_id) ? [row] : [], error: null };
           }
           case "projects":
             return { data: world.projects ?? [], error: null };

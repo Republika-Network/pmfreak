@@ -204,6 +204,45 @@ await check("150 memberships, revoked trial newest + active older → blocked (m
   assert.equal(await resolveTrialEntitlement(admin, user.id), "blocked");
 });
 
+await check("licenses differing only in microseconds: the truly newest (revoked) wins even when its id sorts lower → blocked", async () => {
+  const user = await createUser("micro");
+  const ids = [...(await createWorkspaces(user, 150, "micro"))].sort();
+  await attachTrial(ids[3], "active", 30 * DAY);
+  await attachTrial(ids[149], "revoked", 30 * DAY);
+  // Same millisecond, 1µs apart; the OLDER license gets the higher id so an
+  // id tie-break after millisecond truncation would pick the active one.
+  psql(`
+    update public.trial_licenses set id = 'ffffffff-ffff-4fff-bfff-${randomBytes(6).toString("hex")}', created_at = '2026-09-01 00:00:00.123455+00' where workspace_id = '${ids[3]}';
+    update public.trial_licenses set id = '00000000-0000-4000-8000-${randomBytes(6).toString("hex")}', created_at = '2026-09-01 00:00:00.123456+00' where workspace_id = '${ids[149]}';
+  `);
+  assert.equal(await resolveTrialEntitlement(admin, user.id), "blocked");
+});
+
+await check("1,200 memberships (above PostgREST max_rows=1000), expired trial on the last workspace → blocked", async () => {
+  const user = await createUser("max-rows");
+  const ids = [...(await createWorkspaces(user, 1200, "max-rows"))].sort();
+  await attachTrial(ids.at(-1), "expired", -DAY);
+  assert.equal(await resolveTrialEntitlement(admin, user.id), "blocked");
+});
+
+await check("1,200 memberships, no trial → entitled (Free)", async () => {
+  const user = await createUser("max-rows-free");
+  await createWorkspaces(user, 1200, "max-rows-free");
+  assert.equal(await resolveTrialEntitlement(admin, user.id), "entitled");
+});
+
+await check("another user's expired trial on a workspace this user is NOT in never affects them; a shared workspace's trial does", async () => {
+  const a = await createUser("iso-a");
+  const b = await createUser("iso-b");
+  const [aOnly] = await createWorkspaces(a, 1, "iso-a");
+  await createWorkspaces(b, 1, "iso-b");
+  await attachTrial(aOnly, "expired", -DAY);
+  assert.equal(await resolveTrialEntitlement(admin, a.id), "blocked");
+  assert.equal(await resolveTrialEntitlement(admin, b.id), "entitled");
+  must(await admin.from("workspace_memberships").insert({ workspace_id: aOnly, user_id: b.id, role: "viewer" }), "share");
+  assert.equal(await resolveTrialEntitlement(admin, b.id), "blocked");
+});
+
 await check("user with no memberships → blocked", async () => {
   const user = await createUser("no-membership");
   assert.equal(await resolveTrialEntitlement(admin, user.id), "blocked");
