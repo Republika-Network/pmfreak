@@ -37,12 +37,16 @@ function fakeServiceRoleClient() {
       const resolve = () => {
         if (ops.some((o) => o.name === "update" || o.name === "insert")) return { data: null, error: null };
         switch (table) {
-          case "workspace_memberships":
-            return { data: world.memberships.map((workspace_id) => ({ workspace_id, role: "owner", created_at: "2026-10-01T00:00:00Z" })), error: null };
+          case "workspace_memberships": {
+            const rows = world.memberships.map((workspace_id) => ({ workspace_id, role: "owner", created_at: "2026-10-01T00:00:00Z" }));
+            const range = ops.find((o) => o.name === "range")?.args;
+            return { data: range ? rows.slice(range[0], range[1] + 1) : rows, error: null, count: rows.length };
+          }
           case "workspaces":
             return { data: world.memberships.map((id) => ({ id, status: "active", owner_type: "user" })), error: null };
           case "trial_licenses":
-            return { data: world.trial, error: null };
+            // List reads (the entitlement lookup) get an array; maybeSingle reads one row.
+            return { data: world.trial, list: world.trial ? [{ created_at: "2026-09-01T00:00:00+00:00", ...world.trial }] : [], error: null };
           case "projects":
             return { data: world.projects, error: null };
           default:
@@ -53,7 +57,7 @@ function fakeServiceRoleClient() {
         {},
         {
           get(_t, prop) {
-            if (prop === "then") return (ok, err) => Promise.resolve(resolve()).then(ok, err);
+            if (prop === "then") return (ok, err) => Promise.resolve(resolve()).then((r) => ("list" in r ? { ...r, data: r.list } : r)).then(ok, err);
             if (prop === "maybeSingle" || prop === "single") return async () => resolve();
             return (...args) => {
               ops.push({ name: prop, args });

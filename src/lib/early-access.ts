@@ -175,79 +175,67 @@ export async function acceptEarlyAccessInvite(input: { inviteToken: string; user
 
   await logFirstUserTelemetryEvent({ eventType: "invite_activation_attempted", userId: input.userId, inviteId: invite.id });
 
-  const { data: existingActivation } = await supabase
-    .from("workspace_activations")
-    .select("id")
-    .eq("invite_id", invite.id)
-    .maybeSingle();
-  if (existingActivation?.id) throw new Error("Invite has already been used.");
+  // Every write of the activation — workspace, owner membership, trial license
+  // link, invite acceptance and the activation record — happens in ONE
+  // transaction inside accept_early_access_invite (migration
+  // 20261011000000_atomic_early_access_activation.sql), which re-checks all of
+  // the preconditions above under a row lock. A failure at any step leaves no
+  // workspace or membership behind; previously a failed license update left a
+  // membership with no linked trial, which the entitlement resolver reads as a
+  // self-serve Free account. Concurrent acceptances serialize on the invite row
+  // and every one after the first fails with reused_token.
+  const { data: activation, error: activationError } = await supabase.rpc("accept_early_access_invite", {
+    p_invite_id: invite.id,
+    p_invite_token_hash: tokenHash,
+    p_user_id: input.userId,
+    p_user_email: normalizedUserEmail,
+    p_workspace_name: input.workspaceName ?? null,
+    p_trial_days: TRIAL_DAYS,
+  });
 
-  const workspaceInsert = await supabase
-    .from("workspaces")
-    .insert({ name: input.workspaceName ?? "PMFreak Early Access Workspace", created_by_user_id: input.userId })
-    .select("id")
-    .single();
-  if (workspaceInsert.error || !workspaceInsert.data) throw new Error(`Unable to create workspace: ${workspaceInsert.error?.message}`);
+  const activated = parseActivationResult(activation);
+  if (activationError || !activated) {
+    const reason = activationError?.message ?? "Activation returned no result.";
+    await supabase.from("early_access_events").insert({
+      invite_id: invite.id,
+      event_type: "invite_activation_failed",
+      event_payload: { reason: ACTIVATION_ERROR_CODE.exec(reason)?.[1] ?? "internal_error" },
+    });
+    await logFirstUserTelemetryEvent({ eventType: "invite_activation_failed", userId: input.userId, inviteId: invite.id });
+    // Only the function's own `code::message` errors are user-facing; anything
+    // else (driver text, a missing function) stays server-side.
+    if (activationError && ACTIVATION_ERROR_CODE.test(activationError.message)) throw new Error(activationError.message);
+    await logFirstUserTelemetryEvent({ eventType: "runtime_initialization_issue", userId: input.userId, inviteId: invite.id, metadata: { reason } });
+    throw new Error(`Unable to activate invite: ${reason}`);
+  }
 
-  const workspaceId = workspaceInsert.data.id as string;
-
-  const { error: membershipError } = await supabase.from("workspace_memberships").upsert({ workspace_id: workspaceId, user_id: input.userId, role: "owner" }, { onConflict: "workspace_id,user_id", ignoreDuplicates: true });
-  if (membershipError) throw new Error(`Unable to create workspace membership: ${membershipError.message}`);
-
-  const trialStart = new Date();
-  const trialEnd = new Date(trialStart.getTime() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
-
-  const { data: trial, error: trialError } = await supabase
-    .from("trial_licenses")
-    .update({ workspace_id: workspaceId, trial_start_at: trialStart.toISOString(), trial_end_at: trialEnd.toISOString(), trial_status: "active" })
-    .eq("invite_id", invite.id)
-    .select("id")
-    .single();
-
-  if (trialError || !trial) throw new Error(`Unable to activate trial: ${trialError?.message}`);
-
-  await supabase.from("early_access_invites").update({ accepted_at: new Date().toISOString(), workspace_id: workspaceId }).eq("id", invite.id);
-
+  const { workspaceId, trialLicenseId, trialEndsAt } = activated;
   const activationPayload = {
     runtimeAuthorityVersion: "v1",
     explainabilityMode: "founder-guided",
     machineGovernanceMode: "safety-default",
   };
 
-  const { error: activationError } = await supabase.from("workspace_activations").insert({
-    invite_id: invite.id,
-    trial_license_id: trial.id,
-    workspace_id: workspaceId,
-    activated_by_user_id: input.userId,
-    operational_memory_namespace: `workspace:${workspaceId}`,
-    runtime_authority_linkage: { authority: "workspace_owner", linkedAt: new Date().toISOString() },
-    governance_profile: { level: "early_access", profile: "default" },
-    explainability_defaults: { style: "high_trust", visibleRationales: true },
-    machine_governance_defaults: { escalationMode: "balanced", policyVersion: "2026-05" },
-    starter_cognition_state: activationPayload,
-  });
-
-  if (activationError) {
-    await supabase.from("early_access_events").insert({
-      invite_id: invite.id,
-      trial_license_id: trial.id,
-      workspace_id: workspaceId,
-      event_type: "runtime_initialization_failed",
-      event_payload: { reason: activationError.message },
-    });
-    await logFirstUserTelemetryEvent({ eventType: "runtime_initialization_issue", userId: input.userId, workspaceId, inviteId: invite.id, metadata: { reason: activationError.message } });
-    throw new Error(`Runtime initialization failed: ${activationError.message}`);
-  }
-
   await supabase.from("early_access_events").insert([
-    { invite_id: invite.id, trial_license_id: trial.id, workspace_id: workspaceId, event_type: "invite_accepted", event_payload: { inviteEmail: invite.invite_email } },
-    { invite_id: invite.id, trial_license_id: trial.id, workspace_id: workspaceId, event_type: "workspace_activated", event_payload: activationPayload },
-    { invite_id: invite.id, trial_license_id: trial.id, workspace_id: workspaceId, event_type: "workspace_initialized", event_payload: { memoryNamespace: `workspace:${workspaceId}` } },
+    { invite_id: invite.id, trial_license_id: trialLicenseId, workspace_id: workspaceId, event_type: "invite_accepted", event_payload: { inviteEmail: invite.invite_email } },
+    { invite_id: invite.id, trial_license_id: trialLicenseId, workspace_id: workspaceId, event_type: "workspace_activated", event_payload: activationPayload },
+    { invite_id: invite.id, trial_license_id: trialLicenseId, workspace_id: workspaceId, event_type: "workspace_initialized", event_payload: { memoryNamespace: `workspace:${workspaceId}` } },
   ]);
 
-  await logFirstUserTelemetryEvent({ eventType: "invite_activation_completed", userId: input.userId, workspaceId, inviteId: invite.id, metadata: { trialEndsAt: trialEnd.toISOString() } });
+  await logFirstUserTelemetryEvent({ eventType: "invite_activation_completed", userId: input.userId, workspaceId, inviteId: invite.id, metadata: { trialEndsAt } });
 
-  return { workspaceId, trialEndsAt: trialEnd.toISOString() };
+  return { workspaceId, trialEndsAt };
+}
+
+const ACTIVATION_ERROR_CODE = /^(invalid_token|revoked_token|reused_token|expired_token|pending_approval|email_mismatch|activation_unavailable|invalid_request)::/;
+
+function parseActivationResult(value: unknown): { workspaceId: string; trialLicenseId: string; trialEndsAt: string } | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.workspace_id !== "string" || typeof row.trial_license_id !== "string" || typeof row.trial_end_at !== "string") return null;
+  const end = Date.parse(row.trial_end_at);
+  if (Number.isNaN(end)) return null;
+  return { workspaceId: row.workspace_id, trialLicenseId: row.trial_license_id, trialEndsAt: new Date(end).toISOString() };
 }
 
 export async function approveEarlyAccessInvite(inviteId: string, actorUserId: string) {

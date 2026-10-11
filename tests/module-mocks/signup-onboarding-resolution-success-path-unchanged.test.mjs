@@ -47,7 +47,8 @@ test("SUCCESS PATH UNCHANGED: resolveOnboardingState + resolvePostAuthDestinatio
   const adminClient = makeFakeAdminQueryClient({
     workspace_memberships: { data: [{ workspace_id: "ws-1", role: "owner", created_at: "2020-01-01T00:00:00Z", user_id: "user-new-1" }] },
     workspaces: { data: [{ id: "ws-1", status: "active", owner_type: "user" }] },
-    trial_licenses: { data: [{ id: "trial-1", invite_id: null, workspace_id: "ws-1", trial_status: "active", trial_end_at: "2999-01-01T00:00:00Z" }] },
+    // created_at is NOT NULL in trial_licenses; the entitlement resolver orders by it.
+    trial_licenses: { data: [{ id: "trial-1", invite_id: null, workspace_id: "ws-1", trial_status: "active", trial_end_at: "2999-01-01T00:00:00Z", created_at: "2026-01-01T00:00:00Z" }] },
     pmos: { data: [{ id: "pmo-1" }] },
     projects: { data: [{ id: "project-1" }] },
   });

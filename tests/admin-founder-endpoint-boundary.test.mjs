@@ -339,9 +339,11 @@ test("acceptEarlyAccessInvite: email-mismatch guard exists before any workspace/
   const source = await readSource("src/lib/early-access.ts");
   const bodyStart = source.indexOf("export async function acceptEarlyAccessInvite");
   const emailCheckIndex = source.indexOf("email_mismatch::", bodyStart);
-  const workspaceInsertIndex = source.indexOf('.from("workspaces")', bodyStart);
+  // The workspace is created only inside the atomic accept_early_access_invite
+  // RPC (migration 20261011000000), never by a separate application write.
+  const activationRpcIndex = source.indexOf('rpc("accept_early_access_invite"', bodyStart);
   assert.ok(emailCheckIndex > bodyStart, "email_mismatch check not found");
-  assert.ok(workspaceInsertIndex > emailCheckIndex, "email match must be validated before the workspace is created");
+  assert.ok(activationRpcIndex > emailCheckIndex, "email match must be validated before the activation RPC creates the workspace");
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

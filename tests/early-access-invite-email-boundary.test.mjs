@@ -28,13 +28,19 @@ test("acceptEarlyAccessInvite: requires userEmail and validates it against invit
   assert.match(signatureMatch[1], /userEmail:\s*string/, "acceptEarlyAccessInvite must require userEmail");
 
   const bodyStart = source.indexOf("export async function acceptEarlyAccessInvite");
-  const workspaceInsertIndex = source.indexOf(".from(\"workspaces\")", bodyStart);
-  const membershipUpsertIndex = source.indexOf("workspace_memberships", bodyStart);
-  const emailCheckIndex = source.indexOf("email_mismatch::", bodyStart);
+  const bodyEnd = source.indexOf("export async function", bodyStart + 1);
+  const body = source.slice(bodyStart, bodyEnd === -1 ? undefined : bodyEnd);
+  const emailCheckIndex = body.indexOf("email_mismatch::");
+  // Workspace + owner membership creation now happen only inside the atomic
+  // accept_early_access_invite RPC (migration 20261011000000), which also
+  // re-checks the email binding under a row lock.
+  const activationRpcIndex = body.indexOf('rpc("accept_early_access_invite"');
 
-  assert.ok(emailCheckIndex > bodyStart, "email_mismatch check not found in acceptEarlyAccessInvite");
-  assert.ok(workspaceInsertIndex > emailCheckIndex, "email match must be validated before the workspace is created");
-  assert.ok(membershipUpsertIndex > emailCheckIndex, "email match must be validated before the workspace_memberships row is written");
+  assert.ok(emailCheckIndex > -1, "email_mismatch check not found in acceptEarlyAccessInvite");
+  assert.ok(activationRpcIndex > emailCheckIndex, "email match must be validated before the activation RPC creates the workspace and membership");
+  assert.doesNotMatch(body, /\.from\("workspaces"\)/, "the workspace must not be created outside the atomic activation RPC");
+  assert.doesNotMatch(body, /\.from\("workspace_memberships"\)/, "the membership must not be written outside the atomic activation RPC");
+  assert.match(body, /p_user_email:\s*normalizedUserEmail/, "the RPC must receive the same authenticated email that was checked");
 });
 
 test("acceptEarlyAccessInvite: accept route passes the authenticated user's real email, not a client-supplied field", async () => {

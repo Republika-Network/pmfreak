@@ -24,10 +24,13 @@ function fakeClient(tableResponses) {
         in: () => builder,
         order: () => builder,
         limit: () => builder,
+        range: () => builder,
         update: () => builder,
         lt: () => builder,
         neq: () => builder,
-        maybeSingle: async () => result,
+        // `single` lets one table answer list reads (arrays) and maybeSingle
+        // reads (one row) differently, as PostgREST does.
+        maybeSingle: async () => ("single" in result ? { data: result.single, error: null } : result),
         then: (resolve, reject) => Promise.resolve(result).then(resolve, reject),
       };
       return builder;
@@ -54,8 +57,12 @@ test('returns "no_workspace" when workspaceId is null', async () => {
 
 test('returns "trial_blocked" for a revoked trial', async () => {
   const client = fakeClient({
-    workspace_memberships: { data: [{ workspace_id: 'ws-1' }], error: null },
-    trial_licenses: { data: { id: 't1', invite_id: 'i1', workspace_id: 'ws-1', trial_status: 'revoked', trial_end_at: '2020-01-01' }, error: null },
+    workspace_memberships: { data: [{ workspace_id: 'ws-1' }], error: null, count: 1 },
+    trial_licenses: {
+      data: [{ id: 't1', workspace_id: 'ws-1', trial_status: 'revoked', trial_end_at: '2020-01-01', created_at: '2019-12-01T00:00:00+00:00' }],
+      error: null,
+      single: { id: 't1', invite_id: 'i1', workspace_id: 'ws-1', trial_status: 'revoked' },
+    },
   });
   const state = await resolveOnboardingState(user, 'ws-1', { getClient: () => client });
   assert.equal(state, 'trial_blocked');
