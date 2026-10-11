@@ -549,7 +549,7 @@ test("F1: 'New project' carries the displayed workspace; the target is authorize
   assert.match(save, /workspace_id: ensured\.workspaceId/);
   // After saving, the wizard lands in the workspace the SERVER created the project in.
   const wizard = code("src/components/pmfreak/projects/create-project-wizard.tsx");
-  assert.match(wizard, /saveProjectOnboarding\(payload, correlationId, \{ pmoId: pmoId \?\? null, workspaceId: workspaceId \?\? null \}\)/);
+  assert.match(wizard, /saveProjectOnboarding\(payload, correlationId, \{\s*pmoId: pmoId \?\? null,\s*workspaceId: workspaceId \?\? null,\s*activationRequestId: activationRequestIdRef\.current,\s*\}\)/);
   assert.match(wizard, /workspaceCommandCenterPath\(result\.workspaceId, \{/);
   assert.doesNotMatch(wizard, /router\.push\(`\/command-center\?projectId=/);
 });

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import type {
   ProjectIdentity,
@@ -92,6 +92,29 @@ function saveDraft(data: object) {
 
 function clearDraft() {
   try { localStorage.removeItem(DRAFT_KEY); } catch {}
+}
+
+// The activation key: one per project being activated, reused by every retry —
+// including after a reload — so the server resumes the project an earlier
+// attempt created instead of creating another. Kept apart from the draft so the
+// draft's stored shape is unchanged; cleared together with it on success.
+const ACTIVATION_KEY = "pmfreak.project.activationRequestId";
+
+function getActivationRequestId(): string {
+  try {
+    const existing = localStorage.getItem(ACTIVATION_KEY);
+    if (existing && /^[A-Za-z0-9_-]{8,100}$/.test(existing)) return existing;
+    const created = `act_${crypto.randomUUID()}`;
+    localStorage.setItem(ACTIVATION_KEY, created);
+    return created;
+  } catch {
+    // Storage unavailable: still idempotent across in-page retries via the ref below.
+    return `act_${crypto.randomUUID()}`;
+  }
+}
+
+function clearActivationRequestId() {
+  try { localStorage.removeItem(ACTIVATION_KEY); } catch {}
 }
 
 // ─── Validation ────────────────────────────────────────────────────────────────
@@ -711,6 +734,12 @@ export function CreateProjectWizard({
   const activationInFlightRef = useRef(false);
   const navigationCommittedRef = useRef(false);
   const [correlationId] = useState(() => `proj_${Date.now()}`);
+  const activationRequestIdRef = useRef<string | null>(null);
+  // The key belongs to the draft it activates: with no draft this is a new
+  // project, so a key left by an earlier, abandoned attempt must not resume it.
+  useEffect(() => {
+    if (!loadDraft()) clearActivationRequestId();
+  }, []);
   const [showBootSequence, setShowBootSequence] = useState(false);
   const bootSequenceCompleteRef = useRef<(() => void) | null>(null);
 
@@ -803,7 +832,12 @@ export function CreateProjectWizard({
 
     let result: ProjectSaveResult;
     try {
-      result = await saveProjectOnboarding(payload, correlationId, { pmoId: pmoId ?? null, workspaceId: workspaceId ?? null });
+      activationRequestIdRef.current ??= getActivationRequestId();
+      result = await saveProjectOnboarding(payload, correlationId, {
+        pmoId: pmoId ?? null,
+        workspaceId: workspaceId ?? null,
+        activationRequestId: activationRequestIdRef.current,
+      });
     } catch {
       // Server action transport failure — treat as recoverable
       setSaveError("A network error occurred. Your draft is preserved. Please try again.");
@@ -829,6 +863,7 @@ export function CreateProjectWizard({
     // projects land in the Command Center showing the Project Intelligence
     // Inbox first.
     clearDraft();
+    clearActivationRequestId();
     navigationCommittedRef.current = true;
     setShowBootSequence(true);
     await waitForBootSequence();

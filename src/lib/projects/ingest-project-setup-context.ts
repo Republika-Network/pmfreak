@@ -29,6 +29,14 @@ export async function ingestProjectSetupContext(input: {
   role: OperationalWorkspaceRole | null;
   projectName: string;
   content: string;
+  /**
+   * When set, the operational chain's idempotency keys (and correlation id)
+   * derive from it instead of a fresh random id, so repeating the same
+   * ingestion (a resumed Project Brain activation) records the evidence once.
+   * Must be a UUID — it is also the chain's correlation id. Omitted, every call
+   * is a new capture, as before.
+   */
+  idempotencyScope?: string;
 }): Promise<ProjectSetupContextIngestionResult> {
   const result: ProjectSetupContextIngestionResult = {
     vaultIngested: false,
@@ -78,7 +86,7 @@ export async function ingestProjectSetupContext(input: {
   if (["owner", "admin", "pm"].includes(String(input.role))) {
     try {
       const scope = { workspaceId: input.workspaceId, projectId: input.projectId, userId: input.userId, role: input.role };
-      const requestId = randomUUID();
+      const requestId = input.idempotencyScope ?? randomUUID();
       const captured = await captureOperationalInput(input.supabase, scope, {
         // Single source of truth for the DEMO / FIXTURE identity. This is a server-side
         // service call, so the route's pin does not apply — the constant is what keeps it

@@ -46,7 +46,7 @@ const routedProjectResolver = readFileSync(join(ROOT, "src/lib/projects/routed-p
 test("saveProjectOnboarding success result includes projectId, correlationId, and briefStatus", () => {
   assert.match(
     saveProject,
-    /status: "success", projectId: data\.id, workspaceId: ensured\.workspaceId, correlationId: cid, briefStatus/,
+    /status: "success", projectId, workspaceId, correlationId: cid, briefStatus/,
     "success return must include projectId, correlationId, and briefStatus"
   );
 });
@@ -213,24 +213,29 @@ test("saveProjectOnboarding tracks insertedProjectId for potential rollback", ()
   assert.match(saveProject, /insertedProjectId = data\.id/, "must set insertedProjectId after confirmed insert");
 });
 
-test("saveProjectOnboarding emits project.create.rollback.started before rollback delete", () => {
-  assert.match(saveProject, /project\.create\.rollback\.started/);
-  const startedIdx = saveProject.indexOf("project.create.rollback.started");
-  const deleteIdx = saveProject.indexOf(".delete()", startedIdx);
-  assert.ok(deleteIdx > startedIdx, "rollback.started must precede the delete call");
+// A failure after the insert no longer deletes the project. Deleting it orphaned
+// any intelligence rows already written for it; the project is kept and the
+// retry — carrying the same activation key — resumes it (Project Brain
+// activation idempotency; behaviour covered end-to-end in
+// tests/module-mocks/project-brain-activation-live.test.mjs).
+test("saveProjectOnboarding keeps the project after a post-insert failure and reports activation_incomplete", () => {
+  const catchBlock = saveProject.slice(saveProject.indexOf("  } catch (err) {"));
+  const keep = catchBlock.slice(catchBlock.indexOf("if (insertedProjectId)"), catchBlock.indexOf("emit(\"project.create.failed\""));
+  assert.match(keep, /project\.create\.activation_incomplete/);
+  assert.match(keep, /failureClass: "activation_incomplete"/);
+  assert.match(keep, /status: "recoverable_failure"/);
+  assert.doesNotMatch(keep, /\.delete\(\)/, "the project row must not be deleted");
 });
 
-test("saveProjectOnboarding emits project.create.rollback.completed on successful rollback", () => {
-  assert.match(saveProject, /project\.create\.rollback\.completed/);
+test("saveProjectOnboarding never deletes projects", () => {
+  assert.doesNotMatch(saveProject, /from\("projects"\)[\s\S]{0,40}\.delete\(\)/);
 });
 
-test("saveProjectOnboarding emits project.create.rollback.failed on failed rollback", () => {
-  assert.match(saveProject, /project\.create\.rollback\.failed/);
-});
-
-test("saveProjectOnboarding issues delete on rollback", () => {
-  assert.match(saveProject, /\.delete\(\)/, "rollback must issue a delete");
-  assert.match(saveProject, /\.eq\("id", insertedProjectId\)/, "rollback must target the specific project row");
+test("saveProjectOnboarding resumes an earlier attempt of the same activation before creating a project", () => {
+  const resumeIdx = saveProject.indexOf("findActivationProject(supabase, user.id, activationRequestId)");
+  const insertIdx = saveProject.indexOf('.from("projects")\n      .insert(');
+  assert.ok(resumeIdx > 0 && insertIdx > resumeIdx, "the resume lookup must run before the insert");
+  assert.match(saveProject, /error\?\.code === "23505" && activationRequestId/, "a lost race on the unique index resumes the winner");
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -243,9 +248,9 @@ test("saveProjectOnboarding emits all required structured log events", () => {
     "project.create.persisted",
     "project.create.success",
     "project.create.failed",
-    "project.create.rollback.started",
-    "project.create.rollback.completed",
-    "project.create.rollback.failed",
+    "project.create.resumed",
+    "project.create.activation_incomplete",
+    "project.create.pmo_unassigned",
   ];
   for (const event of required) {
     assert.ok(saveProject.includes(event), `must emit ${event}`);
