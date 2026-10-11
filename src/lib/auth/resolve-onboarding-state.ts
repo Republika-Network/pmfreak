@@ -92,48 +92,10 @@ export async function resolveOnboardingState(
       actorUserId: user.id,
     });
 
-  // Check trial status — skip for newly-bootstrapped workspaces and internal users
+  // Entitlement check — skipped for newly-bootstrapped workspaces and internal
+  // users. See `resolveTrialEntitlement` for the policy.
   if (!isFounderOrInternalUser(user) && !opts?.isRecovered) {
-    const { data: memberships } = await supabase
-      .from("workspace_memberships")
-      .select("workspace_id")
-      .eq("user_id", user.id)
-      .limit(20);
-
-    const workspaceIds = (memberships ?? []).map((m: { workspace_id: string }) => m.workspace_id);
-
-    const { data: activeTrial } = await supabase
-      .from("trial_licenses")
-      .select("id, invite_id, workspace_id, trial_status, trial_end_at")
-      .in("workspace_id", workspaceIds.length ? workspaceIds : ["00000000-0000-0000-0000-000000000000"])
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (activeTrial?.id) {
-      // Expire this trial if it has passed trial_end_at.
-      await supabase
-        .from("trial_licenses")
-        .update({ trial_status: "expired" })
-        .eq("id", activeTrial.id)
-        .eq("trial_status", "active")
-        .lt("trial_end_at", new Date().toISOString());
-    }
-
-    const { data: refreshedTrial } = activeTrial?.id
-      ? await supabase
-          .from("trial_licenses")
-          .select("id, invite_id, workspace_id, trial_status")
-          .eq("id", activeTrial.id)
-          .maybeSingle()
-      : { data: null };
-
-    const inactive =
-      !refreshedTrial ||
-      refreshedTrial.trial_status === "revoked" ||
-      refreshedTrial.trial_status === "expired";
-
-    if (inactive) {
+    if ((await resolveTrialEntitlement(supabase, user.id)) === "blocked") {
       return "trial_blocked";
     }
   }
@@ -156,4 +118,85 @@ export async function resolveOnboardingState(
   if (evidence.pmoExists) return "active";
   if (!evidence.taskExists) return "needs_task";
   return "execution_started";
+}
+
+export type TrialEntitlement = "entitled" | "blocked";
+
+/**
+ * Access-entitlement policy behind "trial_blocked".
+ *
+ * Two kinds of account reach the protected app:
+ *
+ *   - Early-access/invited accounts. Accepting an invite provisions a
+ *     `trial_licenses` row on the workspace (src/lib/early-access.ts). Those
+ *     accounts are governed by that license: "active"/"pending" grant access;
+ *     "expired" (including one that has just passed `trial_end_at`, which is
+ *     persisted here) and "revoked" block it.
+ *   - Self-serve accounts from public /signup. Nothing ever provisions a trial
+ *     license for them — they are on the Free plan, which is the default
+ *     company plan (`getCompanySubscription` with no row) and has no expiry.
+ *     Paid plans are layered on top of Free via Stripe, never via a trial
+ *     license.
+ *
+ * So "no trial license on any of the user's workspaces" means Free, not
+ * "expired". Before this was distinguished, every self-serve account was sent
+ * to /trial-inactive on every request after the one that bootstrapped its
+ * workspace (that request alone passes via `isRecovered`).
+ *
+ * What stays blocked:
+ *   - the user's most recent trial license (across all their memberships, so
+ *     switching workspace cannot dodge an expired trial) is expired/revoked;
+ *   - the user holds no workspace membership at all;
+ *   - any entitlement read fails — this fails closed rather than granting
+ *     access on a transient error.
+ */
+export async function resolveTrialEntitlement(
+  supabase: OnboardingStateQueryClient,
+  userId: string,
+): Promise<TrialEntitlement> {
+  const { data: memberships, error: membershipError } = await supabase
+    .from("workspace_memberships")
+    .select("workspace_id")
+    .eq("user_id", userId)
+    .limit(20);
+
+  if (membershipError) return "blocked";
+
+  const workspaceIds = (memberships ?? []).map((m: { workspace_id: string }) => m.workspace_id);
+  if (workspaceIds.length === 0) return "blocked";
+
+  const { data: latestTrial, error: trialError } = await supabase
+    .from("trial_licenses")
+    .select("id, invite_id, workspace_id, trial_status, trial_end_at")
+    .in("workspace_id", workspaceIds)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (trialError) return "blocked";
+
+  // Self-serve Free-plan account: no trial license was ever provisioned.
+  if (!latestTrial?.id) return "entitled";
+
+  // Expire this trial if it has passed trial_end_at.
+  await supabase
+    .from("trial_licenses")
+    .update({ trial_status: "expired" })
+    .eq("id", latestTrial.id)
+    .eq("trial_status", "active")
+    .lt("trial_end_at", new Date().toISOString());
+
+  const { data: refreshedTrial, error: refreshError } = await supabase
+    .from("trial_licenses")
+    .select("id, invite_id, workspace_id, trial_status")
+    .eq("id", latestTrial.id)
+    .maybeSingle();
+
+  if (refreshError || !refreshedTrial) return "blocked";
+  if (refreshedTrial.trial_status === "revoked" || refreshedTrial.trial_status === "expired") return "blocked";
+  // Past its end date but the expiry write above did not land — still expired.
+  if (refreshedTrial.trial_status === "active" && latestTrial.trial_end_at && Date.parse(latestTrial.trial_end_at) < Date.now()) {
+    return "blocked";
+  }
+  return "entitled";
 }
