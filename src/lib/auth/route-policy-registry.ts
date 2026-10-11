@@ -74,6 +74,7 @@ const PUBLIC_ROUTES = [
   "/forgot-password",
   "/auth/reset-password",
   "/auth/callback",
+  "/auth/confirm",
   "/signup/confirm-email",
   "/logout",
 ] as const;
