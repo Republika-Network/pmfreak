@@ -7,6 +7,16 @@ import { resolveOnboardingState } from "@/lib/auth/resolve-onboarding-state";
 import { resolveCanonicalWorkspace } from "@/lib/workspaces/canonical-workspace-resolver";
 import { logContinuityIssue } from "@/lib/auth/auth-continuity-diagnostics";
 
+// POST/Redirect/GET: every outcome of this form POST is answered with 303 See
+// Other so the browser follows it with a GET. NextResponse.redirect defaults to
+// 307, which preserves the POST method and body — so landing on a page route
+// (e.g. /login?error=…, /projects/new) re-POSTed to it and failed with 405.
+// Session cookies written by signInWithPassword are merged onto whatever
+// response this handler returns, independent of the status code.
+function seeOther(path: string, request: Request) {
+  return NextResponse.redirect(new URL(path, request.url), 303);
+}
+
 export async function POST(request: Request) {
   const requestUrl = new URL(request.url);
   const formData = await request.formData();
@@ -17,7 +27,7 @@ export async function POST(request: Request) {
   const requestedRoute = requestedRouteFromForm || requestedRouteFromQuery || null;
 
   if (!email || !password) {
-    return NextResponse.redirect(new URL("/login?error=Email+and+password+are+required", request.url));
+    return seeOther("/login?error=Email+and+password+are+required", request);
   }
 
   const supabase = await createSupabaseServerClient();
@@ -26,7 +36,7 @@ export async function POST(request: Request) {
   if (error) {
     const isUnverified = error.message.toLowerCase().includes("email not confirmed");
     const message = isUnverified ? "Please verify your email before logging in." : error.message;
-    return NextResponse.redirect(new URL(`/login?error=${encodeURIComponent(message)}`, request.url));
+    return seeOther(`/login?error=${encodeURIComponent(message)}`, request);
   }
 
   const safe = requestedRoute ? isSafeContinuationRoute(requestedRoute) : false;
@@ -68,5 +78,5 @@ export async function POST(request: Request) {
   });
 
   debugAuthDecision({ requestedRoute, onboardingCompleted: onboardingState != null && onboardingState === "active", decision });
-  return NextResponse.redirect(new URL(decision.destination, request.url));
+  return seeOther(decision.destination, request);
 }
