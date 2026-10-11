@@ -364,6 +364,18 @@ test("P2-12 H5: P2-12 introduced no migration and no new API route, and no LATER
   // carries its own acceptance in scripts/check-pb-chat-01-db.mjs and
   // tests/pb-chat-01-project-brain-conversation.test.ts.
   //
+  // The post-#640 entitlement security hotfix ships exactly one: a NEW function,
+  // `accept_early_access_invite`, which performs early-access invite activation
+  // (workspace, owner membership, trial license link, invite acceptance, activation
+  // record) in one transaction with the invite and license rows locked FOR UPDATE, so a
+  // failure can no longer leave a membership with no linked license and concurrent
+  // acceptances serialize. No schema, table, column, index, trigger, RLS, policy or data
+  // change and no existing function touched; SECURITY INVOKER with pinned `search_path`,
+  // EXECUTE revoked from PUBLIC, anon and authenticated and granted to service_role only.
+  // No P2-12 canonical table is touched. It carries its own acceptance in
+  // scripts/check-entitlement-hardening-live-db.mjs and
+  // tests/module-mocks/p0-early-access-atomic-activation.test.mjs.
+  //
   // Exact full paths only: no wildcard, no timestamp prefix, no directory grant. Anything
   // not named here still fails this assertion, which is the protection P2-12 actually needs.
   const REVIEWED_LATER_MIGRATIONS = new Set([
@@ -371,6 +383,7 @@ test("P2-12 H5: P2-12 introduced no migration and no new API route, and no LATER
     "supabase/migrations/20260908000000_p2_02_attention_membership_snapshot.sql",
     "supabase/migrations/20260912000000_material_action_terminal_revocation.sql",
     "supabase/migrations/20260915000000_pb_chat_01_project_brain_conversation.sql",
+    "supabase/migrations/20261011000000_atomic_early_access_activation.sql",
   ]);
   const unreviewedMigrations = changed
     .filter((file) => file.startsWith("supabase/migrations/"))
