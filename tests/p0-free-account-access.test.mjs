@@ -34,12 +34,15 @@ function fakeClient(world) {
     writes,
     from(table) {
       const ops = [];
-      const resolve = () => {
-        if (world.fail?.includes(table)) return { data: null, error: { message: `${table} unavailable` } };
+      const resolve = (single) => {
+        if (world.fail?.includes(table)) return { data: null, error: { message: `${table} unavailable` }, count: null };
         const op = (name) => ops.find((o) => o.name === name);
         switch (table) {
-          case "workspace_memberships":
-            return { data: (world.memberships ?? []).map((workspace_id) => ({ workspace_id, user_id: user.id })), error: null };
+          case "workspace_memberships": {
+            const rows = (world.memberships ?? []).map((workspace_id) => ({ workspace_id, user_id: user.id })).sort((a, b) => a.workspace_id.localeCompare(b.workspace_id));
+            const range = op("range")?.args;
+            return { data: range ? rows.slice(range[0], range[1] + 1) : rows, error: null, count: rows.length };
+          }
           case "trial_licenses": {
             const update = op("update");
             if (update) {
@@ -50,7 +53,10 @@ function fakeClient(world) {
               }
               return { data: null, error: null };
             }
-            return { data: trial, error: null };
+            const row = trial ? { created_at: "2026-09-01T00:00:00.000000+00:00", ...trial } : null;
+            if (single) return { data: row, error: null };
+            // trial_licenses ⋈ the user's memberships (the resolver's !inner join).
+            return { data: row && (world.memberships ?? []).includes(row.workspace_id) ? [row] : [], error: null };
           }
           case "projects":
             return { data: world.projects ?? [], error: null };
@@ -66,8 +72,8 @@ function fakeClient(world) {
         {},
         {
           get(_target, prop) {
-            if (prop === "then") return (onOk, onErr) => Promise.resolve(resolve()).then(onOk, onErr);
-            if (prop === "maybeSingle" || prop === "single") return async () => resolve();
+            if (prop === "then") return (onOk, onErr) => Promise.resolve(resolve(false)).then(onOk, onErr);
+            if (prop === "maybeSingle" || prop === "single") return async () => resolve(true);
             return (...args) => {
               ops.push({ name: prop, args });
               return builder;

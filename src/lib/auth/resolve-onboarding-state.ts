@@ -144,39 +144,40 @@ export type TrialEntitlement = "entitled" | "blocked";
  * workspace (that request alone passes via `isRecovered`).
  *
  * What stays blocked:
- *   - the user's most recent trial license (across all their memberships, so
- *     switching workspace cannot dodge an expired trial) is expired/revoked;
+ *   - the user's most recent trial license (across ALL their memberships, so
+ *     switching workspace cannot dodge an expired trial) is expired/revoked,
+ *     or is "active" but past `trial_end_at`;
  *   - the user holds no workspace membership at all;
- *   - any entitlement read fails — this fails closed rather than granting
- *     access on a transient error.
+ *   - entitlement cannot be established — any read fails or returns
+ *     malformed data. Absence of a trial license only means Free when the
+ *     license lookup covered EVERY membership (see `findLatestTrialLicense`,
+ *     a single server-side statement); a failed read is never "no trial".
+ *
+ * "Most recent" is a deliberate choice and is unchanged from the original
+ * gate: a re-invited user gets a new license that supersedes an older expired
+ * one, and a newer expired/revoked license supersedes an older active one.
+ * Postgres orders on full-precision `created_at` and breaks ties by id, so
+ * the decision never depends on row order.
+ *
+ * Invite accounts are only distinguishable from self-serve accounts once
+ * activation has linked their license to a workspace: an invitee signs up
+ * through the same public /signup (and is a Free account) before opening the
+ * invite. Activation (`accept_early_access_invite`) therefore creates the
+ * workspace, the membership and the license link in ONE transaction — a
+ * failed activation leaves no membership behind to be read as Free.
  */
 export async function resolveTrialEntitlement(
   supabase: OnboardingStateQueryClient,
   userId: string,
 ): Promise<TrialEntitlement> {
-  const { data: memberships, error: membershipError } = await supabase
-    .from("workspace_memberships")
-    .select("workspace_id")
-    .eq("user_id", userId)
-    .limit(20);
+  const membership = await hasAnyMembership(supabase, userId);
+  if (membership !== true) return "blocked";
 
-  if (membershipError) return "blocked";
+  const latestTrial = await findLatestTrialLicense(supabase, userId);
+  if (latestTrial === "unavailable") return "blocked";
 
-  const workspaceIds = (memberships ?? []).map((m: { workspace_id: string }) => m.workspace_id);
-  if (workspaceIds.length === 0) return "blocked";
-
-  const { data: latestTrial, error: trialError } = await supabase
-    .from("trial_licenses")
-    .select("id, invite_id, workspace_id, trial_status, trial_end_at")
-    .in("workspace_id", workspaceIds)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (trialError) return "blocked";
-
-  // Self-serve Free-plan account: no trial license was ever provisioned.
-  if (!latestTrial?.id) return "entitled";
+  // Self-serve Free-plan account: no trial license on any of its workspaces.
+  if (latestTrial === null) return "entitled";
 
   // Expire this trial if it has passed trial_end_at.
   await supabase
@@ -199,4 +200,52 @@ export async function resolveTrialEntitlement(
     return "blocked";
   }
   return "entitled";
+}
+
+/**
+ * Whether the user holds at least one workspace membership: `true`, `false`,
+ * or "unavailable" when the read fails.
+ */
+async function hasAnyMembership(supabase: OnboardingStateQueryClient, userId: string): Promise<boolean | "unavailable"> {
+  const { data, error } = await supabase.from("workspace_memberships").select("workspace_id").eq("user_id", userId).limit(1);
+  if (error || !Array.isArray(data)) return "unavailable";
+  return data.length > 0;
+}
+
+type LatestTrial = { id: string; trial_end_at: string | null };
+
+/**
+ * The most recently created trial license on ANY workspace the user is a
+ * member of — `null` when there is none, "unavailable" when it cannot be read.
+ *
+ * This is ONE statement: trial_licenses inner-joined through workspaces to the
+ * user's memberships, ordered and limited server-side. That is what makes the
+ * answer complete and consistent:
+ *   - there is no client-side list of membership ids to truncate, page or
+ *     chunk, so no PostgREST row cap, page boundary or concurrent membership
+ *     change between requests can drop the workspace holding the license —
+ *     the whole evaluation reads one database snapshot;
+ *   - "most recent" is decided by Postgres on the full-precision
+ *     `created_at` (ties broken by id), never by a JavaScript Date, which
+ *     would truncate microseconds.
+ * The `!inner` embeds make the membership filter restrict the license rows
+ * themselves, not just the embedded payload.
+ */
+async function findLatestTrialLicense(
+  supabase: OnboardingStateQueryClient,
+  userId: string,
+): Promise<LatestTrial | null | "unavailable"> {
+  const { data, error } = await supabase
+    .from("trial_licenses")
+    .select("id, trial_status, trial_end_at, created_at, workspaces!inner(workspace_memberships!inner(user_id))")
+    .eq("workspaces.workspace_memberships.user_id", userId)
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(1);
+
+  if (error || !Array.isArray(data)) return "unavailable";
+  const row = data[0] as { id?: unknown; trial_end_at?: unknown } | undefined;
+  if (!row) return null;
+  if (typeof row.id !== "string" || row.id.length === 0) return "unavailable";
+  return { id: row.id, trial_end_at: typeof row.trial_end_at === "string" ? row.trial_end_at : null };
 }
