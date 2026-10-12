@@ -53,7 +53,9 @@ test("saveProjectOnboarding returns recoverable_failure on unexpected exception"
 });
 
 test("saveProjectOnboarding returns success only after confirmed DB insert", () => {
-  const returnSuccessIdx = saveProject.indexOf('status: "success", projectId: data.id');
+  // Success is returned only by runActivationSteps, which runs after the insert
+  // (or after resuming a project an earlier attempt of the same activation inserted).
+  const returnSuccessIdx = saveProject.indexOf('return { status: "success", projectId, workspaceId, correlationId: cid, briefStatus, briefError }');
   const insertIdx = saveProject.indexOf('.from("projects")');
   assert.ok(insertIdx > 0, "insert call must exist");
   assert.ok(returnSuccessIdx > 0, "return success statement must exist");

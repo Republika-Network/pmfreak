@@ -376,6 +376,14 @@ test("P2-12 H5: P2-12 introduced no migration and no new API route, and no LATER
   // scripts/check-entitlement-hardening-live-db.mjs and
   // tests/module-mocks/p0-early-access-atomic-activation.test.mjs.
   //
+  // Project Brain activation idempotency ships exactly one: a partial UNIQUE INDEX on
+  // `projects (user_id, onboarding_payload->'brainActivation'->>'requestId')`, so one
+  // wizard activation can create at most one project even under concurrent retries. No
+  // column, data, RLS, policy, trigger or function change; rows without an activation key
+  // are unconstrained, and the application treats the index as a backstop, not a
+  // dependency. It carries its own acceptance in
+  // tests/module-mocks/project-brain-activation-live.test.mjs.
+  //
   // Exact full paths only: no wildcard, no timestamp prefix, no directory grant. Anything
   // not named here still fails this assertion, which is the protection P2-12 actually needs.
   const REVIEWED_LATER_MIGRATIONS = new Set([
@@ -384,6 +392,7 @@ test("P2-12 H5: P2-12 introduced no migration and no new API route, and no LATER
     "supabase/migrations/20260912000000_material_action_terminal_revocation.sql",
     "supabase/migrations/20260915000000_pb_chat_01_project_brain_conversation.sql",
     "supabase/migrations/20261011000000_atomic_early_access_activation.sql",
+    "supabase/migrations/20261012000000_project_brain_activation_idempotency.sql",
   ]);
   const unreviewedMigrations = changed
     .filter((file) => file.startsWith("supabase/migrations/"))
