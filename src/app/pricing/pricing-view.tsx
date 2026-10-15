@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { Mascot, Sparkle } from "@/components/landing/doodles";
 import { displayFont, markerFont } from "@/components/landing/fonts";
 import { Arrow, secondaryOnDarkCtaClass } from "@/components/landing/hero-section";
 import { MarketingFooter } from "@/components/marketing/marketing-footer";
@@ -58,19 +57,19 @@ export default function PricingView({ checkoutEnabled }: { checkoutEnabled: bool
         <section aria-labelledby="pricing-heading" className="pmf-on-dark relative isolate overflow-hidden bg-charcoal pb-36 pt-14 text-off-white md:pb-40 md:pt-20">
           <div
             aria-hidden
-            className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(55%_80%_at_85%_40%,rgba(20,184,166,0.18),transparent_70%),radial-gradient(35%_60%_at_8%_30%,rgba(255,138,0,0.08),transparent_70%)]"
+            className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(55%_80%_at_50%_35%,rgba(20,184,166,0.16),transparent_70%),radial-gradient(35%_60%_at_8%_30%,rgba(255,138,0,0.08),transparent_70%)]"
           />
-          <div className="mx-auto grid w-full max-w-6xl items-center gap-10 px-5 md:grid-cols-[1fr_auto] md:px-8">
+          <div className="mx-auto w-full max-w-6xl px-5 text-center md:px-8">
             <div>
               <p className="font-marker -rotate-2 text-sm uppercase text-freak-orange md:text-base">PMFreak AI • Pricing</p>
-              <h1 id="pricing-heading" className="font-display mt-4 max-w-3xl text-4xl font-extrabold leading-[1.02] tracking-[-0.02em] sm:text-5xl md:text-6xl">
+              <h1 id="pricing-heading" className="font-display mx-auto mt-4 max-w-3xl text-4xl font-extrabold leading-[1.02] tracking-[-0.02em] sm:text-5xl md:text-6xl">
                 Choose the plan that fits <span className="text-mint">how you run projects.</span>
               </h1>
-              <p className="mt-5 max-w-xl text-base leading-relaxed text-off-white/80 md:text-lg">
+              <p className="mx-auto mt-5 max-w-xl text-base leading-relaxed text-off-white/80 md:text-lg">
                 Start free, then upgrade when you need deeper support across teams.
               </p>
               {checkoutEnabled ? null : (
-                <p className="mt-5 max-w-xl rounded-lg border border-off-white/20! bg-off-white/5 px-4 py-3 text-sm text-off-white/85">
+                <p className="mx-auto mt-5 max-w-xl rounded-lg border border-off-white/20! bg-off-white/5 px-4 py-3 text-sm text-off-white/85">
                   Paid plans aren&rsquo;t available for purchase yet.{" "}
                   <Link href="/signup" className="font-semibold text-mint underline decoration-mint/50 underline-offset-4 transition hover:text-off-white">
                     Create a free account
@@ -78,10 +77,6 @@ export default function PricingView({ checkoutEnabled }: { checkoutEnabled: bool
                   to get started.
                 </p>
               )}
-            </div>
-            <div className="relative hidden md:block">
-              <Mascot size={168} onDark className="h-40 w-40 rotate-3" />
-              <Sparkle className="absolute -left-5 top-1 h-6 w-6 text-mint" />
             </div>
           </div>
         </section>
