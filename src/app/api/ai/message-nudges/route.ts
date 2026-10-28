@@ -44,6 +44,7 @@ export async function POST(request: Request) {
       input: payload,
       context: {
         projectId: payload.projectId?.trim() || "demo-project",
+        actor: { actorType: "user", actorUserId: user.id },
       },
     });
 

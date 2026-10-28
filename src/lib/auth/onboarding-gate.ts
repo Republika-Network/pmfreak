@@ -91,3 +91,35 @@ export function shouldRedirectForOnboarding({
   if (state === "needs_project") return !routedWorkspaceArchived && !routedProjectArchived;
   return false;
 }
+
+/**
+ * The Workspace chooser (`/workspaces`) and Workspace creation (`/workspaces/new`).
+ *
+ * Exact paths only: `/workspaces/<id>/…` is the canonical Workspace route family,
+ * which the layout already evaluates against the workspace it names.
+ */
+export function isWorkspaceChooserPath(pathname: string | null | undefined): boolean {
+  if (typeof pathname !== "string") return false;
+  const path = pathname.split("?")[0]!.split("#")[0]!.replace(/\/+$/, "");
+  return path === "/workspaces" || path === "/workspaces/new";
+}
+
+/**
+ * Should a request the onboarding gate has stopped still render here, in the
+ * onboarding frame, instead of being redirected to the onboarding destination?
+ *
+ * PD-9: the chooser used to sit behind the gate it exists to escape. A member of
+ * several workspaces whose SELECTED one has no project yet — an invitee whose
+ * personal workspace was bootstrapped at signup, or an owner who just switched
+ * into an empty workspace — was bounced from `/workspaces` to `/projects/new`,
+ * so the only way back to an initialized workspace was a hand-typed URL.
+ *
+ * The exemption is `needs_project` only. Choosing or creating a workspace grants
+ * nothing: switching re-validates membership server-side, every destination
+ * re-runs the gate for the workspace actually selected, and no project can be
+ * created from either page. `trial_blocked` stays an entitlement decision and
+ * `no_workspace` stays a redirect, exactly as in `shouldRedirectForOnboarding`.
+ */
+export function isOnboardingChooserExempt(state: OnboardingState, pathname: string | null | undefined): boolean {
+  return state === "needs_project" && isWorkspaceChooserPath(pathname);
+}

@@ -328,6 +328,10 @@ export async function runAIModule({
       inferenceResult = await runInference({
         moduleId: "message-nudges",
         projectId,
+        // B6: the budget scope. The route passes the authenticated user; without one the
+        // router refuses the request rather than run it uncharged.
+        workspaceId: typeof context?.workspaceId === "string" ? context.workspaceId : undefined,
+        actorId: context?.actor?.actorUserId ?? undefined,
         messages: [
           { role: "system", content: messageNudgesPromptPackV1.systemPrompt },
           { role: "user", content: userContent },

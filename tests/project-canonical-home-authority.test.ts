@@ -844,7 +844,11 @@ test("21. the /projects index links entity rows to canonical Project Home", () =
   // Its `canCreateProjects` gate is workspace-scoped project CREATION, not a
   // project-scoped decision, and is deliberately untouched by this slice.
   assert.match(projectsIndex, /const canCreateProjects = workspaceResolution\.role/);
-  assert.equal(projectsIndex.match(/resolvePreferredWorkspace/g)?.length, 2, "unchanged: import + the create gate");
+  // PD-15: the list and the create gate share ONE validated resolution of the
+  // selected workspace (the /team pattern), so the gate is never decided for a
+  // different workspace than the one listed.
+  assert.equal(projectsIndex.match(/resolveCanonicalWorkspace\(user\.id, selectedWorkspaceId\)/g)?.length, 1, "one resolution for list + create gate");
+  assert.doesNotMatch(projectsIndex, /resolvePreferredWorkspace/);
 });
 
 test("22. Workspace Home's direct-Project links are canonical", () => {

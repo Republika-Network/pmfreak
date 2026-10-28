@@ -1,6 +1,7 @@
-import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { canCreateMoreProjects } from "@/lib/feature-gates";
+import { createProjectWithinLimit, type ProjectCreateQuotaResult } from "@/lib/quota/project-quota";
 import { resolveWriteWorkspace } from "@/lib/workspaces/resolve-write-workspace";
+import { canWriteProjectData } from "@/lib/workspace-access";
 import { ensureDefaultPmo, getPmoById } from "@/lib/pmos/pmo-service";
 import type { ProjectRow } from "@/lib/db/database-contract";
 
@@ -97,7 +98,10 @@ export async function createMinimalProject(
   }
 
   const ensured = await resolveWriteWorkspace(userId);
-  const supabase = await createSupabaseServerClient();
+  // RLS refuses the insert for viewers (F21); refuse first, with an honest message.
+  if (ensured.role && !canWriteProjectData(ensured.role)) {
+    return { ok: false, error: "Your role in this workspace can't create projects.", failureClass: "insufficient_role" };
+  }
 
   let resolvedPmoId: string;
   if (pmoId) {
@@ -116,22 +120,30 @@ export async function createMinimalProject(
     resolvedPmoId = defaultPmo.id;
   }
 
-  const { data, error } = await supabase
-    .from("projects")
-    .insert({
-      user_id: userId,
-      workspace_id: ensured.workspaceId,
-      pmo_id: resolvedPmoId,
+  // The check above is a fast refusal; the limit is enforced here, atomically (Q12).
+  let created: ProjectCreateQuotaResult;
+  try {
+    created = await createProjectWithinLimit({
+      actorUserId: userId,
+      workspaceId: ensured.workspaceId,
+      pmoId: resolvedPmoId,
       name,
       description,
-      onboarding_payload: onboardingPayload ?? null,
-    })
-    .select("id,user_id,workspace_id,pmo_id,name,description,status,methodology,icon,color,onboarding_payload,created_at,updated_at")
-    .single<ProjectRow>();
-
-  if (error || !data) {
-    return { ok: false, error: error?.message ?? "Unable to create project.", failureClass: "persistence_failed" };
+      onboardingPayload: onboardingPayload ?? null,
+    });
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : "Unable to create project.", failureClass: "persistence_failed" };
+  }
+  if (!created.ok) {
+    if (created.reason === "project_limit_reached") return { ok: false, error: "Project limit reached for your plan.", failureClass: "upgrade_required" };
+    if (created.reason === "insufficient_role") return { ok: false, error: "Your role in this workspace can't create projects.", failureClass: "insufficient_role" };
+    return {
+      ok: false,
+      error: "Selected PMO was not found.",
+      failureClass: "validation_failed",
+      fieldErrors: [{ field: "pmoId", message: "Selected PMO was not found in this workspace." }],
+    };
   }
 
-  return { ok: true, project: data, workspaceId: ensured.workspaceId, role: ensured.role };
+  return { ok: true, project: created.project, workspaceId: ensured.workspaceId, role: ensured.role };
 }

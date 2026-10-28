@@ -50,14 +50,18 @@ test("signup/actions.ts no longer calls getAuthUser() for post-signup destinatio
   const src = read("src/app/signup/actions.ts");
   assert.doesNotMatch(src, /import\s*\{[^}]*getAuthUser/, "must not import getAuthUser");
   assert.doesNotMatch(src, /await getAuthUser\(\)/, "must not depend on a cookie-backed session read immediately after signUp()");
-  assert.match(src, /data\.user\s*\?\s*\{\s*id:\s*data\.user\.id,\s*email:\s*data\.user\.email/, "must build identity directly from signUp's own response");
+  // Since PR-4 (F6) the identity is a server-verified context built from the
+  // response's own user, so operator checks downstream can trust it.
+  assert.match(src, /data\.user\s*\?\s*\(buildAuthUserContext\(data\.user,\s*\{\s*verifiedByAuthServer:\s*true\s*\}\)\s*\?\?\s*\{\s*id:\s*data\.user\.id/, "must build identity directly from signUp's own response");
 });
 
 test("api/login/route.ts no longer calls getAuthUser() for post-login destination resolution", () => {
   const src = read("src/app/api/login/route.ts");
   assert.doesNotMatch(src, /import\s*\{[^}]*getAuthUser/, "must not import getAuthUser");
   assert.doesNotMatch(src, /await getAuthUser\(\)/, "must not depend on a cookie-backed session read immediately after signInWithPassword()");
-  assert.match(src, /data\.user\s*\?\s*\{\s*id:\s*data\.user\.id,\s*email:\s*data\.user\.email/, "must build identity directly from signInWithPassword's own response");
+  // Since PR-4 (F6) the identity is a server-verified context built from the
+  // response's own user, so operator checks downstream can trust it.
+  assert.match(src, /data\.user\s*\?\s*\(buildAuthUserContext\(data\.user,\s*\{\s*verifiedByAuthServer:\s*true\s*\}\)\s*\?\?\s*\{\s*id:\s*data\.user\.id/, "must build identity directly from signInWithPassword's own response");
 });
 
 test("resolveOnboardingState resolves correctly from only {id, email} — exactly what a sign-in/sign-up response provides, no session/cookie read involved", async () => {

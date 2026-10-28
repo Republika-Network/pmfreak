@@ -1,4 +1,5 @@
 import { AccessDeniedError } from "@/aoc/runtime-consumer";
+import { PROJECT_ARCHIVED_CODE, isArchivedProjectStatus } from "@/lib/projects/archived-project";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { denyFromAccessError, denyResponse } from "@/lib/security/deny-response";
 import { requireAuthenticatedUser } from "@/lib/security/server-authorization";
@@ -44,12 +45,17 @@ async function authorize(projectId: string, workspaceId: string, permission: "re
     userId = user.id;
     const supabase = await createSupabaseServerClient();
     const [{ data: project }, { data: membership }] = await Promise.all([
-      supabase.from("projects").select("workspace_id").eq("id", projectId).eq("workspace_id", workspaceId).maybeSingle(),
+      supabase.from("projects").select("workspace_id, status").eq("id", projectId).eq("workspace_id", workspaceId).maybeSingle(),
       supabase.from("workspace_memberships").select("role").eq("workspace_id", workspaceId).eq("user_id", user.id).maybeSingle(),
     ]);
     if (!project || !membership?.role) throw new AccessDeniedError("Project workspace mismatch.", { reason: "project_scope_violation" });
     if (permission === "write" && !["owner", "admin", "pm"].includes(String(membership.role))) {
       throw new AccessDeniedError("Operational write role denied.", { reason: "role_missing_write_permission" });
+    }
+    // PD-25: no new captures or chain writes on an archived project (409 via denyFromAccessError);
+    // can_write_operational_project refuses the same in the database.
+    if (permission === "write" && isArchivedProjectStatus(project.status)) {
+      throw new AccessDeniedError("Project is archived.", { reason: PROJECT_ARCHIVED_CODE });
     }
     return { user, supabase, role: String(membership.role) };
   } catch (error) {

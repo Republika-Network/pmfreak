@@ -67,7 +67,7 @@ waits for AI intelligence.
 | Step | Phase | Required | Evidence (real rows) | CTA route | Min. role for CTA | Blocked by |
 |---|---|---|---|---|---|---|
 | `workspace_created` | Foundation | essential | workspace + valid membership (evaluation context) | — | — | — |
-| `pmo_created` | Foundation | essential (team) / optional (individual) | `pmos` with `status='active'` | `/create-command-center` | pm | — |
+| `pmo_created` | Foundation | essential (team) / optional (individual) | `pmos` with `status='active'` | `/create-command-center` | admin | — |
 | `member_invited` | Foundation | optional; n/a for solo `owner_type='personal'` | 2nd `workspace_memberships` row, or `workspace_invitations` `status='pending'` (shows "pending acceptance" note) | `/team` | admin | — |
 | `project_created` | Execution | essential | `projects` with `status != 'archived'` | `/projects/new` | pm | — |
 | `task_created` | Execution | essential | `execution_tasks` row | `/command-center` | pm | project |

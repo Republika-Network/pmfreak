@@ -961,31 +961,47 @@ test("D1. TENANT_BINDING and ROLE_BINDING come from the invitation record, serve
   assert.ok(inviteAcceptPath.startsWith("/accept-invite/"), `the operator emitted no usable accept path: ${inviteAcceptPath}`);
 
   const accepted = await boundedFetch(`${base}${inviteAcceptPath}`, { headers: { cookie }, redirect: "manual" });
-  assert.ok(
-    [302, 303, 307, 308].includes(accepted.status),
-    `the participant-facing accept route did not redirect on success: ${accepted.status}`,
-  );
-  // WHERE it redirects is the actual contract. Accepting any 3xx would let a regression
-  // that bounces the participant to /login, to an error destination, or to a failed invite
-  // route pass as a successful acceptance. The shipped route ends in redirect("/team").
-  const location = accepted.headers.get("location");
-  assert.ok(location, "the accept route redirected without a Location header");
-  const destination = new URL(location!, base).pathname;
+  // The accept route RENDERS its own success (PD-9). It used to `redirect("/team")`, which
+  // left the participant in whatever workspace the preferred-workspace cookie — or, with
+  // none, the oldest membership — named, instead of the one they had just joined. The
+  // page now consumes the token and hands off to the sanctioned workspace switcher, a POST
+  // server action, because a Server Component render cannot write the selection cookie.
+  // Any redirect here — to /login, an onboarding step, or an error page — is a regression.
+  assert.equal(accepted.status, 200, `the participant-facing accept route did not render its success: ${accepted.status}`);
+  const acceptedHtml = await accepted.text();
+  assert.match(acceptedHtml, /Invitation accepted/, "the accept route rendered something other than its success");
+  // The selection form must name the INVITED tenant — and it can only have come from the
+  // invitation record, because the request carried nothing but the token.
+  const selectedId = acceptedHtml.match(/name="workspaceId" value="([0-9a-f-]{36})"/)?.[1];
+  assert.equal(selectedId, TENANT_A.workspaceId, "the accept route offered to open a workspace other than the invited tenant");
+  const actionField = acceptedHtml.match(/name="(\$ACTION_ID_[0-9a-f]+)"/)?.[1];
+  assert.ok(actionField, "the accept route rendered no workspace-selection server action");
 
-  // There is now exactly ONE successful destination: the accept page's own
-  // `redirect("/team")`.
-  //
-  // This used to accept the onboarding destinations too, because `(protected)/layout.tsx`
-  // rendered concurrently with the page and its onboarding redirect raced — and beat — the
-  // acceptance. That race was `D1-INVITE-ACCEPT-LAYOUT-RACE`: the layout's answer could be
-  // returned before the membership committed, so a "successful" redirect proved nothing
-  // about admission. The layout now exempts `/accept-invite/<token>` from workspace
-  // onboarding, so the page always owns the outcome and the weaker set would only hide a
-  // regression of exactly that defect.
+  // Submit the selection exactly as the page's form does (its no-JavaScript form post).
+  const selectionBody = new FormData();
+  selectionBody.set(actionField!, "");
+  selectionBody.set("workspaceId", selectedId!);
+  const selected = await boundedFetch(`${base}${inviteAcceptPath}`, {
+    method: "POST",
+    headers: { cookie, origin: base },
+    body: selectionBody,
+    redirect: "manual",
+  });
+  assert.ok(
+    [302, 303, 307, 308].includes(selected.status),
+    `the workspace selection after acceptance did not redirect: ${selected.status}`,
+  );
+  const selectionCookie = selected.headers.getSetCookie().map((c) => c.split(";")[0]!).find((c) => c.startsWith("pmfreak.workspaceId="));
+  assert.equal(selectionCookie, `pmfreak.workspaceId=${TENANT_A.workspaceId}`, "accepting did not select the invited tenant");
+  const location = selected.headers.get("location");
+  assert.ok(location, "the workspace selection redirected without a Location header");
+  const destination = new URL(location!, base).pathname;
+  // There is exactly ONE successful destination: the switcher's own `redirect("/command-center")`,
+  // now evaluated for the invited tenant. A switcher refusal lands on /workspaces?error=….
   assert.equal(
     destination,
-    "/team",
-    `the accept route must land on its own canonical success destination, not an onboarding redirect: ${destination}`,
+    "/command-center",
+    `the selection must land on the switcher's canonical success destination, not a refusal: ${destination}`,
   );
   assert.notEqual(destination, "/login", "the accept route bounced the participant to login");
   assert.notEqual(destination, "/trial-inactive", "the accept route landed the participant on a denial page");
@@ -1030,7 +1046,7 @@ test("D1. TENANT_BINDING and ROLE_BINDING come from the invitation record, serve
   // chain to one continuation, and refuses to call any redirecting path "final". The same
   // authenticated participant cookie is used for every request — a fresh session would
   // prove someone could reach the page, not that THIS participant can.
-  const chain = await followParticipantDestination({ base, cookie, location: location! });
+  const chain = await followParticipantDestination({ base, cookie: `${cookie}; ${selectionCookie}`, location: location! });
   const finalDestination = chain.finalDestination;
   const finalStatus = chain.finalStatus;
 
@@ -1042,7 +1058,7 @@ test("D1. TENANT_BINDING and ROLE_BINDING come from the invitation record, serve
   EVIDENCE.inviteDestinationRedirectHops = String(chain.hops);
   EVIDENCE.inviteFinalDestination = finalDestination;
   EVIDENCE.inviteFinalDestinationStatus = String(finalStatus);
-  EVIDENCE.inviteAcceptanceSurface = `PARTICIPANT_FACING_ROUTE GET ${inviteAcceptPath.replace(/\/[^/]+$/, "/<token>")} -> ${accepted.status} Location ${chain.firstDestination} (/team is the ONLY successful acceptance destination: the invite page owns its own success redirect, and a workspace-onboarding destination is NOT an accepted outcome for this route). THE RETURNED DESTINATION WAS THEN WALKED TO A TERMINAL RESPONSE with the same participant session: ${chain.firstDestination}${chain.hops > 0 ? ` -> ${finalDestination}` : ""} -> ${finalStatus} (every hop same-origin, bounded to ${chain.hops} continuation(s), never an authentication-loss destination)`;
+  EVIDENCE.inviteAcceptanceSurface = `PARTICIPANT_FACING_ROUTE GET ${inviteAcceptPath.replace(/\/[^/]+$/, "/<token>")} -> ${accepted.status} -> select ${selected.status} Location ${chain.firstDestination} (the accept page renders 200 and selects the invited tenant through the workspace switcher; /command-center is the ONLY successful selection destination). THE RETURNED DESTINATION WAS THEN WALKED TO A TERMINAL RESPONSE with the same participant session: ${chain.firstDestination}${chain.hops > 0 ? ` -> ${finalDestination}` : ""} -> ${finalStatus} (every hop same-origin, bounded to ${chain.hops} continuation(s), never an authentication-loss destination)`;
   EVIDENCE.inviteAcceptanceIdentitySource = "SESSION_DERIVED (requireAuthUser on the shipped route), not caller-supplied";
 });
 

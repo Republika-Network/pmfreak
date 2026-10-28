@@ -153,15 +153,17 @@ test("wizard handleCreate gates redirect on status=success", () => {
 
 test("wizard handleCreate does NOT clear draft on failure", () => {
   const guardIdx = wizard.indexOf('result.status !== "success"');
-  const callIdx = wizard.indexOf("clearDraft();", guardIdx);
+  // PD-21: the draft is the user's own scoped key.
+  const callIdx = wizard.indexOf("clearScopedDraft(draftKey);", guardIdx);
   assert.ok(guardIdx > 0, "failure guard must exist");
-  assert.ok(callIdx > guardIdx, "clearDraft() invocation must be inside the success path");
+  assert.ok(callIdx > guardIdx, "clearScopedDraft() invocation must be inside the success path");
 });
 
 test("wizard handleCreate does NOT write localStorage on failure", () => {
-  const guardIdx = wizard.indexOf('result.status !== "success"');
-  const localStorageIdx = wizard.indexOf('localStorage.setItem("pmfreak.pmo.tenant"');
-  assert.ok(localStorageIdx > guardIdx, "localStorage write must be inside the success path");
+  // PD-21: the write-only global cache of the activated tenant is gone entirely, so
+  // nothing about the tenant is left on the device on failure or on success.
+  assert.doesNotMatch(wizard, /localStorage\./, "the wizard must not touch localStorage directly");
+  assert.ok(!wizard.includes('"pmfreak.pmo.tenant"'), "no global tenant cache");
 });
 
 test("wizard shows blocking error banner when persistence fails", () => {

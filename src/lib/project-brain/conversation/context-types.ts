@@ -14,6 +14,7 @@ export const PROJECT_BRAIN_SOURCE_FAMILIES = [
   "PROJECT",
   "ONBOARDING",
   "EVIDENCE",
+  "DOCUMENT",
   "SIGNAL",
   "RISK",
   "ISSUE",
@@ -55,6 +56,7 @@ export const SOURCE_KIND_BY_FAMILY: Readonly<Record<ProjectBrainSourceFamily, Pr
   PROJECT: "state",
   ONBOARDING: "plan",
   EVIDENCE: "state",
+  DOCUMENT: "state",
   SIGNAL: "assessment",
   RISK: "assessment",
   ISSUE: "assessment",
@@ -124,6 +126,12 @@ export type ProjectBrainContext = {
   unavailable: ProjectBrainSourceFamily[];
   /** True when any family or the total budget dropped records. */
   truncated: boolean;
+  /**
+   * PD-24: how many in-scope records each family loaded BEFORE the budget, so a
+   * summary can state the real number instead of the number that fit. Absent in
+   * older/synthetic contexts (callers then fall back to the selected sources).
+   */
+  loadedCounts?: Partial<Record<ProjectBrainSourceFamily, number>>;
   history: ProjectBrainHistoryMessage[];
   /**
    * PB-REASON-02: the report map for THIS turn (see reported-context.ts). Absent

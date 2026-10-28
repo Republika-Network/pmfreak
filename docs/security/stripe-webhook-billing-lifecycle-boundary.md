@@ -268,8 +268,8 @@ cancellation) is a deliberate policy, not a mapping gap.
 ## Why `companyId`, not `workspaceId`
 
 `company_subscriptions` and the checkout/portal routes use `companyId`
-throughout (sourced from `AuthUserContext.companyId`, itself
-`user_metadata.company_id` falling back to the user's own id at signup) —
+throughout (sourced from `AuthUserContext.companyId`, itself the authenticated
+user's own id — since PR-1 never the user-editable `user_metadata.company_id`) —
 this predates and is a distinct identifier space from the
 `workspaces`/`workspace_memberships` tables used for role-based authorization
 (Perilla 1–5). `requireBillingManageMembership` in

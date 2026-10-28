@@ -1,6 +1,12 @@
 import { CreatePmoWizard } from "@/components/pmfreak/pmo/create-pmo-wizard";
+import { requireAuthUser } from "@/lib/auth";
+import { resolvePreferredWorkspace } from "@/lib/workspaces/preferred-workspace";
+import { draftStorageKey } from "@/lib/drafts/draft-scope";
 
-export default function CreatePmoPage() {
+export default async function CreatePmoPage() {
+  // The unsaved draft belongs to this user in the workspace savePmoTenant writes to (PD-21).
+  const user = await requireAuthUser();
+  const draftKey = draftStorageKey("command-center", user.id, (await resolvePreferredWorkspace(user.id)).workspaceId);
   return (
     <section className="relative overflow-hidden rounded-3xl border border-slate-200 bg-[#050507] p-6 shadow-[0_40px_120px_rgba(0,0,0,0.55)] md:p-10">
       <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[size:48px_48px]" />
@@ -21,7 +27,7 @@ export default function CreatePmoPage() {
           </p>
         </header>
 
-        <CreatePmoWizard />
+        <CreatePmoWizard key={draftKey ?? "no-draft"} draftKey={draftKey} />
       </div>
     </section>
   );

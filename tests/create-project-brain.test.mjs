@@ -54,7 +54,8 @@ test("saveProjectOnboarding returns recoverable_failure on unexpected exception"
 
 test("saveProjectOnboarding returns success only after confirmed DB insert", () => {
   const returnSuccessIdx = saveProject.indexOf('status: "success", projectId: data.id');
-  const insertIdx = saveProject.indexOf('.from("projects")');
+  // Q12: the insert is the atomic create_project_within_limit call.
+  const insertIdx = saveProject.indexOf("createProjectWithinLimit({");
   assert.ok(insertIdx > 0, "insert call must exist");
   assert.ok(returnSuccessIdx > 0, "return success statement must exist");
   assert.ok(returnSuccessIdx > insertIdx, "success return must appear after the insert call");
@@ -121,7 +122,8 @@ test("wizard has exactly one redirect to the command center after persistence", 
 
 test("wizard does NOT clear draft on failure", () => {
   const guardIdx = wizard.indexOf('result.status !== "success"');
-  const clearDraftInSuccessPathIdx = wizard.indexOf("clearDraft();", guardIdx);
+  // PD-21: the draft is the user's own scoped key.
+  const clearDraftInSuccessPathIdx = wizard.indexOf("clearScopedDraft(draftKey);", guardIdx);
   assert.ok(guardIdx > 0, "failure guard must exist");
   assert.ok(clearDraftInSuccessPathIdx > guardIdx, "clearDraft() must only appear after the failure guard (success path)");
 });
@@ -134,7 +136,7 @@ test("wizard does NOT call clearDraft in the failure return branch", () => {
   assert.ok(successPathIdx > guardIdx, "success path comment must appear after failure guard");
 
   const failureBranch = wizard.slice(guardIdx, successPathIdx);
-  assert.ok(!failureBranch.includes("clearDraft()"), "clearDraft must NOT appear in failure branch");
+  assert.ok(!failureBranch.includes("clearDraft()") && !failureBranch.includes("clearScopedDraft("), "clearDraft must NOT appear in failure branch");
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

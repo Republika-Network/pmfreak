@@ -115,7 +115,9 @@ test("savePmoTenant syncs the existing default PMO's name/type on re-activation 
 test("duplicateProject falls back to unassigned rather than copying an archived PMO into the new project", () => {
   const fn = projectAdminService.slice(projectAdminService.indexOf("export async function duplicateProject"));
   assert.ok(/pmo\.status === "archived"\) targetPmoId = null/.test(fn), "must null out targetPmoId when the source project's PMO is archived");
-  assert.ok(/pmo_id:\s*targetPmoId/.test(fn), "the insert must use the archived-checked targetPmoId, not source.pmo_id directly");
+  // PD-14: the insert now happens in duplicate_project_within_limit, fed the checked id.
+  assert.ok(/duplicateProjectWithinLimit\(\{[^}]*\btargetPmoId \}\)/.test(fn), "the insert must use the archived-checked targetPmoId, not source.pmo_id directly");
+  assert.ok(!/pmo_id:\s*source\.pmo_id/.test(fn), "source.pmo_id must not reach the insert");
 });
 
 // ─── Finding: the context_conversations CHECK constraint's comment described

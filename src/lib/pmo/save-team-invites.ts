@@ -3,7 +3,8 @@
 import { getAuthUser } from "@/lib/auth";
 import { resolveCanonicalWorkspace } from "@/lib/workspaces/canonical-workspace-resolver";
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/admin";
-import type { PmoTeamRole, PmoDomainFocus } from "./team-roles";
+import { requireWorkspaceRole } from "@/lib/workspace-access";
+import { PMO_DOMAIN_FOCUS_OPTIONS, PMO_ROLES_ORDERED, type PmoTeamRole, type PmoDomainFocus } from "./team-roles";
 
 export type PmoTeamInviteInput = {
   email: string;
@@ -27,9 +28,27 @@ export async function saveTeamInvites(
       return { ok: false, error: "No active workspace found" };
     }
 
+    // Authorization BEFORE any service-role write (F5): inviting the PMO team requires an
+    // owner/admin membership in the resolved workspace, read from workspace_memberships.
+    try {
+      await requireWorkspaceRole(resolution.workspaceId, "admin");
+    } catch {
+      return { ok: false, error: "Only a workspace owner or admin can invite the PMO team." };
+    }
+
+    // Server-side validation: role and domain focus must come from the closed sets; any
+    // other value rejects the whole batch rather than being silently written.
+    if (!Array.isArray(invites)) return { ok: false, error: "Invalid invites." };
+    const isValidInvite = (i: PmoTeamInviteInput) =>
+      typeof i?.email === "string" &&
+      (PMO_ROLES_ORDERED as readonly string[]).includes(i.role) &&
+      Array.isArray(i.domainFocus) &&
+      i.domainFocus.every((focus) => (PMO_DOMAIN_FOCUS_OPTIONS as readonly string[]).includes(focus));
+    if (!invites.every(isValidInvite)) return { ok: false, error: "Invalid invite role or domain focus." };
+
     const validInvites = invites.filter((i) => {
       const email = i.email.trim().toLowerCase();
-      return email.length > 0 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && i.role;
+      return email.length > 0 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
     });
 
     if (validInvites.length === 0) {

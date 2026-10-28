@@ -51,72 +51,76 @@ surface for Perilla 5 found:
 None of these were a role-spoofing bypass of `isFounderOrInternalUser` itself
 (that guard was already correctly reading only the internal email domain
 list and `FOUNDER_EMAIL_ALLOWLIST`, never `user.role`/metadata/body fields).
+(F6 later found that trusting the email domain and an email allowlist was
+itself the weakness. See "Founder/internal access" below.)
 The primary finding is #1: a founder-only read surface that simply had no
 founder check.
 
 ## Founder/internal access: trusted vs. untrusted sources
 
+> **F6 / PR-4 supersedes the email-based model this document originally
+> described.** Operator authority used to follow from any address ending in
+> `@pmfreak.ai` / `@onchainfest.xyz` or listed in `FOUNDER_EMAIL_ALLOWLIST`,
+> without checking email confirmation. Anyone who could register such an
+> address (or one the allowlist named) became an operator of cross-tenant,
+> service-role surfaces. Neither source is read any more.
+
 | Source | Trusted for founder/internal access? |
 | --- | --- |
-| `INTERNAL_EMAIL_DOMAINS` (`@pmfreak.ai`, `@onchainfest.xyz`), matched server-side | ✅ Yes |
-| `FOUNDER_EMAIL_ALLOWLIST` environment variable, parsed server-side | ✅ Yes |
+| The GoTrue-verified user id (`supabase.auth.getUser()` via `getAuthUser()` / `requireAuthUser()`), listed in the server-only `FOUNDER_OPERATOR_USER_IDS` env var | ✅ Yes — the only source |
+| `email_confirmed_at` of that same verified user | Required (defense in depth), never sufficient on its own |
+| Any email address or domain (`@pmfreak.ai`, `@onchainfest.xyz`, `FOUNDER_EMAIL_ALLOWLIST`) | ❌ Never (since PR-4) |
+| A `getSession()` user (decoded from the cookie, not verified by GoTrue) | ❌ Never |
 | `user_metadata.role` / `AuthUserContext.role` (display role) | ❌ Never |
 | `body.role` / `body.actorRole` / `body.isFounder` / `body.isAdmin` / `body.isOwner` / `body.permissions` / `body.claims` | ❌ Never |
-| `body.founderEmail` / `body.adminEmail` / `body.emailOverride` | ❌ Never — the actor's email always comes from `requireAuthUser()`'s Supabase session, not the request body |
+| `body.userId` / `body.email` / `body.founderEmail` / `body.adminEmail` / `body.emailOverride` | ❌ Never — the actor always comes from `requireAuthUser()`'s Supabase session, not the request body |
 | Query params, cookies | ❌ Never |
-| `workspace_memberships.role` | ❌ Not consulted for founder/internal access at all — workspace admin/owner is a separate concept (see `auth-role-boundary.md`); a workspace owner is not automatically a founder |
+| `workspace_memberships.role` | ❌ Not consulted for founder/internal access at all — workspace admin/owner is a separate concept (see `auth-role-boundary.md`); a workspace owner is not automatically a founder, and an operator gains no workspace role |
 
 ## The central guard: `evaluateFounderOrInternalAccess` / `isFounderOrInternalUser`
 
-`src/lib/auth.ts` exports `evaluateFounderOrInternalAccess({ email })`, the
-single decision function every founder/internal-gated surface must go
-through. Its signature is deliberately `{ email }` only:
+`src/lib/auth.ts` exports `evaluateFounderOrInternalAccess(user)`, the single
+decision function every founder/internal-gated surface goes through
+(`isFounderOrInternalUser(user)` is `evaluateFounderOrInternalAccess(user).allowed`;
+`requireFounderProgramOperator` delegates to it).
 
 ```ts
 export type FounderAccessDecision =
   | "allow"
-  | "deny_missing_email"
-  | "deny_invalid_email"
-  | "deny_not_founder_or_internal";
-
-export const evaluateFounderOrInternalAccess = (input: { email?: string | null }): FounderAccessResult => { ... };
+  | "deny_unverified_identity"      // not a server-verified AuthUserContext
+  | "deny_email_unconfirmed"        // GoTrue user had no email_confirmed_at
+  | "deny_operators_not_configured" // FOUNDER_OPERATOR_USER_IDS unset/empty
+  | "deny_operators_misconfigured"  // any entry is not a UUID
+  | "deny_not_operator";            // verified, confirmed, not listed
 ```
 
-There is no `role`, `actorRole`, `isFounder`, `isAdmin`, or `permissions`
-parameter for a caller to smuggle elevated identity through — even if a
-caller attaches extra fields to the input object, the function only ever
-reads `.email`. `isFounderOrInternalUser(user: AuthUserContext)` is a thin
-wrapper (`evaluateFounderOrInternalAccess({ email: user.email }).allowed`)
-kept for the existing call sites; it never reads `user.role`.
+The decision never reads fields of the object it is given. `buildAuthUserContext`
+records `{ userId, emailConfirmed }` in a module-private `WeakMap` keyed by the
+context object, and only when the caller states the user came from GoTrue
+(`verifiedByAuthServer: true` — `getAuthUser()`, and the user returned by a
+successful sign-in / sign-up / verifyOtp). So an object literal such as
+`{ id: "<operator id>", email: "x@pmfreak.ai", email_confirmed_at: "..." }`, a
+spread copy of a real context, a context whose `id` was reassigned, or the
+layout's `getSession()` fallback user is `deny_unverified_identity`.
 
-Fail-closed behavior:
+### `FOUNDER_OPERATOR_USER_IDS`
 
-- Missing / `null` / empty / whitespace-only email → `deny_missing_email`.
-- An email that doesn't match `local@domain.tld` shape → `deny_invalid_email`.
-- A well-formed email that isn't on an internal domain or the allowlist →
-  `deny_not_founder_or_internal`.
+Comma-separated `auth.users.id` values, trimmed and lowercased. Every entry
+must be a UUID. If any entry is not (for example a leftover email), the whole
+value is rejected and every operator surface is denied. A typo can neither
+widen the set nor silently drop an entry. Unset or empty denies every
+operator surface too. Membership is exact equality on the verified id.
 
-### `FOUNDER_EMAIL_ALLOWLIST` parsing
+User ids are immutable. Changing an account's email does not change its id,
+so it cannot move operator authority to, or away from, another account.
 
-`process.env.FOUNDER_EMAIL_ALLOWLIST` is split on `,`, each entry trimmed and
-lowercased, empty entries dropped, and the result loaded into a `Set`.
-Membership is checked with `Set.has(normalizedEmail)` — **exact string
-equality only**. `victor@example.com` matches the allowlist entry
-`victor@example.com`; `victor@example.com.evil.com` does not, because it is
-a different string, not a substring or prefix match.
-
-### Internal domain matching
-
-`INTERNAL_EMAIL_DOMAINS = ["@pmfreak.ai", "@onchainfest.xyz"]`, checked with
-`normalizedEmail.endsWith(domain)` — note the domain literal includes the
-leading `"@"`. This is what makes the match spoof-resistant in both
-directions:
-
-- `attacker@pmfreak.ai.evil.com` does **not** end with the literal string
-  `"@pmfreak.ai"` (it ends with `.evil.com`) → denied.
-- `attacker@evilpmfreak.ai` does **not** end with `"@pmfreak.ai"` either —
-  the character immediately before `pmfreak.ai` is `l`, not `@` → denied.
-- `user@pmfreak.ai` ends with `"@pmfreak.ai"` exactly → allowed.
+**Deployment requirement.** With PR-4 deployed and `FOUNDER_OPERATOR_USER_IDS`
+unset, *no one* is an operator (founder dashboards return 404/403, founder
+program operator APIs 403, governance-lab and operational-flow 404, and
+operators lose the trial-expiry bypass and the founder capability profile).
+Before release, set it in each environment to the ids of the intended
+operators, each of whose email is confirmed. See
+`docs/release/pilot-operational-runbook.md`.
 
 ## Why `user_metadata.role` / display role / body claims don't count
 
@@ -263,17 +267,23 @@ invite acceptance vs. founder administration of other people's invites).
   silent no-ops against a non-existent `execute_sql` RPC).
 - Legitimate founders/internal users (internal domain or
   `FOUNDER_EMAIL_ALLOWLIST`) are unaffected — their access is unchanged.
+  (Superseded by PR-4 / F6: operators are now exactly the confirmed users
+  listed in `FOUNDER_OPERATOR_USER_IDS`.)
 
 ## Tests
 
 `tests/admin-founder-endpoint-boundary.test.mjs` covers:
 
-- `evaluateFounderOrInternalAccess`/`isFounderOrInternalUser` behaviorally:
-  missing/invalid email, internal-domain exact match, both directions of
-  domain spoofing, allowlist exact match and parsing (whitespace, empty
-  entries, casing), and that extra fields on the input
-  (`actorRole`/`isFounder`/`isAdmin`/`role`/`permissions`) never influence
-  the decision.
+- `evaluateFounderOrInternalAccess`/`isFounderOrInternalUser` behaviorally
+  (rewritten for F6 / PR-4): a verified, confirmed, listed user is allowed;
+  unlisted `@pmfreak.ai` / `@onchainfest.xyz` users, `FOUNDER_EMAIL_ALLOWLIST`
+  entries, unconfirmed users, absent / empty / malformed
+  `FOUNDER_OPERATOR_USER_IDS`, fabricated / copied / field-mutated /
+  `getSession()`-derived contexts are denied with their specific decision. Display
+  role and extra fields (`actorRole`/`isFounder`/`isAdmin`/`role`/`permissions`)
+  never influence the decision.
+- `tests/security-regression/f6-operator-access.test.mjs` drives the real
+  founder routes against a disposable Supabase stack (see that suite's README).
 - The extracted pure validators (`requireNonEmptyId`,
   `isValidTrialExtensionDays`, `sanitizeAuditReason`, `isValidInviteEmail`)
   directly, including the `NaN`/`Infinity`/non-integer/out-of-range trial

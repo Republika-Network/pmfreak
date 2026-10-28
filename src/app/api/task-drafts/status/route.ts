@@ -59,7 +59,8 @@ export async function POST(request: Request) {
   }
 
   try {
-    await requireProjectAccess(draft.project_id, "read");
+    // Changing a draft's status is a project write (F22-B); viewers only read drafts.
+    await requireProjectAccess(draft.project_id, "write");
   } catch (error) {
     if (error instanceof Error && error.message.includes("denied")) {
       return Response.json({ ok: false, error: "Access denied.", failureClass: "unauthorized" }, { status: 403 });

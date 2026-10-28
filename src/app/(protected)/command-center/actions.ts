@@ -6,9 +6,11 @@ import { canCreateMoreProjects } from "@/lib/feature-gates";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { resolveRoutedWorkspace } from "@/lib/workspaces/routed-workspace";
 import { ensureDefaultPmo } from "@/lib/pmos/pmo-service";
+import { createProjectWithinLimit, type ProjectCreateQuotaResult } from "@/lib/quota/project-quota";
 import { generateAndPersistOperationalGovernanceBrief } from "@/lib/projects/first-insight";
 import { ingestProjectSetupContext } from "@/lib/projects/ingest-project-setup-context";
 import { workspaceCommandCenterPath } from "@/lib/workspace/command-center-paths";
+import { canWriteProjectData } from "@/lib/workspace-access";
 
 const asField = (value: FormDataEntryValue | null) => String(value ?? "").trim();
 
@@ -42,6 +44,10 @@ export async function activateContextAction(workspaceId: string, formData: FormD
       }),
     );
     redirect("/workspaces?error=" + encodeURIComponent("You cannot create a project in that workspace"));
+  }
+  // RLS refuses the insert for viewers (F21); refuse first, with an honest message.
+  if (access.role && !canWriteProjectData(access.role)) {
+    redirect(workspaceCommandCenterPath(workspaceId, { error: "Your role in this workspace can't create projects" }));
   }
 
   const supabase = await createSupabaseServerClient();
@@ -77,15 +83,36 @@ export async function activateContextAction(workspaceId: string, formData: FormD
 
   const ensured = { workspaceId: access.workspaceId, role: access.role };
   const defaultPmo = await ensureDefaultPmo(ensured.workspaceId, user.id);
-  const { data, error } = await supabase
-    .from("projects")
-    .insert({ user_id: user.id, workspace_id: ensured.workspaceId, pmo_id: defaultPmo.id, name, description })
-    .select("id")
-    .single<{ id: string }>();
-
-  if (error || !data?.id) {
-    redirect(workspaceCommandCenterPath(ensured.workspaceId, { error: error?.message ?? "Unable to activate context" }));
+  // The canCreateMoreProjects check above is a fast refusal; the limit is enforced here,
+  // atomically, together with the insert (Q12). redirect() throws, so it stays outside the try.
+  let created: ProjectCreateQuotaResult | null = null;
+  let createError: string | null = null;
+  try {
+    created = await createProjectWithinLimit({
+      actorUserId: user.id,
+      workspaceId: ensured.workspaceId,
+      pmoId: defaultPmo.id,
+      name,
+      description,
+      onboardingPayload: null,
+    });
+  } catch (error) {
+    createError = error instanceof Error ? error.message : null;
   }
+  if (!created) {
+    redirect(workspaceCommandCenterPath(ensured.workspaceId, { error: createError ?? "Unable to activate context" }));
+  }
+  if (!created.ok) {
+    if (created.reason === "project_limit_reached") {
+      redirect(`/projects?error=${encodeURIComponent("upgrade_required")}&feature=${encodeURIComponent("personal_projects")}&requiredPlan=pro`);
+    }
+    redirect(
+      workspaceCommandCenterPath(ensured.workspaceId, {
+        error: created.reason === "insufficient_role" ? "Your role in this workspace can't create projects" : "Unable to activate context",
+      }),
+    );
+  }
+  const data = { id: created.project.id };
 
   // Feed the founder's setup context into the real intelligence loop (vault
   // RAID extraction + operational evidence chain) so the Command Center they

@@ -3,6 +3,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { resolvePostAuthDestination } from "@/lib/auth/resolve-post-auth-destination";
 import { isSafeContinuationRoute } from "@/lib/auth/validate-continuation-route";
 import { debugAuthDecision } from "@/lib/auth/auth-decision-debug";
+import { buildAuthUserContext } from "@/lib/auth";
 import { resolveOnboardingState } from "@/lib/auth/resolve-onboarding-state";
 import { resolveCanonicalWorkspace } from "@/lib/workspaces/canonical-workspace-resolver";
 import { logContinuityIssue } from "@/lib/auth/auth-continuity-diagnostics";
@@ -45,7 +46,7 @@ export async function POST(request: Request) {
   // identical rationale in src/app/signup/actions.ts and "Login/signup
   // session-visibility verification" in
   // docs/audits/remediation/pmf-001-002-canonical-onboarding-honest-activation.md.
-  const authUser = data.user ? { id: data.user.id, email: data.user.email ?? null } : null;
+  const authUser = data.user ? (buildAuthUserContext(data.user, { verifiedByAuthServer: true }) ?? { id: data.user.id, email: null }) : null;
   // signInWithPassword above already wrote the session cookie via this
   // request's cookies() adapter. An uncaught exception anywhere after that
   // point — before this function returns — discards that write entirely:

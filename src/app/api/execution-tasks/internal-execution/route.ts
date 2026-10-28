@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { requireAuthenticatedUser } from "@/lib/security/server-authorization";
+import { PROJECT_ARCHIVED_CODE, PROJECT_ARCHIVED_MESSAGE, isArchivedProjectStatus } from "@/lib/projects/archived-project";
 import type {
   ExecutionTaskRow,
   InternalTaskExecutionRow,
@@ -21,17 +22,19 @@ const TASK_COLUMNS =
 const ROUTE_ID = "/api/execution-tasks/internal-execution";
 const WRITE_ROLES = new Set(["owner", "admin", "pm"]);
 
+type TaskProjectAccess = { ok: true } | { ok: false; reason: "denied" | "archived" };
+
 async function canAccessTaskProject(
   task: Pick<ExecutionTaskRow, "workspace_id" | "project_id">,
   userId: string,
   permission: "read" | "write",
-): Promise<boolean> {
+): Promise<TaskProjectAccess> {
   const supabase = await createSupabaseServerClient();
   const [{ data: project, error: projectError }, { data: membership, error: membershipError }] =
     await Promise.all([
       supabase
         .from("projects")
-        .select("id,workspace_id")
+        .select("id,workspace_id,status")
         .eq("id", task.project_id)
         .eq("workspace_id", task.workspace_id)
         .maybeSingle(),
@@ -44,15 +47,24 @@ async function canAccessTaskProject(
     ]);
 
   if (projectError || membershipError || !project || !membership?.role) {
-    return false;
+    return { ok: false, reason: "denied" };
   }
 
   if (permission === "write" && !WRITE_ROLES.has(String(membership.role))) {
-    return false;
+    return { ok: false, reason: "denied" };
   }
 
-  return true;
+  // PD-25: an archived project's tasks stay readable, but take no execution commands. Checked
+  // after the role, so only an otherwise authorized writer ever sees the 409.
+  if (permission === "write" && isArchivedProjectStatus(project.status)) {
+    return { ok: false, reason: "archived" };
+  }
+
+  return { ok: true };
 }
+
+const projectArchivedTaskResponse = () =>
+  NextResponse.json({ ok: false, error: PROJECT_ARCHIVED_MESSAGE, failureClass: "project_archived", code: PROJECT_ARCHIVED_CODE }, { status: 409 });
 
 async function loadTask(taskId: string) {
   const supabase = await createSupabaseServerClient();
@@ -98,7 +110,7 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  if (!(await canAccessTaskProject(task, userId, "read"))) {
+  if (!(await canAccessTaskProject(task, userId, "read")).ok) {
     return NextResponse.json(
       { ok: false, error: "Access denied.", failureClass: "unauthorized" },
       { status: 403 },
@@ -174,7 +186,9 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (!(await canAccessTaskProject(task, userId, "write"))) {
+  const access = await canAccessTaskProject(task, userId, "write");
+  if (!access.ok && access.reason === "archived") return projectArchivedTaskResponse();
+  if (!access.ok) {
     return NextResponse.json(
       { ok: false, error: "Access denied.", failureClass: "unauthorized" },
       { status: 403 },

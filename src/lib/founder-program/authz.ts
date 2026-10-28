@@ -6,8 +6,9 @@ import { logSecurityEvent } from "@/lib/security/telemetry";
 /**
  * Founder Circle Program — route-layer authorization and fail-closed gating.
  *
- * Operator identity is founder/internal, resolved server-side from the
- * authenticated user's email only (Perilla 5 convention) — never from
+ * Operator identity is founder/internal: the GoTrue-verified user id must be
+ * listed in FOUNDER_OPERATOR_USER_IDS and its email confirmed (F6, see
+ * `evaluateFounderOrInternalAccess`) — never an email domain, never
  * client-supplied fields. Authorization is enforced BEFORE request bodies
  * are parsed. Disabled program surfaces answer with controlled responses,
  * never ambiguous 500s.

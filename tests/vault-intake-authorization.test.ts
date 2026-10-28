@@ -79,10 +79,47 @@ test("member passes authorization and reaches ingestion", async () => {
   const deps = {
     getAuthUser: async () => USER,
     requireWorkspaceMember: async () => { calls.push("requireWorkspaceMember"); return { allowed: true } as never; },
+    resolveWorkspaceRole: async () => { calls.push("resolveWorkspaceRole"); return "pm"; },
     createSupabaseServerClient: async () => ({ from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }) }) }) as never,
     ingestVaultDocument: async () => { calls.push("ingestVaultDocument"); return { ingestionStatus: "completed" } as never; },
   } as never;
   const response = await handleVaultIntake(makeRequest({ workspaceId: "ws-1", rawContent: "meeting notes" }), deps);
   assert.equal(response.status, 200);
-  assert.deepEqual(calls, ["requireWorkspaceMember", "ingestVaultDocument"]);
+  assert.deepEqual(calls, ["requireWorkspaceMember", "resolveWorkspaceRole", "ingestVaultDocument"]);
+});
+
+test("F22-B: a member without upload rights (viewer) is refused with 403 before any ingestion", async () => {
+  for (const role of ["viewer", null]) {
+    const calls: string[] = [];
+    const deps = {
+      getAuthUser: async () => USER,
+      requireWorkspaceMember: async () => { calls.push("requireWorkspaceMember"); return { allowed: true } as never; },
+      resolveWorkspaceRole: async (workspaceId: string, userId: string) => {
+        calls.push(`resolveWorkspaceRole:${workspaceId}:${userId}`);
+        return role;
+      },
+      createSupabaseServerClient: async () => { calls.push("createSupabaseServerClient"); throw new Error("must not be reached"); },
+      ingestVaultDocument: async () => { calls.push("ingestVaultDocument"); throw new Error("must not be reached"); },
+    } as never;
+    const response = await handleVaultIntake(makeRequest({ workspaceId: "ws-1", rawContent: "meeting notes" }), deps);
+    assert.equal(response.status, 403, String(role));
+    assert.equal((await response.json()).error, "insufficient_role");
+    assert.deepEqual(calls, ["requireWorkspaceMember", "resolveWorkspaceRole:ws-1:user-1"], "role resolved for the caller, nothing ingested");
+  }
+});
+
+test("F22-B: owner, admin and pm reach ingestion", async () => {
+  for (const role of ["owner", "admin", "pm"]) {
+    let ingested = false;
+    const deps = {
+      getAuthUser: async () => USER,
+      requireWorkspaceMember: async () => ({ allowed: true }) as never,
+      resolveWorkspaceRole: async () => role,
+      createSupabaseServerClient: async () => ({}) as never,
+      ingestVaultDocument: async () => { ingested = true; return { ingestionStatus: "completed" } as never; },
+    } as never;
+    const response = await handleVaultIntake(makeRequest({ workspaceId: "ws-1", rawContent: "meeting notes" }), deps);
+    assert.equal(response.status, 200, role);
+    assert.ok(ingested, role);
+  }
 });

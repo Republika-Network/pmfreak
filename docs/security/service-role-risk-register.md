@@ -28,6 +28,8 @@
 | `src/lib/billing.ts` | Stripe webhook idempotency guard — no user session context available |
 | `src/lib/workspaces.ts` | Workspace bootstrap on first login — user has no workspace yet; RLS would block |
 | `src/lib/feature-gates.ts` | `auth.admin.getUserById()` — only available via service role; no scoped alternative |
+| `src/lib/quota/upload-quota.ts` | Upload quota RPCs — EXECUTE is service_role only (PR-2) so a client can never choose its own limit or reset its own usage; actor-bound to the authenticated user's own company |
+| `src/lib/quota/project-quota.ts` | Project create (Q12) and duplicate (PD-14) quota RPCs — EXECUTE is service_role only so a client can never choose its own project limit; re-checks writer role and workspace in-transaction, serialised per actor with one shared lock |
 | `src/lib/db/supabase-server.ts` | Legacy admin client factory — bypasses PrivilegedAccessContext tracking; no active external callers confirmed |
 
 ### MEDIUM risk (7 files, after Phase 3c swaps)
@@ -35,6 +37,7 @@
 | File | Purpose |
 |------|---------|
 | `src/app/(protected)/layout.tsx` | Trial status enforcement — system writes trial expiry across workspace boundaries |
+| `src/lib/project-evidence/deleted-project-storage-cleanup.ts` | PD-26 deleted-project Storage cleanup — the project row is gone, so no project-scoped session exists; acts only on trigger-enqueued `storage_cleanup_jobs`, lists objects through a service-role-only RPC that returns nothing for a live project, re-validates every path as `<uploader>/<project>/<file>` before removal; idempotent, bounded, failures recorded and retried |
 | `src/app/(protected)/accept-invite/[token]/page.tsx` | Invitation acceptance — user not yet a member of target workspace |
 | `src/app/(protected)/early-access/page.tsx` | Founder early access dashboard — cross-workspace read-only view |
 | `src/app/api/early-access/summary/route.ts` | Founder summary API — cross-workspace system operation |
@@ -114,6 +117,9 @@ A usage is **not** legitimate under strict criteria if it reads/writes only the 
 | `src/lib/billing.ts` | L2 | Stripe webhook has no user session |
 | `src/lib/workspaces.ts` | L2 | First-login bootstrap — user has no workspace yet |
 | `src/lib/feature-gates.ts` | L1 | `auth.admin.getUserById()` only available via service role |
+| `src/lib/quota/upload-quota.ts` | L3 | Quota enforcement primitive — the actor must not hold write authority over their own usage counter or limit (F3/F20) |
+| `src/lib/quota/project-quota.ts` | L3 | Quota enforcement primitive — count, limit check and insert must be one serialised transaction the actor cannot parameterise (PD-14 duplicate, Q12 create) |
+| `src/lib/project-evidence/deleted-project-storage-cleanup.ts` | L2 | System job after a project row is gone — no user session can be scoped to a deleted project; the bucket and the job table are service-role only (PD-26) |
 | `src/lib/db/supabase-server.ts` | — | No active callers confirmed; pending deletion; no queries executed by factory itself |
 | `src/app/(protected)/layout.tsx` | L1 | Trial expiry writes cross workspace boundaries |
 | `src/app/(protected)/accept-invite/[token]/page.tsx` | L2 | Invited user not yet a member of target workspace |

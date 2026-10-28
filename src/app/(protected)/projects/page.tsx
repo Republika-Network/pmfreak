@@ -2,7 +2,9 @@ import Link from "next/link";
 import { requireAuthUser } from "@/lib/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { EmptyProjects } from "@/components/pmfreak/empty-states";
-import { resolvePreferredWorkspace } from "@/lib/workspaces/preferred-workspace";
+import { getUserWorkspaces } from "@/lib/workspaces";
+import { resolveCanonicalWorkspace } from "@/lib/workspaces/canonical-workspace-resolver";
+import { readPreferredWorkspaceId } from "@/lib/workspaces/preferred-workspace";
 import { projectHomePath } from "@/lib/projects/project-paths";
 import { createProjectAction } from "./actions";
 
@@ -24,22 +26,51 @@ type ProjectRow = {
   created_at: string;
 };
 
+/**
+ * Projects of the SELECTED workspace — the one the preferred-workspace cookie
+ * names, validated against real membership, or the canonical default when
+ * nothing is selected (the same resolution as /team and the protected shell).
+ *
+ * PD-15: this used to list `projects.user_id = me` across every workspace, so
+ * members saw only projects they had created themselves (a viewer saw none)
+ * and the list ignored the selected workspace. Every member of a workspace may
+ * read its projects (the projects select policy), so the list is the
+ * workspace's projects, read with the user-scoped client: RLS stays the
+ * enforcing boundary and a workspace the caller does not belong to yields no
+ * rows. A selection that no longer resolves to an active membership is refused
+ * rather than silently replaced by another workspace.
+ */
 export default async function ProjectsPage() {
   const user = await requireAuthUser();
   const supabase = await createSupabaseServerClient();
 
-  const { data } = await supabase
-    .from("projects")
-    .select("id, workspace_id, name, description, status, created_at")
-    .eq("user_id", user.id)
-    .order("created_at", { ascending: false });
+  const selectedWorkspaceId = await readPreferredWorkspaceId();
+  const workspaceResolution = await resolveCanonicalWorkspace(user.id, selectedWorkspaceId);
+  if ((selectedWorkspaceId && workspaceResolution.workspaceId !== selectedWorkspaceId) || !workspaceResolution.workspaceId) {
+    return (
+      <section className="rounded-3xl border border-slate-200 bg-white p-6">
+        <p className="text-sm text-slate-800">{workspaceResolution.workspaceId ? "Your selected workspace is no longer available." : "No workspace found."}</p>
+        <Link href="/workspaces" className="mt-3 inline-block rounded-xl border border-slate-200 px-3.5 py-2 text-sm text-slate-800 hover:border-cyan-300/40">Choose a workspace</Link>
+      </section>
+    );
+  }
+  const workspaceId = workspaceResolution.workspaceId;
+
+  const [{ data }, workspaces] = await Promise.all([
+    supabase
+      .from("projects")
+      .select("id, workspace_id, name, description, status, created_at")
+      .eq("workspace_id", workspaceId)
+      .order("created_at", { ascending: false }),
+    getUserWorkspaces(user.id),
+  ]);
 
   const projects = (data ?? []) as ProjectRow[];
+  const workspaceName = workspaces.find((w) => w.id === workspaceId)?.name ?? "This workspace";
 
   // Real membership role drives which CTAs render — a viewer is shown who
   // can create instead of a button they cannot use. Server actions and RLS
   // remain the authoritative enforcement.
-  const workspaceResolution = await resolvePreferredWorkspace(user.id);
   const canCreateProjects = workspaceResolution.role !== null && workspaceResolution.role !== "viewer";
 
   return (
@@ -63,7 +94,7 @@ export default async function ProjectsPage() {
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
             <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Operational Contexts</p>
-            <h2 className="mt-1 text-2xl font-semibold text-slate-900">Your Projects</h2>
+            <h2 className="mt-1 text-2xl font-semibold text-slate-900">Projects in <span data-testid="projects-workspace-name">{workspaceName}</span></h2>
           </div>
         </div>
 

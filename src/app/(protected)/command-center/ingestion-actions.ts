@@ -1,6 +1,7 @@
 "use server";
 
 import { requireAuthUser } from "@/lib/auth";
+import { isArchivedProjectStatus } from "@/lib/projects/archived-project";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { resolveRoutedWorkspace } from "@/lib/workspaces/routed-workspace";
 import {
@@ -48,12 +49,13 @@ export async function markInitialIngestionAction(
 
   const { data: row, error: readError } = await supabase
     .from("projects")
-    .select("onboarding_payload")
+    .select("onboarding_payload, status")
     .eq("id", projectId)
     .eq("workspace_id", access.workspaceId)
-    .maybeSingle<{ onboarding_payload: unknown }>();
+    .maybeSingle<{ onboarding_payload: unknown; status: string }>();
 
-  if (readError || !row) {
+  // PD-25: an archived project is read-only; its onboarding payload is not rewritten.
+  if (readError || !row || isArchivedProjectStatus(row.status)) {
     return { ok: false };
   }
 

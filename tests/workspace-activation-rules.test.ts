@@ -255,11 +255,14 @@ test("pm can create projects/tasks but cannot invite members", () => {
   assert.equal(stepById(evidence, "project_created").actionAllowed, true);
   assert.equal(stepById(evidence, "task_created").actionAllowed, true);
   assert.equal(stepById(evidence, "member_invited").actionAllowed, false);
+  assert.equal(stepById(evidence, "pmo_created").actionAllowed, false, "PMO activation is owner/admin only (PR-3)");
 });
 
 test("admin and owner can invite members", () => {
   assert.equal(stepById(baseEvidence({ role: "admin" }), "member_invited").actionAllowed, true);
   assert.equal(stepById(baseEvidence({ role: "owner" }), "member_invited").actionAllowed, true);
+  assert.equal(stepById(baseEvidence({ role: "admin" }), "pmo_created").actionAllowed, true);
+  assert.equal(stepById(baseEvidence({ role: "owner" }), "pmo_created").actionAllowed, true);
 });
 
 test("workspace_created carries no CTA route", () => {

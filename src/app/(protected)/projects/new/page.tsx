@@ -6,6 +6,7 @@ import { getPmoWorkspaceId } from "@/lib/pmos/pmo-service";
 import { resolveRoutedWorkspace } from "@/lib/workspaces/routed-workspace";
 import { resolvePreferredWorkspace } from "@/lib/workspaces/preferred-workspace";
 import { firstQueryValue } from "@/lib/workspace/command-center-paths";
+import { draftStorageKey } from "@/lib/drafts/draft-scope";
 
 type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
 
@@ -51,6 +52,7 @@ export default async function CreateProjectPage({ searchParams }: Props) {
     targetWorkspaceId = access.workspaceId;
   }
   const displayedWorkspaceId = targetWorkspaceId ?? (await resolvePreferredWorkspace(user.id)).workspaceId;
+  const draftKey = draftStorageKey("project", user.id, displayedWorkspaceId);
   const { data: displayedWorkspace } = displayedWorkspaceId
     ? await supabase.from("workspaces").select("id, name").eq("id", displayedWorkspaceId).maybeSingle<{ id: string; name: string }>()
     : { data: null };
@@ -78,7 +80,9 @@ export default async function CreateProjectPage({ searchParams }: Props) {
           ) : null}
         </header>
 
-        <CreateProjectWizard pmoId={pmoId} workspaceId={targetWorkspaceId ?? undefined} />
+        {/* The draft belongs to this user in the displayed workspace (PD-21); keying the
+            wizard on it remounts it when that scope changes, so state never crosses over. */}
+        <CreateProjectWizard key={draftKey ?? "no-draft"} pmoId={pmoId} workspaceId={targetWorkspaceId ?? undefined} draftKey={draftKey} />
       </div>
     </section>
   );

@@ -3,6 +3,7 @@
 import { getAuthUser } from "@/lib/auth";
 import { resolveCanonicalWorkspace } from "@/lib/workspaces/canonical-workspace-resolver";
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/admin";
+import { requireWorkspaceRole } from "@/lib/workspace-access";
 import type { PMOGovernanceSkeleton } from "./pmo-governance-types";
 
 const GOVERNANCE_SCHEMA_VERSION = 1;
@@ -28,6 +29,14 @@ export async function saveWorkspaceGovernance(
     const resolution = await resolveCanonicalWorkspace(user.id);
     if (!resolution.workspaceId) {
       return { ok: false, error: "No active workspace found for user" };
+    }
+
+    // Authorization BEFORE any service-role write (F5): governance is owner/admin only,
+    // read from workspace_memberships — never from the client or the display role.
+    try {
+      await requireWorkspaceRole(resolution.workspaceId, "admin");
+    } catch {
+      return { ok: false, error: "Only a workspace owner or admin can change workspace governance." };
     }
 
     const supabase = createSupabaseServiceRoleClient({

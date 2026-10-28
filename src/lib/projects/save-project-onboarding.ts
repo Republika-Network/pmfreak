@@ -3,9 +3,12 @@
 import { getAuthUser } from "@/lib/auth";
 import { canCreateMoreProjects } from "@/lib/feature-gates";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseServiceRoleClient } from "@/lib/supabase/admin";
 import { resolveWriteWorkspace } from "@/lib/workspaces/resolve-write-workspace";
 import { resolveRoutedWorkspace } from "@/lib/workspaces/routed-workspace";
+import { canWriteProjectData } from "@/lib/workspace-access";
 import { ensureDefaultPmo, getPmoById } from "@/lib/pmos/pmo-service";
+import { createProjectWithinLimit, type ProjectCreateQuotaResult } from "@/lib/quota/project-quota";
 import { generateAndPersistOperationalGovernanceBrief } from "@/lib/projects/first-insight";
 import { ingestProjectSetupContext } from "@/lib/projects/ingest-project-setup-context";
 import type { ResolvedWriteWorkspace } from "@/lib/workspaces/resolve-write-workspace";
@@ -67,6 +70,8 @@ export async function saveProjectOnboarding(
 ): Promise<ProjectSaveResult> {
   const cid = correlationId ?? `proj_${Date.now()}`;
   let insertedProjectId: string | null = null;
+  // The row this request inserted, for the compensating delete below.
+  let insertedProject: { id: string; workspaceId: string; userId: string } | null = null;
 
   try {
     const user = await getAuthUser();
@@ -175,6 +180,23 @@ export async function saveProjectOnboarding(
       };
     }
 
+    // RLS refuses the insert for viewers (F21); refuse first, with an honest message.
+    if (ensured.role && !canWriteProjectData(ensured.role)) {
+      emit("project.create.failed", {
+        correlationId: cid,
+        failureClass: "fatal_failure",
+        reason: "insufficient_role",
+        userId: user.id,
+        workspaceId: ensured.workspaceId,
+      });
+      return {
+        status: "fatal_failure",
+        error: "Your role in this workspace can't create projects. Nothing was created.",
+        failureClass: "insufficient_role",
+        correlationId: cid,
+      };
+    }
+
     const supabase = await createSupabaseServerClient();
 
     // Attach the project to its PMO: an explicit selection (e.g. "New
@@ -188,39 +210,57 @@ export async function saveProjectOnboarding(
       const defaultPmo = await ensureDefaultPmo(ensured.workspaceId, user.id);
       pmoId = defaultPmo.id;
     }
-    const { data, error } = await supabase
-      .from("projects")
-      .insert({
-        user_id: user.id,
-        workspace_id: ensured.workspaceId,
-        pmo_id: pmoId,
+    // The canCreateMoreProjects check above is a fast refusal; the limit is enforced here,
+    // atomically, together with the insert (Q12). status takes the column default, 'active'.
+    let created: ProjectCreateQuotaResult;
+    try {
+      created = await createProjectWithinLimit({
+        actorUserId: user.id,
+        workspaceId: ensured.workspaceId,
+        pmoId,
         name: payload.identity.projectName,
         description: payload.deliveryContext.problemStatement || null,
-        status: "active",
-        onboarding_payload: payload as unknown as Record<string, unknown>,
-      })
-      .select("id")
-      .single<{ id: string }>();
-
-    if (error || !data?.id) {
+        onboardingPayload: payload as unknown as Record<string, unknown>,
+      });
+    } catch (insertErr) {
+      const detail = insertErr instanceof Error ? insertErr.message : undefined;
       emit("project.create.failed", {
         correlationId: cid,
         failureClass: "recoverable_failure",
         reason: "db_insert_error",
-        detail: error?.message,
+        detail,
         userId: user.id,
         workspaceId: ensured.workspaceId,
       });
       return {
         status: "recoverable_failure",
-        error: error?.message ?? "Unable to create project. Please try again.",
+        error: detail ?? "Unable to create project. Please try again.",
         failureClass: "db_insert_error",
         correlationId: cid,
       };
     }
 
+    if (!created.ok) {
+      const refusal =
+        created.reason === "project_limit_reached"
+          ? { status: "fatal_failure" as const, error: "upgrade_required", failureClass: "upgrade_required" }
+          : created.reason === "insufficient_role"
+            ? { status: "fatal_failure" as const, error: "Your role in this workspace can't create projects. Nothing was created.", failureClass: "insufficient_role" }
+            : { status: "recoverable_failure" as const, error: "The selected PMO is no longer available. Nothing was created. Please try again.", failureClass: "pmo_not_found" };
+      emit("project.create.failed", {
+        correlationId: cid,
+        failureClass: refusal.status,
+        reason: refusal.failureClass,
+        userId: user.id,
+        workspaceId: ensured.workspaceId,
+      });
+      return { ...refusal, correlationId: cid };
+    }
+    const data = { id: created.project.id };
+
     // Insert confirmed — project creation must survive first-insight failures.
     insertedProjectId = data.id;
+    insertedProject = { id: data.id, workspaceId: ensured.workspaceId, userId: user.id };
 
     // Feed the onboarding context into the intelligence loop (vault RAID
     // extraction + operational evidence chain) before generating the first
@@ -318,17 +358,31 @@ export async function saveProjectOnboarding(
       });
 
       try {
-        const supabase = await createSupabaseServerClient();
-        const { error: rbErr } = await supabase
-          .from("projects")
-          .delete()
-          .eq("id", insertedProjectId);
+        // Project DELETE is owner/admin-only under RLS (F21), but a pm may create a
+        // project, so undoing this request's own insert runs privileged — limited to
+        // exactly the row inserted above (id + workspace + creating user).
+        const supabase = createSupabaseServiceRoleClient({
+          routeId: "lib.projects.save-project-onboarding",
+          operation: "delete",
+          reason: "compensating_rollback_of_own_insert",
+          workspaceId: insertedProject?.workspaceId,
+          actorUserId: insertedProject?.userId,
+        });
+        const { data: removed, error: rbErr } = insertedProject
+          ? await supabase
+              .from("projects")
+              .delete()
+              .eq("id", insertedProject.id)
+              .eq("workspace_id", insertedProject.workspaceId)
+              .eq("user_id", insertedProject.userId)
+              .select("id")
+          : { data: null, error: { message: "inserted project context missing" } };
 
-        if (rbErr) {
+        if (rbErr || removed?.length !== 1) {
           emit("project.create.rollback.failed", {
             correlationId: cid,
             projectId: insertedProjectId,
-            detail: rbErr.message,
+            detail: rbErr?.message ?? "rollback removed no row",
           });
         } else {
           emit("project.create.rollback.completed", {

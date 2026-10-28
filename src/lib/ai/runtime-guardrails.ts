@@ -11,10 +11,25 @@
 
 import { InferenceError } from "@/lib/ai/inference/types";
 
+export type AiGuardrail =
+  | "chain_depth"
+  | "workspace_concurrency"
+  | "circuit_open"
+  | "daily_request_ceiling"
+  | "daily_cost_ceiling"
+  /** B6: the requested model has no allowlisted price, so its cost cannot be bounded. */
+  | "model_not_priced"
+  /** B6: the cost ledger could not reserve or was not configured; spend cannot be bounded. */
+  | "cost_accounting_unavailable"
+  /** B6: a billable request named neither a workspace nor a user to charge. */
+  | "budget_scope_missing"
+  /** B6: this request's reservation key is already in flight or settled. */
+  | "duplicate_request";
+
 export class AiGuardrailError extends InferenceError {
   constructor(
     message: string,
-    public readonly guardrail: "chain_depth" | "workspace_concurrency" | "circuit_open" | "daily_request_ceiling" | "daily_cost_ceiling",
+    public readonly guardrail: AiGuardrail,
     provider = "none",
   ) {
     super(message, "rate_limited", provider);

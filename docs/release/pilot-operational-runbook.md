@@ -60,7 +60,14 @@ topology enforced by `docs/security/production-deployment-boundary.md`.
       `HEALTHCHECK_DATABASE_TIMEOUT_MS`, `INVITE_TOKEN_TTL_HOURS`,
       `UPLOAD_MAX_*`. Unset = conservative defaults; invalid values fall back
       to defaults by design.
-- [ ] `FOUNDER_EMAIL_ALLOWLIST` contains exactly the operator accounts.
+- [ ] **Release blocker (F6 / PR-4):** `FOUNDER_OPERATOR_USER_IDS` (server-only)
+      contains exactly the operator accounts' `auth.users.id` values,
+      comma-separated, each a UUID. Each listed account has a confirmed email.
+      Unset, empty or any malformed entry locks every operator out of every
+      founder/internal surface (fails closed). Email domains and
+      `FOUNDER_EMAIL_ALLOWLIST` no longer grant anything; remove the old
+      variable once the new one is confirmed. Verify after deploy by signing
+      in as each operator and opening `/early-access`.
 - [ ] Pilot capability posture (Pilot Gate Sprint 01):
       `PMFREAK_GOVERNANCE_CAPABILITY_ENABLED` unset/false and
       `PMFREAK_CAPABILITY_PROFILE` unset for the pilot deployment (curated

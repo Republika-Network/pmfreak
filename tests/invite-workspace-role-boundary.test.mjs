@@ -175,12 +175,18 @@ function baseInvite(overrides = {}) {
     status: "pending",
     token_hash: sha256("valid-token"),
     expires_at: new Date(Date.now() + 1000 * 60 * 60).toISOString(),
+    invited_by_user_id: "u-inviter",
     ...overrides,
   };
 }
 
-function makeFakeSupabase(invite) {
-  const state = { invite: invite ? { ...invite } : null, memberships: [], auditEvents: [] };
+// `memberships` holds rows written by acceptance; `existingMemberships` seeds the workspace
+// (by default the inviter, as owner) and is what the F22-A acceptance checks read.
+// `authUsers` models GoTrue (auth.admin.getUserById); by default every user holds the
+// invitation's email as a confirmed address (F22-B).
+function makeFakeSupabase(invite, { existingMemberships = [{ workspace_id: invite?.workspace_id, user_id: "u-inviter", role: "owner" }], authUsers = {} } = {}) {
+  const state = { invite: invite ? { ...invite } : null, memberships: [], existingMemberships: [...existingMemberships], auditEvents: [] };
+  const membershipRows = () => [...state.existingMemberships, ...state.memberships];
 
   function invitationsBuilder() {
     const builder = {
@@ -228,13 +234,39 @@ function makeFakeSupabase(invite) {
 
   return {
     state,
+    auth: {
+      admin: {
+        async getUserById(id) {
+          const user = id in authUsers ? authUsers[id] : { id, email: state.invite?.email ?? null, email_confirmed_at: "2026-01-01T00:00:00Z" };
+          return user ? { data: { user }, error: null } : { data: { user: null }, error: { message: "User not found" } };
+        },
+      },
+    },
     from(table) {
       if (table === "workspace_invitations") return invitationsBuilder();
       if (table === "workspace_memberships") {
+        const filters = {};
         return {
-          async upsert(row) {
+          select() {
+            return this;
+          },
+          eq(column, value) {
+            filters[column] = value;
+            return this;
+          },
+          async maybeSingle() {
+            const row = membershipRows().find((m) => Object.entries(filters).every(([key, value]) => String(m[key]) === String(value)));
+            return { data: row ? { role: row.role } : null, error: null };
+          },
+          async insert(row) {
+            if (membershipRows().some((m) => m.workspace_id === row.workspace_id && m.user_id === row.user_id)) {
+              return { error: { code: "23505", message: "duplicate key value violates unique constraint" } };
+            }
             state.memberships.push(row);
             return { error: null };
+          },
+          async upsert() {
+            throw new Error("acceptance must never upsert a membership (F22-A)");
           },
         };
       }
@@ -387,6 +419,102 @@ test("acceptWorkspaceInvite: an invite record with an invalid/garbage stored rol
   assert.equal(outcome.ok, false);
   assert.equal(outcome.error.reason, "invalid_role");
   assert.equal(outcome.client.state.memberships.length, 0);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F22-A — acceptance re-validates the stored role, the inviter and the target membership
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("acceptWorkspaceInvite (F22-B): the accepting account must hold the invite email as a CONFIRMED address in GoTrue", async () => {
+  const cases = [
+    { name: "unconfirmed email", user: { id: "u-1", email: "user@example.com", email_confirmed_at: null }, reason: "email_unverified" },
+    { name: "GoTrue email differs from the claimed one", user: { id: "u-1", email: "someone-else@example.com", email_confirmed_at: "2026-01-01T00:00:00Z" }, reason: "email_mismatch" },
+    { name: "no such auth user", user: null, reason: "email_unverified" },
+  ];
+  for (const c of cases) {
+    const client = makeFakeSupabase(baseInvite({ role: "pm" }), { authUsers: { "u-1": c.user } });
+    await assert.rejects(
+      () => acceptWorkspaceInvite({ token: "valid-token", userId: "u-1", userEmail: "user@example.com" }, async () => client),
+      (error) => error instanceof WorkspaceInviteError && error.reason === c.reason,
+      c.name,
+    );
+    assert.equal(client.state.memberships.length, 0, c.name);
+    assert.equal(client.state.invite.status, "pending", `${c.name}: invite is not consumed`);
+  }
+});
+
+test("acceptWorkspaceInvite (F22-A): a stored owner invitation is refused, whoever wrote it", async () => {
+  const outcome = await callAccept({ token: "valid-token", userId: "u-1", userEmail: "user@example.com" }, baseInvite({ role: "owner" }));
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.error.reason, "invalid_role");
+  assert.equal(outcome.client.state.memberships.length, 0);
+  assert.equal(outcome.client.state.invite.status, "pending");
+});
+
+test("acceptWorkspaceInvite (F22-A): an inviter who left, was demoted, or is unknown voids the invitation", async () => {
+  const cases = [
+    { name: "inviter removed", invite: baseInvite({ role: "admin" }), existingMemberships: [] },
+    { name: "inviter demoted to pm", invite: baseInvite({ role: "viewer" }), existingMemberships: [{ workspace_id: "workspace.demo", user_id: "u-inviter", role: "pm" }] },
+    { name: "inviter unknown", invite: baseInvite({ invited_by_user_id: null }), existingMemberships: [] },
+    { name: "inviter only a member of another workspace", invite: baseInvite(), existingMemberships: [{ workspace_id: "workspace.other", user_id: "u-inviter", role: "owner" }] },
+  ];
+  for (const c of cases) {
+    const client = makeFakeSupabase(c.invite, { existingMemberships: c.existingMemberships });
+    await assert.rejects(
+      () => acceptWorkspaceInvite({ token: "valid-token", userId: "u-1", userEmail: "user@example.com" }, async () => client),
+      (error) => error instanceof WorkspaceInviteError && error.reason === "inviter_not_authorized",
+      c.name,
+    );
+    assert.equal(client.state.memberships.length, 0, c.name);
+    assert.equal(client.state.invite.status, "pending", `${c.name}: invite is not consumed`);
+  }
+});
+
+test("acceptWorkspaceInvite (F22-A): an invitation never changes an existing membership — including the inviter's own", async () => {
+  for (const [userId, existingRole, inviteRole] of [["u-1", "viewer", "admin"], ["u-inviter", "admin", "admin"], ["u-2", "pm", "viewer"]]) {
+    const invite = baseInvite({ role: inviteRole });
+    const client = makeFakeSupabase(invite, {
+      existingMemberships: [
+        { workspace_id: invite.workspace_id, user_id: "u-inviter", role: userId === "u-inviter" ? existingRole : "owner" },
+        ...(userId === "u-inviter" ? [] : [{ workspace_id: invite.workspace_id, user_id: userId, role: existingRole }]),
+      ],
+    });
+    await assert.rejects(
+      () => acceptWorkspaceInvite({ token: "valid-token", userId, userEmail: "user@example.com" }, async () => client),
+      (error) => error instanceof WorkspaceInviteError && error.reason === "already_member",
+    );
+    assert.equal(client.state.memberships.length, 0, "no membership written");
+    assert.equal(client.state.existingMemberships.find((m) => m.user_id === userId).role, existingRole, "existing role untouched");
+    assert.equal(client.state.invite.status, "pending", "invite not consumed");
+  }
+});
+
+test("acceptWorkspaceInvite (F22-A): a membership that appears after the check is not overwritten and the claim is released", async () => {
+  const invite = baseInvite({ role: "admin" });
+  const client = makeFakeSupabase(invite);
+  const originalFrom = client.from.bind(client);
+  let membershipReads = 0;
+  client.from = (table) => {
+    const builder = originalFrom(table);
+    if (table !== "workspace_memberships") return builder;
+    const originalMaybeSingle = builder.maybeSingle.bind(builder);
+    builder.maybeSingle = async () => {
+      const result = await originalMaybeSingle();
+      membershipReads += 1;
+      // Second read is the accepting user's own membership check: a concurrent accept lands right after it.
+      if (membershipReads === 2) client.state.existingMemberships.push({ workspace_id: invite.workspace_id, user_id: "u-1", role: "viewer" });
+      return result;
+    };
+    return builder;
+  };
+  await assert.rejects(
+    () => acceptWorkspaceInvite({ token: "valid-token", userId: "u-1", userEmail: "user@example.com" }, async () => client),
+    (error) => error instanceof WorkspaceInviteError && error.reason === "already_member",
+  );
+  assert.equal(client.state.memberships.length, 0);
+  assert.equal(client.state.existingMemberships.find((m) => m.user_id === "u-1").role, "viewer");
+  assert.equal(client.state.invite.status, "pending", "claim released");
+  assert.equal(client.state.invite.accepted_by_user_id, null);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

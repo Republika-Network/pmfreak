@@ -8,7 +8,8 @@
 // bound (an unparsable or out-of-range value falls back to the default).
 //
 // Enforcement lives in src/lib/ai/runtime-guardrails.ts and
-// src/lib/ai/providers/router.ts. Tests: tests/ai-runtime-guardrails.test.mjs.
+// src/lib/ai/providers/router.ts; the three cost ceilings are enforced atomically by
+// reserve_ai_cost() (20261103000000_b6_ai_cost_reservations.sql). Tests: tests/ai-runtime-guardrails.test.mjs.
 
 export type AiRuntimeLimits = {
   /** Per-attempt provider timeout (AbortController) in milliseconds. */
@@ -21,8 +22,12 @@ export type AiRuntimeLimits = {
   maxConcurrentPerWorkspace: number;
   /** Daily per-workspace request ceiling (fixed 24h window). */
   dailyWorkspaceRequestLimit: number;
-  /** Daily per-workspace estimated-cost ceiling in USD. */
+  /** Daily per-workspace cost ceiling in USD (reserved worst case + settled cost). */
   dailyWorkspaceCostLimitUsd: number;
+  /** Daily per-user cost ceiling in USD, across every workspace the user belongs to. */
+  dailyUserCostLimitUsd: number;
+  /** Daily deployment-wide cost ceiling in USD: the hard bound on total AI spend per UTC day. */
+  dailyGlobalCostLimitUsd: number;
 };
 
 type EnvRecord = Record<string, string | undefined>;
@@ -48,6 +53,8 @@ export const AI_RUNTIME_LIMIT_DEFAULTS: AiRuntimeLimits = {
   maxConcurrentPerWorkspace: 4,
   dailyWorkspaceRequestLimit: 500,
   dailyWorkspaceCostLimitUsd: 25,
+  dailyUserCostLimitUsd: 10,
+  dailyGlobalCostLimitUsd: 50,
 };
 
 export function resolveAiRuntimeLimits(env: EnvRecord = process.env): AiRuntimeLimits {
@@ -61,5 +68,7 @@ export function resolveAiRuntimeLimits(env: EnvRecord = process.env): AiRuntimeL
     maxConcurrentPerWorkspace: clampInt(env.AI_MAX_CONCURRENT_PER_WORKSPACE, d.maxConcurrentPerWorkspace, 1, 100),
     dailyWorkspaceRequestLimit: clampInt(env.AI_DAILY_REQUEST_LIMIT, d.dailyWorkspaceRequestLimit, 1, 1_000_000),
     dailyWorkspaceCostLimitUsd: clampNumber(env.AI_DAILY_COST_LIMIT_USD, d.dailyWorkspaceCostLimitUsd, 0.01, 100_000),
+    dailyUserCostLimitUsd: clampNumber(env.AI_DAILY_USER_COST_LIMIT_USD, d.dailyUserCostLimitUsd, 0.01, 100_000),
+    dailyGlobalCostLimitUsd: clampNumber(env.AI_DAILY_GLOBAL_COST_LIMIT_USD, d.dailyGlobalCostLimitUsd, 0.01, 1_000_000),
   };
 }

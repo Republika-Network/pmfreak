@@ -10,7 +10,9 @@ import { isSafeContinuationRoute } from "@/lib/auth/validate-continuation-route"
 import { headers } from "next/headers";
 import { resolveOnboardingState } from "@/lib/auth/resolve-onboarding-state";
 import { getOnboardingRedirect } from "@/lib/auth/onboarding-route-map";
-import { shouldRedirectForOnboarding } from "@/lib/auth/onboarding-gate";
+import { isOnboardingChooserExempt, isWorkspaceChooserPath, shouldRedirectForOnboarding } from "@/lib/auth/onboarding-gate";
+import { getUserWorkspaces } from "@/lib/workspaces";
+import Link from "next/link";
 import { resolveCapabilityProfile } from "@/lib/workspace/pilot-capability-set";
 import { parseWorkspaceIdFromPath } from "@/lib/workspace/command-center-paths";
 import { parseCanonicalPmoRoute } from "@/lib/pmos/pmo-paths";
@@ -21,6 +23,7 @@ import { resolveRoutedProject } from "@/lib/projects/routed-project";
 import { isEligibleForPlanReturn } from "@/lib/billing-plan-return";
 import { isBillingCheckoutEnabled } from "@/lib/billing-release";
 import { PendingPlanReturn } from "@/components/billing/pending-plan-return";
+import { draftOwnerTag } from "@/lib/drafts/draft-scope";
 
 export default async function ProtectedLayout({ children }: { children: React.ReactNode }) {
   const continuity = await assertRuntimeAuthContinuity();
@@ -43,7 +46,10 @@ export default async function ProtectedLayout({ children }: { children: React.Re
   // call's replacement was never written back to cookies — poisoning the
   // session for every subsequent request. See
   // docs/audits/remediation/release-gate-01-auth-session-persistence.md.
-  const user = continuity.user ? buildAuthUserContext(continuity.user) : null;
+  // Only a getUser() result is server-verified; the getSession() fallback
+  // used on a network error is decoded from the cookie and must never carry
+  // operator authority (F6).
+  const user = continuity.user ? buildAuthUserContext(continuity.user, { verifiedByAuthServer: !continuity.networkError }) : null;
   if (!user) {
     const headersList = await headers();
     const currentPath = headersList.get("x-pathname") ?? "/command-center";
@@ -232,11 +238,16 @@ export default async function ProtectedLayout({ children }: { children: React.Re
     const dest = getOnboardingRedirect(onboardingState);
     // Loop guard: only redirect away from a path that isn't already the
     // derived destination itself (e.g. rendering /projects/new while
-    // "needs_project" must not redirect to /projects/new again).
-    if (currentPath !== dest) {
+    // "needs_project" must not redirect to /projects/new again). The
+    // Workspace chooser is exempt from `needs_project` so a member of several
+    // workspaces can always leave an empty one (PD-9, see the predicate).
+    if (currentPath !== dest && !isOnboardingChooserExempt(onboardingState, currentPath)) {
       redirect(dest);
     }
-    return <div className="min-h-screen bg-[#FCFBF9] text-slate-900"><main className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6 sm:py-10">{children}</main></div>;
+    // The onboarding frame has no shell navigation, so it carries the one way out
+    // of an empty workspace: the chooser, offered only to members of more than one.
+    const canSwitchWorkspace = onboardingState === "needs_project" && (await getUserWorkspaces(user.id)).length > 1;
+    return <div className="min-h-screen bg-[#FCFBF9] text-slate-900"><main className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6 sm:py-10">{canSwitchWorkspace && !isWorkspaceChooserPath(currentPath) ? <nav className="mb-4 flex justify-end"><Link href="/workspaces" className="rounded-xl border border-slate-200 px-3.5 py-2 text-sm text-slate-800 hover:border-cyan-300/40">Switch workspace</Link></nav> : null}{children}</main></div>;
   }
 
   const capabilityProfile = resolveCapabilityProfile({ isFounderOrInternal: isFounderOrInternalUser(user) });
@@ -244,5 +255,5 @@ export default async function ProtectedLayout({ children }: { children: React.Re
   // it changes no redirect above, and appears only after onboarding is complete
   // for a role that can manage billing (see isEligibleForPlanReturn).
   const offerPlanReturn = isEligibleForPlanReturn({ checkoutEnabled: isBillingCheckoutEnabled(), onboardingState, role: resolvedWorkspace.role, pathname: routedHeaders.get("x-pathname") });
-  return <OperationalShell user={{ fullName: user.fullName, role: user.role, companyName: user.companyName }} capabilityProfile={capabilityProfile} workspaceId={resolvedWorkspace.workspaceId}>{offerPlanReturn ? <PendingPlanReturn /> : null}{children}</OperationalShell>;
+  return <OperationalShell user={{ fullName: user.fullName, role: user.role, companyName: user.companyName, draftOwnerTag: draftOwnerTag(user.id) }} capabilityProfile={capabilityProfile} workspaceId={resolvedWorkspace.workspaceId}>{offerPlanReturn ? <PendingPlanReturn /> : null}{children}</OperationalShell>;
 }

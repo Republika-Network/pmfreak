@@ -107,8 +107,11 @@ test("workspace-team.ts never logs — tokens cannot leak through console output
 // same injection seam as tests/invite-workspace-role-boundary.test.mjs)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Every fixture invite was issued by "u-inviter", who is still an owner of the workspace —
+// acceptance re-validates the inviter and the accepting user's membership (F22-A).
 function makeFakeSupabase(invite) {
-  const state = { invite: invite ? { ...invite } : null, memberships: [], auditEvents: [] };
+  const state = { invite: invite ? { invited_by_user_id: "u-inviter", ...invite } : null, memberships: [], auditEvents: [] };
+  const existingMemberships = invite ? [{ workspace_id: invite.workspace_id, user_id: "u-inviter", role: "owner" }] : [];
 
   function invitationsBuilder() {
     return {
@@ -155,11 +158,31 @@ function makeFakeSupabase(invite) {
 
   return {
     state,
+    // GoTrue: the accepting user holds the invitation's email as a confirmed address (F22-B).
+    auth: {
+      admin: {
+        async getUserById(id) {
+          return { data: { user: { id, email: state.invite?.email ?? null, email_confirmed_at: "2026-01-01T00:00:00Z" } }, error: null };
+        },
+      },
+    },
     from(table) {
       if (table === "workspace_invitations") return invitationsBuilder();
       if (table === "workspace_memberships") {
+        const filters = {};
         return {
-          async upsert(row) {
+          select() {
+            return this;
+          },
+          eq(column, value) {
+            filters[column] = value;
+            return this;
+          },
+          async maybeSingle() {
+            const row = [...existingMemberships, ...state.memberships].find((m) => Object.entries(filters).every(([key, value]) => String(m[key]) === String(value)));
+            return { data: row ? { role: row.role } : null, error: null };
+          },
+          async insert(row) {
             state.memberships.push(row);
             return { error: null };
           },

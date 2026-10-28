@@ -2,6 +2,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { ProjectMethodology, ProjectRow, ProjectStatus } from "@/lib/db/database-contract";
 import { PROJECT_SELECTABLE_COLUMNS } from "@/lib/db/database-contract";
 import { getPmoById } from "@/lib/pmos/pmo-service";
+import { duplicateProjectWithinLimit } from "@/lib/quota/project-quota";
 
 const PROJECT_COLUMNS = PROJECT_SELECTABLE_COLUMNS.join(", ");
 
@@ -84,20 +85,45 @@ export async function updateProject(workspaceId: string, projectId: string, inpu
   return data as unknown as ProjectRow;
 }
 
+/**
+ * The database refuses to hard-delete a project that has retained history: execution tasks
+ * (NO ACTION), audit events (RESTRICT) or append-only provenance. Archival is that project's
+ * end state; nothing is deleted when this is thrown (PD-26).
+ */
+export class ProjectHasRetainedHistoryError extends Error {
+  constructor() {
+    super("This project has tasks, audit or provenance records that are kept, so it can't be permanently deleted. Archive it instead.");
+    this.name = "ProjectHasRetainedHistoryError";
+  }
+}
+
+const RETAINED_HISTORY_PATTERN = /violates foreign key constraint|append_only|is_immutable|immutab/i;
+
 export async function deleteProject(workspaceId: string, projectId: string): Promise<void> {
   const supabase = await createSupabaseServerClient();
   const { error } = await supabase.from("projects").delete().eq("workspace_id", workspaceId).eq("id", projectId);
+  if (error && (error.code === "23503" || RETAINED_HISTORY_PATTERN.test(error.message))) throw new ProjectHasRetainedHistoryError();
   if (error) throw new Error(`Unable to delete project: ${error.message}`);
 }
+
+export type DuplicateProjectResult =
+  | { ok: true; project: ProjectRow }
+  | { ok: false; failureClass: "upgrade_required" | "insufficient_role" | "not_found"; error: string };
 
 /**
  * Duplicates a project's shell (identity, PMO, methodology, look) without its
  * operational history — conversations, memory, and evidence stay with the
  * original context by design (context isolation).
+ *
+ * A duplicate is a new project, so it counts against the duplicating user's
+ * plan limit exactly like a create (PD-14). The count, the limit check and the
+ * insert happen in one database transaction serialised per user
+ * (duplicateProjectWithinLimit), so concurrent duplicates cannot overshoot and a
+ * refused or failed duplicate leaves nothing behind.
  */
-export async function duplicateProject(workspaceId: string, projectId: string, createdByUserId: string): Promise<ProjectRow> {
+export async function duplicateProject(workspaceId: string, projectId: string, createdByUserId: string): Promise<DuplicateProjectResult> {
   const source = await getProjectInWorkspace(workspaceId, projectId);
-  if (!source) throw new Error("Project not found.");
+  if (!source) return { ok: false, failureClass: "not_found", error: "Project not found." };
 
   // Duplicating is a new project assignment, same as an explicit move — so it
   // must obey the same archived-PMO rule as updateProject rather than
@@ -108,22 +134,14 @@ export async function duplicateProject(workspaceId: string, projectId: string, c
     if (!pmo || pmo.status === "archived") targetPmoId = null;
   }
 
-  const supabase = await createSupabaseServerClient();
-  const { data, error } = await supabase
-    .from("projects")
-    .insert({
-      user_id: createdByUserId,
-      workspace_id: workspaceId,
-      pmo_id: targetPmoId,
-      name: `${source.name} (copy)`,
-      description: source.description,
-      methodology: source.methodology,
-      icon: source.icon,
-      color: source.color,
-      onboarding_payload: source.onboarding_payload,
-    })
-    .select(PROJECT_COLUMNS)
-    .single();
-  if (error || !data) throw new Error(`Unable to duplicate project: ${error?.message ?? "unknown"}`);
-  return data as unknown as ProjectRow;
+  const result = await duplicateProjectWithinLimit({ actorUserId: createdByUserId, workspaceId, sourceProjectId: source.id, targetPmoId });
+  if (!result.ok) {
+    if (result.reason === "project_limit_reached") return { ok: false, failureClass: "upgrade_required", error: "Project limit reached for your plan." };
+    if (result.reason === "insufficient_role") return { ok: false, failureClass: "insufficient_role", error: "Your role in this workspace can't create projects." };
+    return { ok: false, failureClass: "not_found", error: "Project not found." };
+  }
+
+  const project = await getProjectInWorkspace(workspaceId, result.projectId);
+  if (!project) throw new Error("Unable to duplicate project: the copy could not be read back.");
+  return { ok: true, project };
 }

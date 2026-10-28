@@ -5,6 +5,7 @@ import { requireGovernancePermission } from "@/lib/security/access-guards";
 import { requireWorkspaceMember } from "@/lib/security/server-authorization";
 import { createWorkspaceInviteToken, hashWorkspaceInviteToken, resolveInviteTtlHours } from "@/lib/security/invite-tokens";
 import {
+  INVITABLE_WORKSPACE_ROLES,
   canAssignWorkspaceRole,
   canUpdateWorkspaceMemberRole,
   countWorkspaceOwners,
@@ -20,13 +21,21 @@ type MinimalSupabaseClient = {
   from: ReturnType<typeof createSupabaseServiceRoleClient>["from"];
 };
 
+/** Acceptance also reads the accepting user's identity from GoTrue (service role). */
+type AcceptInviteSupabaseClient = MinimalSupabaseClient & {
+  auth: { admin: Pick<ReturnType<typeof createSupabaseServiceRoleClient>["auth"]["admin"], "getUserById"> };
+};
+
 export type WorkspaceInviteDenialReason =
   | "invalid_token"
   | "invalid_role"
   | "email_mismatch"
   | "expired"
   | "revoked"
-  | "already_used";
+  | "already_used"
+  | "inviter_not_authorized"
+  | "already_member"
+  | "email_unverified";
 
 export class WorkspaceInviteError extends Error {
   readonly reason: WorkspaceInviteDenialReason;
@@ -204,6 +213,7 @@ type ResolvedWorkspaceInvite = {
   workspaceId: string;
   email: string;
   role: WorkspaceRole;
+  invitedByUserId: string | null;
 };
 
 async function resolveValidWorkspaceInvite(token: string, supabase: MinimalSupabaseClient): Promise<ResolvedWorkspaceInvite> {
@@ -216,14 +226,18 @@ async function resolveValidWorkspaceInvite(token: string, supabase: MinimalSupab
   // legacy plaintext token can never resolve to an invite again.
   const { data: invite } = await supabase
     .from("workspace_invitations")
-    .select("id, workspace_id, email, role, status, expires_at")
+    .select("id, workspace_id, email, role, status, expires_at, invited_by_user_id")
     .eq("token_hash", hashWorkspaceInviteToken(trimmedToken))
-    .maybeSingle<{ id: string; workspace_id: string; email: string; role: string; status: string; expires_at: string }>();
+    .maybeSingle<{ id: string; workspace_id: string; email: string; role: string; status: string; expires_at: string; invited_by_user_id: string | null }>();
 
   if (!invite) throw new WorkspaceInviteError("invalid_token", "Invite not found.");
 
+  // The stored role is not trusted just because it is stored: only an invitable role (never
+  // "owner") can be granted through an invitation, whoever wrote the row (F22-A).
   const role = normalizeWorkspaceRole(invite.role);
-  if (!role) throw new WorkspaceInviteError("invalid_role", "Invite has an invalid role.");
+  if (!role || !(INVITABLE_WORKSPACE_ROLES as readonly string[]).includes(role)) {
+    throw new WorkspaceInviteError("invalid_role", "Invite has an invalid role.");
+  }
 
   if (invite.status === "revoked") throw new WorkspaceInviteError("revoked", "Invitation has been revoked.");
   if (invite.status === "accepted") throw new WorkspaceInviteError("already_used", "Invitation has already been accepted.");
@@ -234,7 +248,49 @@ async function resolveValidWorkspaceInvite(token: string, supabase: MinimalSupab
     throw new WorkspaceInviteError("expired", "Invitation has expired.");
   }
 
-  return { inviteId: invite.id, workspaceId: invite.workspace_id, email: invite.email, role };
+  return { inviteId: invite.id, workspaceId: invite.workspace_id, email: invite.email, role, invitedByUserId: invite.invited_by_user_id };
+}
+
+async function readWorkspaceMembershipRole(supabase: MinimalSupabaseClient, workspaceId: string, userId: string): Promise<{ exists: boolean; role: WorkspaceRole | null }> {
+  const { data, error } = await supabase
+    .from("workspace_memberships")
+    .select("role")
+    .eq("workspace_id", workspaceId)
+    .eq("user_id", userId)
+    .maybeSingle<{ role: string }>();
+  if (error) throw new Error(error.message);
+  return { exists: Boolean(data), role: data ? normalizeWorkspaceRole(data.role) : null };
+}
+
+/**
+ * Re-validates, at acceptance time, that the invitation is still one its issuer may grant: the
+ * inviter must currently hold a workspace role that can assign the invite's role. An invite
+ * whose issuer is unknown, has left, or was demoted fails closed and is left untouched.
+ */
+async function assertInviterStillAuthorized(supabase: MinimalSupabaseClient, invite: ResolvedWorkspaceInvite) {
+  const inviter = invite.invitedByUserId
+    ? await readWorkspaceMembershipRole(supabase, invite.workspaceId, invite.invitedByUserId)
+    : { exists: false, role: null };
+  if (!inviter.role || !canAssignWorkspaceRole({ actorRole: inviter.role, targetRole: invite.role })) {
+    throw new WorkspaceInviteError("inviter_not_authorized", "This invitation is no longer valid.");
+  }
+}
+
+/**
+ * The invitation is a credential for its email address, so the accepting account must hold that
+ * address as a CONFIRMED email, read from GoTrue for this user id — not taken from the caller.
+ * An unconfirmed sign-up for someone else's address cannot accept their invitation (F22-B).
+ */
+async function assertAccepterOwnsVerifiedInviteEmail(supabase: AcceptInviteSupabaseClient, userId: string, inviteEmail: string) {
+  const { data, error } = await supabase.auth.admin.getUserById(userId);
+  if (error || !data?.user) throw new WorkspaceInviteError("email_unverified", "Confirm your email address before accepting this invitation.");
+  const accountEmail = (data.user.email ?? "").trim().toLowerCase();
+  if (!accountEmail || accountEmail !== inviteEmail.trim().toLowerCase()) {
+    throw new WorkspaceInviteError("email_mismatch", "This invitation was issued to a different email address.");
+  }
+  if (!data.user.email_confirmed_at) {
+    throw new WorkspaceInviteError("email_unverified", "Confirm your email address before accepting this invitation.");
+  }
 }
 
 function assertInviteBelongsToAuthenticatedEmail(input: { inviteEmail: string; userEmail: string }) {
@@ -255,15 +311,18 @@ export type AcceptedWorkspaceInvite = { workspaceId: string; role: WorkspaceRole
  * The assigned role and workspace always come from the server-side invite record
  * resolved by `resolveValidWorkspaceInvite`.
  *
- * Fails closed on: invalid/unknown token, invalid stored role, email mismatch, revoked,
- * expired, or already-used invites. The pending→accepted transition is a single
- * conditional UPDATE (`.eq("status", "pending")`) whose result is checked before any
- * membership write, so a concurrent replay of the same token can win the race at most
- * once — the loser gets `already_used` and never reaches the membership upsert.
+ * Fails closed on: invalid/unknown token, invalid or non-invitable stored role (owner),
+ * email mismatch, an account whose invite email is not confirmed in GoTrue, revoked,
+ * expired, or already-used invites, an inviter who can no longer
+ * grant the role, and an accepting user who is already a member (an invite never changes an
+ * existing membership). The pending→accepted transition is a single conditional UPDATE
+ * (`.eq("status", "pending")`) whose result is checked before any membership write, so a
+ * concurrent replay of the same token can win the race at most once — the loser gets
+ * `already_used` and never reaches the membership insert.
  */
 export async function acceptWorkspaceInvite(
   input: { token: string; userId: string; userEmail: string },
-  getSupabaseClient: () => Promise<MinimalSupabaseClient> = async () =>
+  getSupabaseClient: () => Promise<AcceptInviteSupabaseClient> = async () =>
     createSupabaseServiceRoleClient({
       routeId: "lib.workspace-team.acceptWorkspaceInvite",
       operation: "accept_invite",
@@ -276,6 +335,14 @@ export async function acceptWorkspaceInvite(
   const invite = await resolveValidWorkspaceInvite(input.token, supabase);
 
   assertInviteBelongsToAuthenticatedEmail({ inviteEmail: invite.email, userEmail: input.userEmail });
+  await assertAccepterOwnsVerifiedInviteEmail(supabase, input.userId, invite.email);
+  await assertInviterStillAuthorized(supabase, invite);
+
+  // An invitation only ever creates a membership. It never changes an existing one — role
+  // changes go through updateWorkspaceMemberRole and its own authorization (F22-A).
+  if ((await readWorkspaceMembershipRole(supabase, invite.workspaceId, input.userId)).exists) {
+    throw new WorkspaceInviteError("already_member", "You are already a member of this workspace.");
+  }
 
   const { data: claimed } = await supabase
     .from("workspace_invitations")
@@ -289,8 +356,17 @@ export async function acceptWorkspaceInvite(
 
   const { error: memberError } = await supabase
     .from("workspace_memberships")
-    .upsert({ workspace_id: invite.workspaceId, user_id: input.userId, role: invite.role }, { onConflict: "workspace_id,user_id" });
-  if (memberError) throw new Error(memberError.message);
+    .insert({ workspace_id: invite.workspaceId, user_id: input.userId, role: invite.role });
+  if (memberError) {
+    // A membership created concurrently is never overwritten: release the claim and refuse.
+    await supabase
+      .from("workspace_invitations")
+      .update({ status: "pending", accepted_by_user_id: null, accepted_at: null })
+      .eq("id", invite.inviteId)
+      .eq("accepted_by_user_id", input.userId);
+    if (memberError.code === "23505") throw new WorkspaceInviteError("already_member", "You are already a member of this workspace.");
+    throw new Error(memberError.message);
+  }
 
   await supabase.from("workspace_audit_events").insert({
     workspace_id: invite.workspaceId,

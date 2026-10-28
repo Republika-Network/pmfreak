@@ -180,6 +180,7 @@ const FAMILY_LABEL: Record<string, string> = {
   PROJECT: "Project",
   ONBOARDING: "Project setup",
   EVIDENCE: "Evidence",
+  DOCUMENT: "Uploaded document",
   SIGNAL: "Signal",
   RISK: "Risk",
   ISSUE: "Issue",

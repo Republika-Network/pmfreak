@@ -2,6 +2,20 @@ import { createPrivilegedSupabaseClient } from "@/lib/security/privileged-access
 
 const sanitizeFileName = (input: string) => input.replace(/[^a-zA-Z0-9._-]/g, "_");
 
+/**
+ * True only for a path this provider would have written for that uploader and project:
+ * `<uploader companyId = user id>/<projectId>/<single file segment>` (see upload below).
+ * A privileged storage deletion must check a client-writable path against this first (F22-B).
+ */
+export function isEvidenceStoragePathFor(input: { storagePath: string | null | undefined; uploadedBy: string | null | undefined; projectId: string }): boolean {
+  const { storagePath, uploadedBy, projectId } = input;
+  if (!storagePath || !uploadedBy || !projectId) return false;
+  const prefix = `${uploadedBy}/${projectId}/`;
+  if (!storagePath.startsWith(prefix)) return false;
+  const fileSegment = storagePath.slice(prefix.length);
+  return fileSegment.length > 0 && !fileSegment.includes("/") && !storagePath.includes("..") && fileSegment === sanitizeFileName(fileSegment);
+}
+
 export interface StorageProvider {
   upload(params: {
     fileId: string;

@@ -19,6 +19,7 @@ import { saveProjectOnboarding } from "@/lib/projects/save-project-onboarding";
 import type { ProjectSaveResult } from "@/lib/projects/save-project-onboarding";
 import { BrainBootSequence } from "./brain-boot-sequence";
 import { workspaceCommandCenterPath } from "@/lib/workspaces/workspace-paths";
+import { clearScopedDraft, loadScopedDraft, saveScopedDraft } from "@/lib/drafts/draft-storage";
 
 // ─── Styles ────────────────────────────────────────────────────────────────────
 
@@ -75,24 +76,9 @@ const DEFAULT_DISCOVERY: IntelligenceDiscovery = {
 
 // ─── Draft persistence ─────────────────────────────────────────────────────────
 
-const DRAFT_KEY = "pmfreak.project.draft";
-
-function loadDraft(): Partial<{ identity: ProjectIdentity; delivery: DeliveryContext; discovery: IntelligenceDiscovery }> | null {
-  try {
-    const raw = typeof window !== "undefined" ? localStorage.getItem(DRAFT_KEY) : null;
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveDraft(data: object) {
-  try { localStorage.setItem(DRAFT_KEY, JSON.stringify(data)); } catch {}
-}
-
-function clearDraft() {
-  try { localStorage.removeItem(DRAFT_KEY); } catch {}
-}
+// Scoped to the signed-in user and the target workspace by the server-issued key (PD-21).
+type ProjectDraft = Partial<{ identity: ProjectIdentity; delivery: DeliveryContext; discovery: IntelligenceDiscovery }>;
+const loadDraft = (draftKey: string | null) => loadScopedDraft<ProjectDraft>(draftKey);
 
 // ─── Validation ────────────────────────────────────────────────────────────────
 
@@ -693,6 +679,7 @@ function StepBrainActivation({
 export function CreateProjectWizard({
   pmoId,
   workspaceId,
+  draftKey = null,
 }: {
   pmoId?: string;
   /**
@@ -700,6 +687,8 @@ export function CreateProjectWizard({
    * the save action as a claim that the action re-authorizes; never trusted as-is.
    */
   workspaceId?: string;
+  /** This user's draft key for the displayed workspace (PD-21); null keeps no draft. */
+  draftKey?: string | null;
 } = {}) {
   const router = useRouter();
   const [step, setStep] = useState(1);
@@ -726,23 +715,23 @@ export function CreateProjectWizard({
   );
 
   const [identity, setIdentity] = useState<ProjectIdentity>(() => {
-    const d = loadDraft();
+    const d = loadDraft(draftKey);
     return d?.identity ?? DEFAULT_IDENTITY;
   });
   const [delivery, setDelivery] = useState<DeliveryContext>(() => {
-    const d = loadDraft();
+    const d = loadDraft(draftKey);
     return d?.delivery ?? DEFAULT_DELIVERY;
   });
   const [discovery, setDiscovery] = useState<IntelligenceDiscovery>(() => {
-    const d = loadDraft();
+    const d = loadDraft(draftKey);
     return d?.discovery ?? DEFAULT_DISCOVERY;
   });
 
   const persist = useCallback(
     (patch: Partial<{ identity: ProjectIdentity; delivery: DeliveryContext; discovery: IntelligenceDiscovery }>) => {
-      saveDraft({ identity, delivery, discovery, ...patch });
+      saveScopedDraft(draftKey, { identity, delivery, discovery, ...patch });
     },
-    [identity, delivery, discovery]
+    [draftKey, identity, delivery, discovery]
   );
 
   const updateIdentity = (field: keyof ProjectIdentity, value: string) => {
@@ -828,7 +817,7 @@ export function CreateProjectWizard({
     // itself waits for the brain boot sequence to finish playing; new
     // projects land in the Command Center showing the Project Intelligence
     // Inbox first.
-    clearDraft();
+    clearScopedDraft(draftKey);
     navigationCommittedRef.current = true;
     setShowBootSequence(true);
     await waitForBootSequence();

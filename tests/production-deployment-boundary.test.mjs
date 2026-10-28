@@ -84,7 +84,7 @@ test("2. allowed public env allowlist contains only genuinely public envs", () =
 });
 
 test("3. server-only env list includes the required critical secrets", () => {
-  for (const required of ["SUPABASE_SERVICE_ROLE_KEY", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "FOUNDER_EMAIL_ALLOWLIST"]) {
+  for (const required of ["SUPABASE_SERVICE_ROLE_KEY", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "FOUNDER_OPERATOR_USER_IDS"]) {
     assert.ok(SERVER_ONLY_ENV_VARS.includes(required), `${required} must be listed as server-only`);
   }
 });

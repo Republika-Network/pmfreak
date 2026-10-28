@@ -1,6 +1,6 @@
-import type { SubscriptionPlan } from "@/lib/billing";
+import { getCompanySubscription } from "@/lib/billing";
 import { getUploadLimit } from "@/lib/feature-gates";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseServiceRoleClient } from "@/lib/supabase/admin";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -56,6 +56,30 @@ const getCurrentMonthKey = () => {
   return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
 };
 
+/**
+ * The authenticated principal a quota operation runs for, as resolved by getAuthUser().
+ * companyId must be that principal's own company — the user id (F1) — never a request
+ * parameter.
+ */
+export type QuotaActor = { userId: string; companyId: string };
+
+// PRIVILEGED_ACCESS: the quota RPCs are EXECUTE-able by service_role only
+// (20261022000000_quota_server_only_authority.sql), so a client can never pick its own
+// limit or touch quota rows directly (F3/F20). Every call is tagged with the authenticated
+// actor and refused unless the company is that actor's own.
+// AUDIT_REF: service-role-risk-register.md
+const createQuotaClient = (actor: QuotaActor, operation: string) => {
+  if (!actor.userId || actor.companyId !== actor.userId) {
+    throw new Error("Quota operation refused: the company is not the authenticated user's own.");
+  }
+  return createSupabaseServiceRoleClient({
+    routeId: "lib.quota.upload-quota",
+    operation,
+    reason: "upload_quota_enforcement",
+    actorUserId: actor.userId,
+  });
+};
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
@@ -65,18 +89,23 @@ const getCurrentMonthKey = () => {
  * non-expired pending reservations for the same company/month. This prevents
  * concurrent requests from both passing the quota check before either commits.
  *
+ * The limit is derived here from the company's own subscription row (server-written),
+ * never supplied by the caller.
+ *
  * On approval, the returned reservationId MUST be passed to either
  * commitUploadQuota (on success) or cancelUploadQuota (on any failure/rollback).
  */
 export const reserveUploadQuota = async (params: {
-  companyId: string;
+  actor: QuotaActor;
   uploadAmount: number;
-  plan: SubscriptionPlan;
   requestId: string;
 }): Promise<QuotaReservationResult> => {
-  const { companyId, uploadAmount, plan, requestId } = params;
+  const { actor, uploadAmount, requestId } = params;
+  const { companyId } = actor;
+  const supabase = createQuotaClient(actor, "reserve_upload_quota");
+  const subscription = await getCompanySubscription(companyId, { client: supabase });
   const monthKey = getCurrentMonthKey();
-  const limit = getUploadLimit(plan);
+  const limit = getUploadLimit(subscription.plan);
 
   console.info("[quota] quota_reservation_started", {
     requestId,
@@ -86,7 +115,6 @@ export const reserveUploadQuota = async (params: {
     monthKey,
   });
 
-  const supabase = await createSupabaseServerClient();
   const { data, error } = await supabase.rpc("reserve_upload_quota", {
     p_company_id: companyId,
     p_upload_amount: uploadAmount,
@@ -151,13 +179,14 @@ export const reserveUploadQuota = async (params: {
  */
 export const commitUploadQuota = async (params: {
   reservationId: string;
-  companyId: string;
+  actor: QuotaActor;
   requestId: string;
   uploadAmount: number;
 }): Promise<void> => {
-  const { reservationId, companyId, requestId, uploadAmount } = params;
+  const { reservationId, actor, requestId, uploadAmount } = params;
+  const { companyId } = actor;
 
-  const supabase = await createSupabaseServerClient();
+  const supabase = createQuotaClient(actor, "commit_upload_quota");
   const { data, error } = await supabase.rpc("commit_upload_quota", {
     p_reservation_id: reservationId,
     p_company_id: companyId,
@@ -205,13 +234,14 @@ export const commitUploadQuota = async (params: {
  */
 export const cancelUploadQuota = async (params: {
   reservationId: string;
-  companyId: string;
+  actor: QuotaActor;
   requestId: string;
   uploadAmount: number;
 }): Promise<void> => {
-  const { reservationId, companyId, requestId, uploadAmount } = params;
+  const { reservationId, actor, requestId, uploadAmount } = params;
+  const { companyId } = actor;
 
-  const supabase = await createSupabaseServerClient();
+  const supabase = createQuotaClient(actor, "cancel_upload_quota");
   const { data, error } = await supabase.rpc("cancel_upload_quota", {
     p_reservation_id: reservationId,
     p_company_id: companyId,

@@ -16,6 +16,7 @@ import { computeCapabilityRevealState, computeNavigationRail } from "@/features/
 import { AWAKENING_EVENT, isLensUnlocked, loadAwakeningState, deriveAwakeningState, type AwakeningState } from "@/lib/workspace/awakening-state";
 import type { CapabilityProfile } from "@/lib/workspace/pilot-capability-set";
 import { isConversationShellPath } from "@/lib/navigation/conversation-shell-scope";
+import { clearDraftsOwnedBy } from "@/lib/drafts/draft-storage";
 import { ConversationShell } from "@/components/pmfreak/conversation-shell/conversation-shell";
 
 type UserProject = { id: string; name: string };
@@ -134,7 +135,8 @@ type ScheduleHealth = {
 
 type OperationalShellProps = {
   children: React.ReactNode;
-  user: { fullName: string; role: string; companyName: string };
+  /** draftOwnerTag: opaque per-user tag; sign-out clears this user's wizard drafts (PD-21). */
+  user: { fullName: string; role: string; companyName: string; draftOwnerTag?: string };
   /** Pilot capability set (Task 7): resolved server-side; defaults to the curated pilot profile. */
   capabilityProfile?: CapabilityProfile;
   /**
@@ -2248,7 +2250,7 @@ function OperationalRailShell({ children, user, capabilityProfile = "pilot", wor
                   so rendering this shell issued a real GET /logout and ended the session.
                   A form POST is not prefetchable and not speculatively followed by any
                   agent, and the route now performs the transition only on POST. */}
-              <form action="/logout" method="post" className="shrink-0">
+              <form action="/logout" method="post" className="shrink-0" onSubmit={() => clearDraftsOwnedBy(user.draftOwnerTag)}>
                 <button
                   type="submit"
                   className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-[10px] uppercase tracking-[0.12em] text-zinc-400 transition-colors hover:border-slate-200 hover:text-slate-700"

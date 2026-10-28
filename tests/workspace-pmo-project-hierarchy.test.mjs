@@ -167,10 +167,11 @@ test("every project creation path attaches a PMO", () => {
   // reaching Project creation, which resolveOnboardingState never checks
   // (PMF-001/PMF-002). The retired api/getting-started/route.ts (a former,
   // separate creation path) is no longer checked here — it was deleted.
-  assert.ok(createMinimalProject.includes("pmo_id: resolvedPmoId"), "projects/actions.ts (via createMinimalProject) must attach a PMO");
-  assert.ok(saveProjectOnboarding.includes("pmo_id: pmoId"));
+  // Q12: every path inserts through createProjectWithinLimit, which writes pmo_id.
+  assert.ok(createMinimalProject.includes("pmoId: resolvedPmoId"), "projects/actions.ts (via createMinimalProject) must attach a PMO");
+  assert.match(saveProjectOnboarding, /createProjectWithinLimit\(\{[^}]*\bpmoId,/);
   const commandCenterAction = fs.readFileSync("src/app/(protected)/command-center/actions.ts", "utf8");
-  assert.ok(commandCenterAction.includes("pmo_id: defaultPmo.id"));
+  assert.ok(commandCenterAction.includes("pmoId: defaultPmo.id"));
 });
 
 test("PMO onboarding materializes a pmos row", () => {

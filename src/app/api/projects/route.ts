@@ -64,6 +64,7 @@ export async function GET(request: NextRequest) {
 const CREATE_FAILURE_STATUS: Record<string, number> = {
   validation_failed: 400,
   upgrade_required: 402,
+  insufficient_role: 403,
   persistence_failed: 500,
 };
 

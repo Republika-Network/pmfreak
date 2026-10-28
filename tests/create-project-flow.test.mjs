@@ -136,12 +136,13 @@ test("wizard does not call clearDraft before persistence is confirmed", () => {
   const guardIdx = wizard.indexOf('result.status !== "success"');
   const successPathIdx = wizard.indexOf("// Persistence confirmed", guardIdx);
   const failureBranch = wizard.slice(guardIdx, successPathIdx);
-  assert.ok(!failureBranch.includes("clearDraft()"), "clearDraft must NOT be called in the failure branch");
+  assert.ok(!failureBranch.includes("clearDraft()") && !failureBranch.includes("clearScopedDraft("), "clearDraft must NOT be called in the failure branch");
 });
 
 test("wizard clears draft only after confirmed persistence", () => {
   const persistedIdx = wizard.indexOf("// Persistence confirmed");
-  const clearIdx = wizard.indexOf("clearDraft();", persistedIdx);
+  // PD-21: the draft is the user's own scoped key.
+  const clearIdx = wizard.indexOf("clearScopedDraft(draftKey);", persistedIdx);
   assert.ok(persistedIdx > 0, "success path marker must exist");
   assert.ok(clearIdx > persistedIdx, "clearDraft() must appear in the success path only");
 });
@@ -156,7 +157,7 @@ test("wizard never writes to localStorage during activation (only during field e
   const retryIdx = wizard.indexOf("const handleRetry");
   // Neither handleActivate nor handleRetry should call saveDraft
   const activateBody = wizard.slice(activateIdx, retryIdx);
-  assert.ok(!activateBody.includes("saveDraft("), "handleActivate must not call saveDraft()");
+  assert.ok(!activateBody.includes("saveDraft(") && !activateBody.includes("saveScopedDraft("), "handleActivate must not call saveDraft()");
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -230,7 +231,11 @@ test("saveProjectOnboarding emits project.create.rollback.failed on failed rollb
 
 test("saveProjectOnboarding issues delete on rollback", () => {
   assert.match(saveProject, /\.delete\(\)/, "rollback must issue a delete");
-  assert.match(saveProject, /\.eq\("id", insertedProjectId\)/, "rollback must target the specific project row");
+  // F21: the compensating delete is privileged (project DELETE is owner/admin under RLS), so
+  // it must stay pinned to exactly the row this request inserted.
+  assert.match(saveProject, /\.eq\("id", insertedProject\.id\)/, "rollback must target the specific project row");
+  assert.match(saveProject, /\.eq\("workspace_id", insertedProject\.workspaceId\)/, "rollback must stay in the inserting workspace");
+  assert.match(saveProject, /\.eq\("user_id", insertedProject\.userId\)/, "rollback must only remove the caller's own insert");
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

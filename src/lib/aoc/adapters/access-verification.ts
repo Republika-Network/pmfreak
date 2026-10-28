@@ -9,6 +9,8 @@
 // Enterprise Runtime, otherwise authorization becomes recursive.
 
 import { getAuthUser } from "@/lib/auth";
+import { PROJECT_ARCHIVED_CODE, PROJECT_MUTATING_PERMISSIONS, isArchivedProjectStatus } from "@/lib/projects/archived-project";
+import { isArchivedProjectLifecycleOperation } from "@/lib/projects/archived-project-lifecycle";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { AccessVerificationPort } from "@/lib/governance/authority/ports/access-verification";
 import { GovernanceAccessDeniedError } from "@/lib/governance/authority/ports/access-verification";
@@ -137,7 +139,7 @@ export class PmfreakAccessVerificationAdapter
 
     const { data: project, error } = await supabase
       .from("projects")
-      .select("workspace_id")
+      .select("workspace_id, status")
       .eq("id", projectId)
       .maybeSingle();
 
@@ -161,6 +163,19 @@ export class PmfreakAccessVerificationAdapter
       workspaceId,
       projectId,
     });
+
+    // PD-25: an archived project is read-only. Checked after the role, so this refusal only
+    // ever reaches an otherwise authorized writer. The only exception is the explicit lifecycle
+    // scope (reactivation, permanent deletion, duplication — archived-project-lifecycle.ts),
+    // which lifts this one rule and nothing above it.
+    if (PROJECT_MUTATING_PERMISSIONS.has(permission) && isArchivedProjectStatus(project.status) && !isArchivedProjectLifecycleOperation()) {
+      deny("Project is archived.", {
+        userId: user.id,
+        workspaceId,
+        projectId,
+        reason: PROJECT_ARCHIVED_CODE,
+      });
+    }
 
     return {
       role,

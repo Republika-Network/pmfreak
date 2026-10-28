@@ -6,8 +6,9 @@
 // input is never allowed to influence that decision.
 //
 // - evaluateFounderOrInternalAccess / isFounderOrInternalUser (src/lib/auth.ts)
-//   are pure — exercised directly, same pattern as
-//   tests/billing-authorization-workspace-membership.test.mjs.
+//   are pure over a server-verified AuthUserContext and the server-only
+//   FOUNDER_OPERATOR_USER_IDS env var (F6 / PR-4) — exercised directly, same
+//   pattern as tests/billing-authorization-workspace-membership.test.mjs.
 // - requireNonEmptyId / isValidTrialExtensionDays / sanitizeAuditReason /
 //   isValidInviteEmail (src/lib/early-access.ts) are pure validation helpers
 //   extracted from the mutation functions so they're directly testable
@@ -24,6 +25,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import {
+  buildAuthUserContext,
   evaluateFounderOrInternalAccess,
   isFounderOrInternalUser,
 } from "../src/lib/auth.ts";
@@ -41,113 +43,144 @@ const readSource = (relativePath) => fs.readFile(new URL(`../${relativePath}`, i
 // evaluateFounderOrInternalAccess / isFounderOrInternalUser (pure)
 // ─────────────────────────────────────────────────────────────────────────────
 
-test("evaluateFounderOrInternalAccess: missing/null/empty/whitespace email fails closed (test #6)", () => {
-  for (const email of [undefined, null, "", "   "]) {
-    const result = evaluateFounderOrInternalAccess({ email });
-    assert.equal(result.allowed, false);
-    assert.equal(result.decision, "deny_missing_email");
+const OPERATOR_ID = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+const OTHER_ID = "0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d";
+const CONFIRMED_AT = "2026-10-01T12:00:00.000Z";
+
+// A context exactly as getAuthUser() builds it from a GoTrue user.
+const verifiedUser = (overrides = {}) =>
+  buildAuthUserContext(
+    { id: OPERATOR_ID, email: "operator@example.com", email_confirmed_at: CONFIRMED_AT, user_metadata: {}, ...overrides },
+    { verifiedByAuthServer: true },
+  );
+
+const withEnv = (vars, fn) => {
+  const previous = Object.fromEntries(Object.keys(vars).map((name) => [name, process.env[name]]));
+  for (const [name, value] of Object.entries(vars)) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
   }
-});
-
-test("evaluateFounderOrInternalAccess: malformed email shape fails closed", () => {
-  for (const email of ["not-an-email", "user@localhost", "@pmfreak.ai", "justtext"]) {
-    const result = evaluateFounderOrInternalAccess({ email });
-    assert.equal(result.allowed, false);
-    assert.equal(result.decision, "deny_invalid_email");
-  }
-});
-
-test("evaluateFounderOrInternalAccess: internal domain exact match allows (test #4)", () => {
-  const result = evaluateFounderOrInternalAccess({ email: "user@pmfreak.ai" });
-  assert.equal(result.allowed, true);
-  assert.equal(result.decision, "allow");
-  assert.equal(result.source, "internal_domain");
-  assert.equal(result.normalizedEmail, "user@pmfreak.ai");
-});
-
-test("evaluateFounderOrInternalAccess: internal domain match is case-insensitive", () => {
-  assert.equal(evaluateFounderOrInternalAccess({ email: "User@PMFreak.AI" }).allowed, true);
-  assert.equal(evaluateFounderOrInternalAccess({ email: "victor@OnChainFest.xyz" }).allowed, true);
-});
-
-test("evaluateFounderOrInternalAccess: domain-suffix spoof is rejected — attacker@pmfreak.ai.evil.com does not match (test #4)", () => {
-  const result = evaluateFounderOrInternalAccess({ email: "attacker@pmfreak.ai.evil.com" });
-  assert.equal(result.allowed, false);
-  assert.equal(result.decision, "deny_not_founder_or_internal");
-});
-
-test("evaluateFounderOrInternalAccess: prefix-spoof subdomain is rejected — attacker@evilpmfreak.ai does not match", () => {
-  const result = evaluateFounderOrInternalAccess({ email: "attacker@evilpmfreak.ai" });
-  assert.equal(result.allowed, false);
-  assert.equal(result.decision, "deny_not_founder_or_internal");
-});
-
-test("evaluateFounderOrInternalAccess: allowlist exact match allows, suffix spoof denied (test #5)", () => {
-  const original = process.env.FOUNDER_EMAIL_ALLOWLIST;
-  process.env.FOUNDER_EMAIL_ALLOWLIST = "victor@example.com, other@example.com";
   try {
-    const allowed = evaluateFounderOrInternalAccess({ email: "victor@example.com" });
-    assert.equal(allowed.allowed, true);
-    assert.equal(allowed.decision, "allow");
-    assert.equal(allowed.source, "allowlist");
-
-    const spoofed = evaluateFounderOrInternalAccess({ email: "victor@example.com.evil.com" });
-    assert.equal(spoofed.allowed, false);
-    assert.equal(spoofed.decision, "deny_not_founder_or_internal");
-
-    // case-insensitive match against the parsed allowlist
-    assert.equal(evaluateFounderOrInternalAccess({ email: "VICTOR@EXAMPLE.COM" }).allowed, true);
+    return fn();
   } finally {
-    if (original === undefined) delete process.env.FOUNDER_EMAIL_ALLOWLIST;
-    else process.env.FOUNDER_EMAIL_ALLOWLIST = original;
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+};
+const withOperators = (value, fn) => withEnv({ FOUNDER_OPERATOR_USER_IDS: value, FOUNDER_EMAIL_ALLOWLIST: undefined }, fn);
+
+test("evaluateFounderOrInternalAccess: a verified, email-confirmed user listed in FOUNDER_OPERATOR_USER_IDS is allowed", () => {
+  withOperators(`${OTHER_ID},${OPERATOR_ID}`, () => {
+    assert.deepEqual(evaluateFounderOrInternalAccess(verifiedUser()), { allowed: true, decision: "allow" });
+    assert.equal(isFounderOrInternalUser(verifiedUser()), true);
+  });
+});
+
+test("evaluateFounderOrInternalAccess: id matching is exact, case-insensitive and whitespace-tolerant", () => {
+  withOperators(`  ${OPERATOR_ID.toUpperCase()} , `, () => {
+    assert.equal(isFounderOrInternalUser(verifiedUser()), true);
+    assert.equal(evaluateFounderOrInternalAccess(verifiedUser({ id: OTHER_ID })).decision, "deny_not_operator");
+  });
+});
+
+test("evaluateFounderOrInternalAccess: unlisted @pmfreak.ai / @onchainfest.xyz users are denied — email domains grant nothing (F6)", () => {
+  withOperators(OPERATOR_ID, () => {
+    for (const email of ["user@pmfreak.ai", "User@PMFreak.AI", "victor@onchainfest.xyz", "ops@OnChainFest.xyz"]) {
+      const result = evaluateFounderOrInternalAccess(verifiedUser({ id: OTHER_ID, email }));
+      assert.deepEqual(result, { allowed: false, decision: "deny_not_operator" }, email);
+    }
+  });
+});
+
+test("evaluateFounderOrInternalAccess: FOUNDER_EMAIL_ALLOWLIST is no longer read — naming an email grants nothing (F6)", () => {
+  withEnv({ FOUNDER_OPERATOR_USER_IDS: OPERATOR_ID, FOUNDER_EMAIL_ALLOWLIST: "trusted@example.com" }, () => {
+    assert.equal(evaluateFounderOrInternalAccess(verifiedUser({ id: OTHER_ID, email: "trusted@example.com" })).decision, "deny_not_operator");
+  });
+  withEnv({ FOUNDER_OPERATOR_USER_IDS: undefined, FOUNDER_EMAIL_ALLOWLIST: "operator@example.com" }, () => {
+    assert.equal(evaluateFounderOrInternalAccess(verifiedUser()).decision, "deny_operators_not_configured");
+  });
+});
+
+test("evaluateFounderOrInternalAccess: a listed user without a confirmed email is denied (F6)", () => {
+  withOperators(OPERATOR_ID, () => {
+    for (const email_confirmed_at of [null, undefined, "", "not-a-date"]) {
+      const result = evaluateFounderOrInternalAccess(verifiedUser({ email_confirmed_at }));
+      assert.deepEqual(result, { allowed: false, decision: "deny_email_unconfirmed" }, String(email_confirmed_at));
+    }
+  });
+});
+
+test("evaluateFounderOrInternalAccess: missing or empty operator configuration fails closed", () => {
+  for (const value of [undefined, "", "   ", ",", " , ,"]) {
+    withOperators(value, () => {
+      assert.deepEqual(evaluateFounderOrInternalAccess(verifiedUser()), { allowed: false, decision: "deny_operators_not_configured" }, String(value));
+    });
   }
 });
 
-test("evaluateFounderOrInternalAccess: allowlist parser trims whitespace and ignores empty entries", () => {
-  const original = process.env.FOUNDER_EMAIL_ALLOWLIST;
-  process.env.FOUNDER_EMAIL_ALLOWLIST = "  spaced@example.com  ,, ,another@example.com";
-  try {
-    assert.equal(evaluateFounderOrInternalAccess({ email: "spaced@example.com" }).allowed, true);
-    assert.equal(evaluateFounderOrInternalAccess({ email: "another@example.com" }).allowed, true);
-    assert.equal(evaluateFounderOrInternalAccess({ email: "" }).decision, "deny_missing_email");
-  } finally {
-    if (original === undefined) delete process.env.FOUNDER_EMAIL_ALLOWLIST;
-    else process.env.FOUNDER_EMAIL_ALLOWLIST = original;
+test("evaluateFounderOrInternalAccess: any malformed entry (email, partial id) invalidates the whole operator configuration", () => {
+  for (const value of [`${OPERATOR_ID},operator@example.com`, `${OPERATOR_ID},6f1c2a3b`, "operator@example.com", `${OPERATOR_ID};${OTHER_ID}`]) {
+    withOperators(value, () => {
+      assert.deepEqual(evaluateFounderOrInternalAccess(verifiedUser()), { allowed: false, decision: "deny_operators_misconfigured" }, value);
+    });
   }
 });
 
-test("evaluateFounderOrInternalAccess: a normal, non-allowlisted, non-internal email is denied", () => {
-  const result = evaluateFounderOrInternalAccess({ email: "normal@example.com" });
-  assert.equal(result.allowed, false);
-  assert.equal(result.decision, "deny_not_founder_or_internal");
+test("evaluateFounderOrInternalAccess: fabricated user objects are never operators, whatever fields they carry", () => {
+  withOperators(OPERATOR_ID, () => {
+    const fabricated = [
+      undefined,
+      null,
+      OPERATOR_ID,
+      { email: "user@pmfreak.ai" },
+      { id: OPERATOR_ID, email: "operator@example.com", email_confirmed_at: CONFIRMED_AT },
+      { id: OPERATOR_ID, email: "operator@example.com", fullName: "x", companyId: OPERATOR_ID, companyName: "x", role: "viewer", onboardingCompleted: true },
+      { ...verifiedUser() },
+      Object.assign(Object.create(null), verifiedUser()),
+      JSON.parse(JSON.stringify(verifiedUser())),
+    ];
+    for (const candidate of fabricated) {
+      assert.deepEqual(evaluateFounderOrInternalAccess(candidate), { allowed: false, decision: "deny_unverified_identity" });
+    }
+  });
 });
 
-test("isFounderOrInternalUser: only reads user.email — user_metadata.role / display role on the object cannot influence the decision (tests #1, #2)", () => {
-  // AuthUserContext.role is a display role only; even attaching role: "admin"/"owner"
-  // directly on the object (as if metadata/display-role had somehow set it) changes
-  // nothing, because isFounderOrInternalUser never reads `.role`.
-  const normalUserWithAdminMetadataRole = { email: "normal@example.com", role: "admin" };
-  assert.equal(isFounderOrInternalUser(normalUserWithAdminMetadataRole), false);
-
-  const normalUserWithOwnerDisplayRole = { email: "normal@example.com", role: "owner" };
-  assert.equal(isFounderOrInternalUser(normalUserWithOwnerDisplayRole), false);
-
-  const founderRegardlessOfRoleField = { email: "user@pmfreak.ai", role: "viewer" };
-  assert.equal(isFounderOrInternalUser(founderRegardlessOfRoleField), true);
+test("evaluateFounderOrInternalAccess: a context built from an unverified (getSession cookie) user is never an operator", () => {
+  withOperators(OPERATOR_ID, () => {
+    const fromSession = buildAuthUserContext({ id: OPERATOR_ID, email: "operator@example.com", email_confirmed_at: CONFIRMED_AT });
+    assert.equal(evaluateFounderOrInternalAccess(fromSession).decision, "deny_unverified_identity");
+    const explicitFalse = buildAuthUserContext({ id: OPERATOR_ID, email: "operator@example.com", email_confirmed_at: CONFIRMED_AT }, { verifiedByAuthServer: false });
+    assert.equal(evaluateFounderOrInternalAccess(explicitFalse).decision, "deny_unverified_identity");
+  });
 });
 
-test("evaluateFounderOrInternalAccess: extra caller-supplied fields (actorRole/isFounder/isAdmin) alongside email are ignored — signature only reads .email (test #3, #10)", () => {
-  const spoofedInput = {
-    email: "normal@example.com",
-    actorRole: "owner",
-    isFounder: true,
-    isAdmin: true,
-    role: "admin",
-    permissions: ["all"],
-  };
-  const result = evaluateFounderOrInternalAccess(spoofedInput);
-  assert.equal(result.allowed, false, "extra fields must not grant founder access to a non-founder email");
-  assert.equal(result.decision, "deny_not_founder_or_internal");
+test("evaluateFounderOrInternalAccess: reassigning id / email on a verified context does not change the decision", () => {
+  withOperators(OPERATOR_ID, () => {
+    const ordinary = verifiedUser({ id: OTHER_ID, email: "normal@example.com" });
+    ordinary.id = OPERATOR_ID;
+    ordinary.companyId = OPERATOR_ID;
+    ordinary.email = "user@pmfreak.ai";
+    assert.equal(evaluateFounderOrInternalAccess(ordinary).decision, "deny_not_operator");
+
+    const operator = verifiedUser();
+    operator.id = OTHER_ID;
+    assert.equal(isFounderOrInternalUser(operator), true, "the decision follows the verified id, not the mutable field");
+  });
+});
+
+test("isFounderOrInternalUser: display role and caller-supplied fields cannot influence the decision (tests #1, #2, #3, #10)", () => {
+  withOperators(OPERATOR_ID, () => {
+    const ordinary = verifiedUser({ id: OTHER_ID, email: "normal@example.com", user_metadata: { role: "admin" } });
+    for (const [field, value] of [["role", "admin"], ["role", "owner"], ["actorRole", "owner"], ["isFounder", true], ["isAdmin", true], ["permissions", ["all"]]]) {
+      ordinary[field] = value;
+      assert.equal(isFounderOrInternalUser(ordinary), false, `${field} must not grant founder access`);
+    }
+    const operator = verifiedUser();
+    operator.role = "viewer";
+    assert.equal(isFounderOrInternalUser(operator), true, "an operator with a viewer display role is still an operator");
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

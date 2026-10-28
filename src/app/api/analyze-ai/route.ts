@@ -1,4 +1,5 @@
 import { getAuthUser } from "@/lib/auth";
+import { isArchivedProjectStatus, projectArchivedResponse } from "@/lib/projects/archived-project";
 import { AccessDeniedError, requireProjectPermission } from "@/aoc/runtime-consumer";
 import { getCompanySubscription } from "@/lib/billing";
 import {
@@ -77,8 +78,10 @@ export async function POST(request: Request) {
     throw error;
   }
 
-  const { data: project } = await supabase.from("projects").select("id").eq("id", projectId).eq("workspace_id", workspaceId).maybeSingle();
+  const { data: project } = await supabase.from("projects").select("id, status").eq("id", projectId).eq("workspace_id", workspaceId).maybeSingle();
   if (!project) return Response.json({ error: "Invalid project context." }, { status: 403 });
+  // PD-25: an analysis is a new record on the project; an archived project takes none.
+  if (isArchivedProjectStatus(project.status)) return projectArchivedResponse();
 
   const projectAccess = await canCreateMoreProjects(user.id);
   if (!projectAccess.ok) {
@@ -101,6 +104,8 @@ export async function POST(request: Request) {
       moduleId: "scope-analysis",
       workspaceId,
       projectId,
+      // B6: charges the per-user daily cost ceiling as well as the workspace's.
+      actorId: user.id,
       messages: [
         { role: "system", content: "You are PMFreak AI. Return only valid JSON that matches the provided schema. Keep bullets practical and concise." },
         { role: "user", content: `Analyze this project scope and produce a complete structured assessment.\n\nProject Name: ${projectName}\n\nExtracted Scope Text:\n${extractedScopeText.slice(0, 16000)}` },

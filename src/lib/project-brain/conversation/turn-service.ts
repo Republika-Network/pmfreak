@@ -102,7 +102,7 @@ export type ProjectBrainTurnDeps = {
    */
   generativeEntitled: boolean;
   store: ProjectBrainTurnStore;
-  loadContext(history: ProjectBrainHistoryMessage[]): Promise<ProjectBrainContext>;
+  loadContext(history: ProjectBrainHistoryMessage[], question?: string): Promise<ProjectBrainContext>;
   infer(request: InferenceRequest): Promise<InferenceResponse>;
   now(): Date;
 };
@@ -192,7 +192,12 @@ const inFlight = new Map<string, Promise<ProjectBrainTurnResult>>();
 export function classifyInferenceFailure(error: unknown): DegradedReason {
   if (error && typeof error === "object" && "guardrail" in error) {
     const guardrail = (error as { guardrail?: string }).guardrail;
-    return guardrail === "circuit_open" ? "provider_unavailable" : "usage_limit";
+    // B6: an unpriced model, an unavailable cost ledger or a missing budget scope is an
+    // operational fault, not the user's usage; a duplicate is the same turn already running.
+    if (guardrail === "circuit_open" || guardrail === "model_not_priced" || guardrail === "cost_accounting_unavailable" || guardrail === "budget_scope_missing") {
+      return "provider_unavailable";
+    }
+    return "usage_limit";
   }
   if (error instanceof InferenceError) {
     if (error.errorClass === "timeout") return "timeout";
@@ -240,7 +245,7 @@ async function generate(
   const history = historyFrom(await store.listMessages(conversation.id), userMessage, deps.userId);
   // PB-REASON-02: the report map is built from the BOUNDED history the context
   // kept, plus this turn — never from the loader, never from assistant rows.
-  const context = buildReportedContext(await deps.loadContext(history), { id: userMessage.id, createdAt: userMessage.created_at });
+  const context = buildReportedContext(await deps.loadContext(history, userMessage.content), { id: userMessage.id, createdAt: userMessage.created_at });
   const generatedAt = deps.now().toISOString();
 
   let generative: { content: string; metadata: ProjectBrainReplyMetadata } | null = null;
@@ -411,7 +416,7 @@ async function generateBriefTurn(
 ): Promise<ProjectBrainTurnResult> {
   const { scope, store } = deps;
   const history = historyFrom(await store.listMessages(conversation.id), userMessage, deps.userId);
-  const context = buildReportedContext(await deps.loadContext(history), { id: userMessage.id, createdAt: userMessage.created_at });
+  const context = buildReportedContext(await deps.loadContext(history, userMessage.content), { id: userMessage.id, createdAt: userMessage.created_at });
   const generatedAt = deps.now().toISOString();
   // A replay that must generate (unanswered, or an explicit retry) re-resolves the
   // target from the SAME persisted rows, strictly before this turn — deterministic,

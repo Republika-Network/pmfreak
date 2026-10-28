@@ -108,9 +108,28 @@ jobs:
       # 1 only on a BLOCKING gate failure — advisory gates report CONDITIONAL/WARN and are
       # tracked in docs/release/residual-risk-register.md. That classification is NOT
       # reinterpreted here: no `continue-on-error`, no `|| true`, no exit-code rewriting.
-      # The job's success is exactly the orchestrator's own GO / CONDITIONAL GO decision.
+      # This step's result is exactly the orchestrator's own GO / CONDITIONAL GO decision.
       - name: Beta release gate
         run: npm run check:beta-release
+
+      # Database regression tests (tests/db-regression/) — an independent BLOCKING step on
+      # the same loopback-only stack, after the beta gate so its fixtures cannot disturb the
+      # P0-LAUNCH-06 rehearsal. Missing configuration fails it; there is no skip path.
+      - name: Database regression tests
+        if: ${{ !cancelled() }}
+        run: npm run test:db-regression
+
+      # PR-0 security regression harness (tests/security-regression/README.md) — a second,
+      # independent BLOCKING gate in this job. Runs against the same loopback-only stack,
+      # AFTER the beta gate so its fixtures can never disturb the P0-LAUNCH-06 rehearsal.
+      # `!cancelled()` keeps the security signal even when the beta gate fails (the job
+      # still fails because that gate failed). Known, still-present vulnerabilities are
+      # strict expected failures (known-vulnerabilities.json): a case that stops
+      # reproducing, missing configuration, or any infrastructure error FAILS this step.
+      # There is no skip path and no failure masking.
+      - name: Security regression harness
+        if: ${{ !cancelled() }}
+        run: npm run test:security-regression
       # Destruction always runs, including on gate failure, timeout and cancellation.
       - name: Stop isolated local Supabase fixture
         if: always()

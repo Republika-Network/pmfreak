@@ -468,8 +468,15 @@ test("the project_brain.converse boundary and the PB-CHAT API are not touched", 
     "src/lib/security/server-authorization.ts",
   ]) {
     assert.ok(existsSync(file), `${file} exists`);
-    const diff = execFileSync("git", ["diff", "--name-only", BASE_REF, "--", file], { encoding: "utf8" }).trim();
-    assert.equal(diff, "", `${file} must be unchanged by CHAT-SHELL-01`);
+    const diff = execFileSync("git", ["diff", BASE_REF, "--", file], { encoding: "utf8" });
+    if (file === "src/lib/security/server-authorization.ts") {
+      // PD-25 ADDS requireProjectAccessAllowingArchived (and its import) beside this boundary;
+      // nothing that existed here is removed or rewritten.
+      const removed = diff.split("\n").filter((line) => line.startsWith("-") && !line.startsWith("---"));
+      assert.deepEqual(removed, [], `${file}: CHAT-SHELL-01's authorization boundary must not be rewritten`);
+      continue;
+    }
+    assert.equal(diff.trim(), "", `${file} must be unchanged by CHAT-SHELL-01`);
   }
 });
 
@@ -537,7 +544,8 @@ test("F1: 'New project' carries the displayed workspace; the target is authorize
   const page = code("src/app/(protected)/projects/new/page.tsx");
   assert.match(page, /const claim = requestedWorkspaceId \?\? \(pmoId \? await getPmoWorkspaceId\(pmoId\) : null\);/);
   assert.match(page, /const access = await resolveRoutedWorkspace\(user\.id, claim\);\s*\n\s*if \(access\.access !== "granted"\)/);
-  assert.match(page, /<CreateProjectWizard pmoId=\{pmoId\} workspaceId=\{targetWorkspaceId \?\? undefined\} \/>/);
+  // PD-21 adds the user's scoped draft key (and remounts on it); the target is unchanged.
+  assert.match(page, /<CreateProjectWizard key=\{draftKey \?\? "no-draft"\} pmoId=\{pmoId\} workspaceId=\{targetWorkspaceId \?\? undefined\} draftKey=\{draftKey\} \/>/);
   assert.match(page, /data-testid="create-project-target-workspace"/);
   // The save action authorizes it AGAIN (a value that reached the browser can come back
   // altered) and REFUSES rather than falling back to the preferred-workspace cookie.
@@ -546,7 +554,8 @@ test("F1: 'New project' carries the displayed workspace; the target is authorize
   assert.match(explicit, /const routed = await resolveRoutedWorkspace\(user\.id, opts\.workspaceId\);/);
   assert.match(explicit, /if \(routed\.access !== "granted"\)[\s\S]*return \{\s*status: "fatal_failure"/);
   assert.doesNotMatch(explicit, /resolveWriteWorkspace/);
-  assert.match(save, /workspace_id: ensured\.workspaceId/);
+  // Q12: the insert runs inside create_project_within_limit, still in the authorized workspace.
+  assert.match(save, /createProjectWithinLimit\(\{\s*actorUserId: user\.id,\s*workspaceId: ensured\.workspaceId,/);
   // After saving, the wizard lands in the workspace the SERVER created the project in.
   const wizard = code("src/components/pmfreak/projects/create-project-wizard.tsx");
   assert.match(wizard, /saveProjectOnboarding\(payload, correlationId, \{ pmoId: pmoId \?\? null, workspaceId: workspaceId \?\? null \}\)/);

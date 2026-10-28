@@ -27,7 +27,10 @@ process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "anon-key";
 process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-key";
 
 const USER_ID = "00000000-0000-4000-8000-0000000000u1";
-const COMPANY_ID = "00000000-0000-4000-8000-0000000000c1";
+// F1: the company id is the user's own id. getUserById returns a different, user-editable
+// user_metadata.company_id; the company_subscriptions lookup must never use it.
+const COMPANY_ID = USER_ID;
+const SPOOFED_METADATA_COMPANY_ID = "00000000-0000-4000-8000-0000000000c1";
 
 const state = {
   subscriptionRow: null,
@@ -54,7 +57,7 @@ const makeServiceRoleClient = () => {
 
   client.auth = {
     admin: {
-      getUserById: async (id) => ({ data: { user: { id, user_metadata: { company_id: COMPANY_ID } } }, error: null }),
+      getUserById: async (id) => ({ data: { user: { id, user_metadata: { company_id: SPOOFED_METADATA_COMPANY_ID } } }, error: null }),
     },
   };
 

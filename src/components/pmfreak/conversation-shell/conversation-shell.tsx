@@ -11,8 +11,9 @@ import type { CapabilityProfile } from "@/lib/workspace/pilot-capability-set";
 import { ContextTreeView } from "./context-tree";
 import { ShellDrawer } from "./shell-drawer";
 import { useContextTreeData, type ContextTreeData } from "./use-context-tree-data";
+import { clearDraftsOwnedBy } from "@/lib/drafts/draft-storage";
 
-type ShellUser = { fullName: string; role: string; companyName: string };
+type ShellUser = { fullName: string; role: string; companyName: string; draftOwnerTag?: string };
 
 const ShellNavigationContext = createContext<{ openNavigation: () => void } | null>(null);
 
@@ -220,7 +221,7 @@ function NavigatorPanel({
           <p className="truncate text-[11px] text-slate-500">{user.companyName || user.role}</p>
         </div>
         {/* A mutation, so it is submitted, never navigated to — see OperationalShell. */}
-        <form action="/logout" method="post" className="shrink-0">
+        <form action="/logout" method="post" className="shrink-0" onSubmit={() => clearDraftsOwnedBy(user.draftOwnerTag)}>
           <button type="submit" className="rounded-md px-2 py-1 text-[11px] text-slate-500 transition hover:bg-white hover:text-slate-800">
             Sign out
           </button>

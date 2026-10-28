@@ -5,15 +5,18 @@
 // operation, tokens, estimated cost, status, duration). Recording is
 // best-effort and never throws into the caller: losing an accounting row must
 // not fail a user request. Without Supabase service-role env (local dev,
-// tests) the recorder is a no-op and the daily cost reader returns null.
+// tests) the recorder is a no-op.
 //
-// The daily cost ceiling reads back the day's summed estimated cost; when the
-// read is unavailable or errors, the ceiling check FAILS OPEN (the durable
-// fail-closed bound is the daily request ceiling through the abuse store) —
-// see docs/release/beta-release-closure-summary.md for the rationale.
+// B6 — ai_usage_events is a REPORT, not the ceiling. The daily cost ceilings are
+// enforced by the reservation ledger below (public.ai_cost_reservations,
+// 20261103000000_b6_ai_cost_reservations.sql): the router reserves the worst-case
+// cost of a provider call before sending it and settles the reservation after.
+// The ledger FAILS CLOSED: without service-role env, or when a reservation cannot
+// be written, the router refuses the call instead of sending it unaccounted.
 
 import { hasSupabaseServiceRoleEnv } from "@/lib/supabase/env";
 import { createPrivilegedSupabaseClient } from "@/lib/security/privileged-access";
+import { costOfUsageUsd, resolveModelPrice } from "@/lib/ai/model-pricing";
 
 export type AiUsageRecord = {
   provider: string;
@@ -29,37 +32,19 @@ export type AiUsageRecord = {
   durationMs?: number;
 };
 
-// Indicative per-1M-token USD prices for cost *estimation* (ceilings and
-// reporting), not billing. Unknown models record null cost — visible in the
-// accounting table as "unpriced" rather than silently estimated at zero.
-const MODEL_PRICES_PER_MILLION: Record<string, { input: number; output: number }> = {
-  "gpt-4.1": { input: 2.0, output: 8.0 },
-  "gpt-4.1-mini": { input: 0.4, output: 1.6 },
-  "gpt-4.1-nano": { input: 0.1, output: 0.4 },
-  "gpt-4o": { input: 2.5, output: 10.0 },
-  "gpt-4o-mini": { input: 0.15, output: 0.6 },
-};
-
-export function estimateCostUsd(model: string, inputTokens?: number, outputTokens?: number): number | null {
-  const price = MODEL_PRICES_PER_MILLION[model];
-  if (!price) return null;
-  if (typeof inputTokens !== "number" && typeof outputTokens !== "number") return null;
-  const inputCost = ((inputTokens ?? 0) / 1_000_000) * price.input;
-  const outputCost = ((outputTokens ?? 0) / 1_000_000) * price.output;
-  return Number((inputCost + outputCost).toFixed(6));
+/**
+ * Cost of reported usage at the allowlisted price (src/lib/ai/model-pricing.ts). Null —
+ * never 0 — when the model or snapshot is unpriced or a token count is missing.
+ */
+export function estimateCostUsd(model: string, inputTokens?: number, outputTokens?: number, provider = "openai"): number | null {
+  const resolution = resolveModelPrice(provider, model);
+  if (!resolution.ok) return null;
+  return costOfUsageUsd(resolution.price, inputTokens, outputTokens);
 }
 
 type UsageClient = {
   from(table: string): {
     insert(row: Record<string, unknown>): PromiseLike<{ error: { message: string } | null }>;
-    select(columns: string): {
-      eq(column: string, value: string): {
-        gte(
-          column: string,
-          value: string,
-        ): PromiseLike<{ data: Array<{ estimated_cost_usd: number | null }> | null; error: { message: string } | null }>;
-      };
-    };
   };
 };
 
@@ -97,28 +82,128 @@ export async function recordAiUsage(record: AiUsageRecord, getClient: () => Usag
   }
 }
 
-/**
- * Sum of today's (UTC day) estimated cost for a workspace, in USD.
- * Returns null when accounting is unavailable (no service-role env) or the
- * read fails — callers treat null as "cannot evaluate ceiling" (fail open).
- */
-export async function getWorkspaceDailyCostUsd(
-  workspaceId: string,
-  getClient: () => UsageClient | null = getDefaultClient,
-): Promise<number | null> {
-  try {
-    const client = getClient();
-    if (!client) return null;
-    const dayStart = new Date();
-    dayStart.setUTCHours(0, 0, 0, 0);
-    const { data, error } = await client
-      .from("ai_usage_events")
-      .select("estimated_cost_usd")
-      .eq("workspace_id", workspaceId)
-      .gte("created_at", dayStart.toISOString());
-    if (error || !data) return null;
-    return data.reduce((sum, row) => sum + (row.estimated_cost_usd ?? 0), 0);
-  } catch {
-    return null;
-  }
+// ── B6 cost reservation ledger ───────────────────────────────────────────────
+
+export type AiCostScope = { workspaceId: string | null; userId: string | null };
+
+export type AiCostReserveInput = AiCostScope & {
+  reservationKey: string;
+  operation: string;
+  provider: string;
+  model: string;
+  priceVersion: string;
+  amountUsd: number;
+  limits: { workspaceUsd: number; userUsd: number; globalUsd: number };
+};
+
+export type AiCostReserveResult =
+  | { ok: true; reservationId: string }
+  | { ok: false; reason: "daily_cost_ceiling"; scope: "global" | "workspace" | "user"; spentUsd: number; limitUsd: number }
+  | { ok: false; reason: "duplicate_request" }
+  | { ok: false; reason: "unavailable"; detail: string };
+
+export type AiCostSettleInput = {
+  reservationId: string;
+  outcome: "settled" | "released";
+  settledUsd: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  responseModel?: string;
+  reason: AiCostSettleReason;
+};
+
+export type AiCostSettleReason =
+  | "success"
+  | "success_usage_unknown"
+  | "success_model_unrecognized"
+  | "provider_not_contacted"
+  | "provider_refused"
+  | "provider_failed"
+  | "outcome_unknown"
+  | "circuit_open";
+
+export type AiCostLedger = {
+  reserve(input: AiCostReserveInput): Promise<AiCostReserveResult>;
+  /** Never throws. A failed settle leaves the reservation counting at its full amount. */
+  settle(input: AiCostSettleInput): Promise<{ ok: boolean }>;
+};
+
+type RpcClient = {
+  rpc(fn: string, args: Record<string, unknown>): PromiseLike<{ data: unknown; error: { message: string } | null }>;
+};
+
+function getDefaultRpcClient(): RpcClient | null {
+  if (!hasSupabaseServiceRoleEnv) return null;
+  return createPrivilegedSupabaseClient({
+    routeId: "lib.ai.usage-accounting",
+    operation: "reserve_ai_cost",
+    reason: "ai_cost_ceiling",
+    systemActor: "system",
+  }) as unknown as RpcClient;
+}
+
+const nonNegativeIntOrNull = (value: number | undefined) =>
+  typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+
+export function createSupabaseAiCostLedger(getClient: () => RpcClient | null = getDefaultRpcClient): AiCostLedger {
+  return {
+    async reserve(input) {
+      let client: RpcClient | null;
+      try {
+        client = getClient();
+      } catch (error) {
+        return { ok: false, reason: "unavailable", detail: error instanceof Error ? error.message : "client_error" };
+      }
+      if (!client) return { ok: false, reason: "unavailable", detail: "service_role_not_configured" };
+      try {
+        const { data, error } = await client.rpc("reserve_ai_cost", {
+          p_reservation_key: input.reservationKey,
+          p_workspace_id: input.workspaceId,
+          p_user_id: input.userId,
+          p_operation: input.operation,
+          p_provider: input.provider,
+          p_model: input.model,
+          p_price_version: input.priceVersion,
+          p_amount_usd: input.amountUsd,
+          p_workspace_limit_usd: input.limits.workspaceUsd,
+          p_user_limit_usd: input.limits.userUsd,
+          p_global_limit_usd: input.limits.globalUsd,
+        });
+        if (error) return { ok: false, reason: "unavailable", detail: error.message };
+        const result = data as { ok?: boolean; reservation_id?: string; reason?: string; scope?: string; spent_usd?: number | string; limit_usd?: number | string } | null;
+        if (result?.ok === true && typeof result.reservation_id === "string") return { ok: true, reservationId: result.reservation_id };
+        if (result?.reason === "daily_cost_ceiling" && (result.scope === "global" || result.scope === "workspace" || result.scope === "user")) {
+          return { ok: false, reason: "daily_cost_ceiling", scope: result.scope, spentUsd: Number(result.spent_usd), limitUsd: Number(result.limit_usd) };
+        }
+        if (result?.reason === "duplicate_request") return { ok: false, reason: "duplicate_request" };
+        return { ok: false, reason: "unavailable", detail: "unexpected_reserve_result" };
+      } catch (error) {
+        return { ok: false, reason: "unavailable", detail: error instanceof Error ? error.message : "rpc_error" };
+      }
+    },
+    async settle(input) {
+      try {
+        const client = getClient();
+        if (!client) return { ok: false };
+        const { data, error } = await client.rpc("settle_ai_cost", {
+          p_reservation_id: input.reservationId,
+          p_outcome: input.outcome,
+          p_settled_usd: input.outcome === "released" ? 0 : input.settledUsd,
+          p_input_tokens: nonNegativeIntOrNull(input.inputTokens),
+          p_output_tokens: nonNegativeIntOrNull(input.outputTokens),
+          p_response_model: input.responseModel ?? null,
+          p_settle_reason: input.reason,
+        });
+        const ok = !error && (data as { ok?: boolean } | null)?.ok === true;
+        if (!ok) {
+          // The reservation stays 'reserved' and keeps counting at its full amount.
+          console.warn("[ai-cost] settle_failed", { reservationId: input.reservationId, outcome: input.outcome, error: error?.message ?? (data as { reason?: string } | null)?.reason ?? "unknown" });
+        }
+        return { ok };
+      } catch (error) {
+        console.warn("[ai-cost] settle_failed", { reservationId: input.reservationId, outcome: input.outcome, error: error instanceof Error ? error.message : "unknown" });
+        return { ok: false };
+      }
+    },
+  };
 }

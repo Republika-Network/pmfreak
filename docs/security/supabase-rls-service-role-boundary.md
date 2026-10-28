@@ -44,7 +44,8 @@ every usage site is required to be listed in
 | `pmo_team_invites` | Enabled | Workspace members (SELECT only) | **No** — no INSERT/UPDATE/DELETE policy for `authenticated`; writes go through `saveTeamInvites` (service-role, workspace resolved server-side) | workspace-scoped, writes service-role-only |
 | `workspaces` | Enabled | Workspace members | Workspace members can create/update rows tied to their own membership (see `20260512160000_workspace_authorization_rewrite.sql` and later governance migrations) | workspace-scoped |
 | `projects` | Enabled | Workspace members | Workspace members | workspace-scoped |
-| `company_usage` | Enabled | Own company only (`current_company_id() = company_id`) | Own company only — **intentional**: this is upload-quota bookkeeping, not billing authority (plan/status/Stripe ids), and is written directly by the authenticated user's own upload flow (`src/lib/usage-limits.ts`) | tenant-scoped, self-service by design |
+| `company_usage` | Enabled | Own company only (`current_company_id() = company_id`), **read-only** | **No** — since PR-2 (`20261022000000_quota_server_only_authority.sql`) writes happen only inside the SECURITY DEFINER quota RPCs, which are EXECUTE-able by service_role only and called from `src/lib/quota/upload-quota.ts` (F3/F20) | server-only writes |
+| `quota_reservations` | Enabled | Own company only (`current_company_id() = company_id`), **read-only** | **No** — same as `company_usage` (PR-2) | server-only writes |
 | `profiles` | N/A | — | — | **No `profiles` table exists in this schema.** User identity/display data lives in `auth.users.user_metadata`, not a `public.profiles` table. |
 | `tasks` | N/A | — | — | **No literal `tasks` table exists.** Task-shaped data lives in `execution_tasks`, `task_drafts`, etc. (out of scope for this pass — not in Perilla 6's named regression set and not touched by Perillas 1-6). |
 
@@ -260,8 +261,11 @@ cross-tenant aggregation). At minimum, the approved categories are:
   real anon/authenticated/service-role Postgres roles against a live
   database. A migration that is syntactically present but never applied, or
   a typo'd table/column name inside a policy body, would not be caught.
-- **`current_company_id()` (legacy pre-workspace tenant model) reads
-  `auth.jwt() -> 'user_metadata' ->> 'company_id'`**, and Supabase's
+- **Remediated (PR-1, `20261021000000_current_company_id_from_auth_uid.sql`):
+  `current_company_id()` now returns `auth.uid()::text` and no longer reads
+  user-editable metadata; the history below is kept for context.** It
+  previously read
+  `auth.jwt() -> 'user_metadata' ->> 'company_id'`, and Supabase's
   `user_metadata` is client-editable via `supabase.auth.updateUser()`. This
   affects a broad set of legacy tables that predate the workspace model
   (`company_usage`, `project_memories`, `onboarding_analyses`,

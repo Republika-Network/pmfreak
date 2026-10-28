@@ -18,6 +18,10 @@ export type OnboardingState =
  * dependency on a subsequent cookie-backed session read succeeding in the
  * same request. See "Login/signup session-visibility verification" in
  * docs/audits/remediation/pmf-001-002-canonical-onboarding-honest-activation.md.
+ *
+ * The internal-user trial bypass applies only when this is a server-verified
+ * context (`getAuthUser()` or `buildAuthUserContext(..., { verifiedByAuthServer:
+ * true })`) of a configured operator; a plain `{ id, email }` never bypasses.
  */
 export type OnboardingStateUser = { id: string; email: string | null };
 

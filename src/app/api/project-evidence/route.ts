@@ -2,7 +2,7 @@ import { AccessDeniedError } from "@/aoc/runtime-consumer";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { denyFromAccessError, denyResponse } from "@/lib/security/deny-response";
 import { requireAuthenticatedUser, requireProjectAccess } from "@/lib/security/server-authorization";
-import { getUploadProvider } from "@/lib/storage/upload-provider";
+import { getUploadProvider, isEvidenceStoragePathFor } from "@/lib/storage/upload-provider";
 import { abuseDenyResponse, buildAbuseKey, enforceAbuseLimit } from "@/lib/security/abuse-protection";
 
 type EvidenceRow = {
@@ -120,10 +120,10 @@ export async function DELETE(request: Request) {
   const supabase = await createSupabaseServerClient();
   const { data: evidence, error: loadError } = await supabase
     .from("project_evidence")
-    .select("id,storage_path")
+    .select("id,storage_path,uploaded_by")
     .eq("id", evidenceId)
     .eq("project_id", projectId)
-    .maybeSingle();
+    .maybeSingle<{ id: string; storage_path: string; uploaded_by: string | null }>();
 
   if (loadError) {
     return Response.json({ error: "Unable to load evidence." }, { status: 500 });
@@ -133,10 +133,17 @@ export async function DELETE(request: Request) {
     return Response.json({ error: "Evidence not found." }, { status: 404 });
   }
 
-  try {
-    await getUploadProvider().delete(evidence.storage_path);
-  } catch {
-    return Response.json({ error: "Unable to delete evidence storage." }, { status: 500 });
+  // The storage deletion is privileged (service role), and storage_path is a row value: only
+  // delete an object under the uploader's own prefix for this project (F22-B). An unverifiable
+  // legacy path is never handed to the privileged client; the row is still removed.
+  if (isEvidenceStoragePathFor({ storagePath: evidence.storage_path, uploadedBy: evidence.uploaded_by, projectId })) {
+    try {
+      await getUploadProvider().delete(evidence.storage_path);
+    } catch {
+      return Response.json({ error: "Unable to delete evidence storage." }, { status: 500 });
+    }
+  } else {
+    console.warn("[security] evidence_storage_path_unverified", { routeId: "/api/project-evidence", evidenceId, projectId, actorUserId: userId });
   }
 
   const { error: deleteError } = await supabase.from("project_evidence").delete().eq("id", evidenceId).eq("project_id", projectId);

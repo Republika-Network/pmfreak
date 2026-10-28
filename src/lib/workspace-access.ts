@@ -25,6 +25,8 @@ export async function requireWorkspaceRole(workspaceId: string, minimumRole: Wor
 
 export const canManageWorkspace = (role: WorkspaceRole) => role === "owner" || role === "admin";
 export const canInviteMembers = (role: WorkspaceRole) => role === "owner" || role === "admin";
+/** Create/update projects, tasks, milestones, RAID items (F21: also enforced by RLS). */
+export const canWriteProjectData = (role: WorkspaceRole) => role === "owner" || role === "admin" || role === "pm";
 
 /**
  * Safely coerces an untrusted value (client body/formData, invite record, historical

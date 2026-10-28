@@ -20,7 +20,8 @@ import { InferenceError } from "@/lib/ai/inference/types";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { loadRuntimeConversationState, updateRuntimeConversationState } from "@/lib/runtime-conversation-state";
 import { readProjectMemorySnapshot } from "@/lib/memory/organization-memory";
-import { ingestConversationIntoVault } from "@/lib/vault/conversation-ingestion";
+import { ingestConversationIntoVault, type ConversationVaultIngestionResult } from "@/lib/vault/conversation-ingestion";
+import { isArchivedProject } from "@/lib/projects/archived-project-server";
 import { retrieveOperationalContinuity as retrieveOperationalContinuityLegacy, buildContinuityContext as buildRuntimeContinuityContext } from "@/lib/vault/continuity-retrieval";
 import { retrieveOperationalContinuity as retrieveOperationalContinuityEngine } from "@/lib/operational-continuity/retrieval-engine";
 import { detectLearnedExecutionPatterns } from "@/lib/vault/learned-execution-patterns";
@@ -710,10 +711,15 @@ AOC runtime authority context:\n${JSON.stringify(runtimeContext)}\n\nUser messag
     trustNotes,
   };
   const ingestionSourceRef = `copilot:${conversationSessionKey}:${new Date().toISOString()}`;
-  const ingestion = await ingestConversationIntoVault({
+  const ingestionProjectId = selectedProject?.id ?? payload.projectId?.trim() ?? null;
+  // PD-25: the copilot still answers about an archived project, but records no new vault signals
+  // (nutrients) for it — an archived project is read-only.
+  const ingestion: ConversationVaultIngestionResult = (await isArchivedProject(ingestionProjectId))
+    ? { status: "skipped", reason: "project_archived", nutrientsCreated: 0, residueCreated: 0, nutrientTypes: [], signalCount: 0, evidenceRefs: [] }
+    : await ingestConversationIntoVault({
     companyId: user.companyId,
     workspaceId: resolvedWorkspaceId,
-    projectId: selectedProject?.id ?? payload.projectId?.trim() ?? null,
+    projectId: ingestionProjectId,
     sessionKey: conversationSessionKey,
     activeDomain,
     message: payload.message,

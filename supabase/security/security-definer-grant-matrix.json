@@ -9,17 +9,17 @@
     "scripts/check-fresh-db-migrations.mjs"
   ],
   "totals": {
-    "security_definer_total": 34,
+    "security_definer_total": 38,
     "public_executable": 0,
     "anon_executable": 0,
-    "authenticated_executable": 24,
-    "service_role_executable": 34,
+    "authenticated_executable": 21,
+    "service_role_executable": 38,
     "by_intended_caller": {
       "authenticated_rls_helper": 7,
-      "authenticated_rpc": 17,
-      "service_role": 6,
+      "authenticated_rpc": 14,
+      "service_role": 12,
       "internal_security_definer_only": 3,
-      "trigger_only": 1
+      "trigger_only": 2
     }
   },
   "intended_caller_semantics": {
@@ -72,8 +72,8 @@
       "intended_caller": "authenticated_rls_helper",
       "trigger_only": false,
       "search_path": "public",
-      "latest_definition_migration": "20260611000000_operational_evidence_decision_loop.sql",
-      "rationale": "RLS-policy helper referenced by 8 policy clauses, and the write-authority gate used inside most SECURITY DEFINER RPCs. authenticated EXECUTE is load-bearing. Chains can_access_operational_project with operational_workspace_role in (owner,admin,pm)."
+      "latest_definition_migration": "20261031000000_pd25_archived_project_operational_writes.sql",
+      "rationale": "RLS-policy helper referenced by 8 policy clauses, and the write-authority gate used inside most SECURITY DEFINER RPCs. authenticated EXECUTE is load-bearing. Chains can_access_operational_project with operational_workspace_role in (owner,admin,pm), and (PD-25) refuses an archived project."
     },
     {
       "schema": "public",
@@ -82,13 +82,13 @@
       "signature": "public.cancel_upload_quota(uuid,text)",
       "public": false,
       "anon": false,
-      "authenticated": true,
+      "authenticated": false,
       "service_role": true,
-      "intended_caller": "authenticated_rpc",
+      "intended_caller": "service_role",
       "trigger_only": false,
       "search_path": "public",
-      "latest_definition_migration": "20260518000000_quota_atomicity.sql",
-      "rationale": "Authenticated upload-quota RPC. Called from src/lib/quota/upload-quota.ts:215 via createSupabaseServerClient (authenticated). Re-validates p_company_id against the reservation row before acting."
+      "latest_definition_migration": "20261019000000_quota_rpc_caller_binding.sql",
+      "rationale": "Server-only upload-quota RPC (PR-2, 20261022000000): called from src/lib/quota/upload-quota.ts through a context-tagged service-role client on the rollback path; only that company's pending reservation is cancelled. C1 guard retained."
     },
     {
       "schema": "public",
@@ -142,13 +142,28 @@
       "signature": "public.commit_upload_quota(uuid,text)",
       "public": false,
       "anon": false,
-      "authenticated": true,
+      "authenticated": false,
       "service_role": true,
-      "intended_caller": "authenticated_rpc",
+      "intended_caller": "service_role",
       "trigger_only": false,
       "search_path": "public",
-      "latest_definition_migration": "20260518000000_quota_atomicity.sql",
-      "rationale": "Authenticated upload-quota RPC (upload-quota.ts:161). Re-validates p_company_id against the reservation row."
+      "latest_definition_migration": "20261019000000_quota_rpc_caller_binding.sql",
+      "rationale": "Server-only upload-quota RPC (PR-2, 20261022000000): called from src/lib/quota/upload-quota.ts through a context-tagged service-role client; the reservation row is re-validated against p_company_id. C1 guard retained."
+    },
+    {
+      "schema": "public",
+      "name": "create_project_within_limit",
+      "identity_arguments": "uuid,uuid,uuid,text,text,jsonb,integer",
+      "signature": "public.create_project_within_limit(uuid,uuid,uuid,text,text,jsonb,integer)",
+      "public": false,
+      "anon": false,
+      "authenticated": false,
+      "service_role": true,
+      "intended_caller": "service_role",
+      "trigger_only": false,
+      "search_path": "public, pg_temp",
+      "latest_definition_migration": "20261028000000_q12_project_create_quota.sql",
+      "rationale": "Server-only project-create quota RPC (Q12): called from src/lib/quota/project-quota.ts through a context-tagged service-role client by every create path (createMinimalProject, saveProjectOnboarding, the Command Center quick-create); the project limit is derived server-side from the actor's own subscription. Re-checks the actor's owner/admin/pm membership and the PMO workspace in-function, then serialises count + insert per actor with the same pg_advisory_xact_lock key as duplicate_project_within_limit."
     },
     {
       "schema": "public",
@@ -209,6 +224,21 @@
       "search_path": "''",
       "latest_definition_migration": "20260905000000_p2_08_internal_dispatch_execution.sql",
       "rationale": "Authenticated internal-execution RPC (src/lib/execution-tasks/internal-execution-provider.ts:63, reached through an API route using createSupabaseServerClient). Rejects anonymous callers with internal_execution_unauthenticated."
+    },
+    {
+      "schema": "public",
+      "name": "duplicate_project_within_limit",
+      "identity_arguments": "uuid,uuid,uuid,uuid,integer",
+      "signature": "public.duplicate_project_within_limit(uuid,uuid,uuid,uuid,integer)",
+      "public": false,
+      "anon": false,
+      "authenticated": false,
+      "service_role": true,
+      "intended_caller": "service_role",
+      "trigger_only": false,
+      "search_path": "public, pg_temp",
+      "latest_definition_migration": "20261027000000_pd14_project_duplicate_quota.sql",
+      "rationale": "Server-only project-duplicate quota RPC (PD-14): called from src/lib/quota/project-quota.ts through a context-tagged service-role client after requireProjectAccess(write); the project limit is derived server-side from the actor's own subscription. Re-checks the actor's owner/admin/pm membership and the source/PMO workspace in-function, then serialises count + insert per actor with pg_advisory_xact_lock."
     },
     {
       "schema": "public",
@@ -502,13 +532,13 @@
       "signature": "public.reserve_upload_quota(text,integer,integer,text,text)",
       "public": false,
       "anon": false,
-      "authenticated": true,
+      "authenticated": false,
       "service_role": true,
-      "intended_caller": "authenticated_rpc",
+      "intended_caller": "service_role",
       "trigger_only": false,
       "search_path": "public",
-      "latest_definition_migration": "20260518000000_quota_atomicity.sql",
-      "rationale": "Authenticated upload-quota RPC (upload-quota.ts:90)."
+      "latest_definition_migration": "20261019000000_quota_rpc_caller_binding.sql",
+      "rationale": "Server-only upload-quota RPC (PR-2, 20261022000000): called from src/lib/quota/upload-quota.ts through a context-tagged service-role client after getAuthUser(); the limit is derived server-side from the company's subscription. C1 guard retained: a non-service_role caller must have p_company_id = auth.uid()."
     },
     {
       "schema": "public",
@@ -539,6 +569,36 @@
       "search_path": "''",
       "latest_definition_migration": "20260905000000_p2_08_internal_dispatch_execution.sql",
       "rationale": "Authenticated internal-execution transition RPC (internal-execution-provider.ts:74). Rejects anonymous callers with internal_execution_unauthenticated."
+    },
+    {
+      "schema": "public",
+      "name": "enqueue_deleted_project_cleanup",
+      "identity_arguments": "",
+      "signature": "public.enqueue_deleted_project_cleanup()",
+      "public": false,
+      "anon": false,
+      "authenticated": false,
+      "service_role": true,
+      "intended_caller": "trigger_only",
+      "trigger_only": true,
+      "search_path": "public, pg_temp",
+      "latest_definition_migration": "20261101000000_pd26_deleted_project_storage_cleanup.sql",
+      "rationale": "TRIGGER-ONLY (PD-26). RETURNS TRIGGER, bound to projects_enqueue_deleted_project_cleanup (BEFORE DELETE on public.projects). In the deleting transaction it removes the project's own vault_documents, vault_operational_signals and vault_digestion_runs (derived RAID items, nutrients and residue cascade) and enqueues one storage_cleanup_jobs row; if the delete is refused by retained history (NO ACTION / RESTRICT / append-only) or rolls back, so does all of this. Not callable through /rpc/ (trigger-returning); EXECUTE revoked from PUBLIC, anon and authenticated as privilege hygiene. Trigger execution runs as the table owner and does not consult the client role's EXECUTE."
+    },
+    {
+      "schema": "public",
+      "name": "list_deleted_project_storage_objects",
+      "identity_arguments": "uuid,integer",
+      "signature": "public.list_deleted_project_storage_objects(uuid,integer)",
+      "public": false,
+      "anon": false,
+      "authenticated": false,
+      "service_role": true,
+      "intended_caller": "service_role",
+      "trigger_only": false,
+      "search_path": "public, pg_temp",
+      "latest_definition_migration": "20261101000000_pd26_deleted_project_storage_cleanup.sql",
+      "rationale": "PD-26 Storage cleanup. Lists object names in the private pmfreak-documents bucket whose folder's project segment equals the given project id, and ONLY while no public.projects row with that id exists (returns nothing for a live project). Invoked solely by src/lib/project-evidence/deleted-project-storage-cleanup.ts through the context-tagged service-role client, which re-validates every returned path as <uploader uuid>/<project uuid>/<file> before removing it. storage.objects is otherwise unreadable to clients, so authenticated EXECUTE would be a cross-tenant object enumeration primitive; revoked from PUBLIC, anon and authenticated."
     }
   ]
 }

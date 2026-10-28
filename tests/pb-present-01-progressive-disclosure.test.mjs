@@ -415,6 +415,15 @@ const CHANGED_BY_PB_EXEC_01 = new Set([
   "src/lib/project-brain/conversation/context-builder.ts",
   "src/app/api/projects/[id]/brain/turns/route.ts",
 ]);
+/**
+ * PD-24 (Project Brain document grounding) deliberately extends the prompt (an
+ * untrusted-upload rule) and the degraded reply (discovery RAID and document
+ * sections); both are pinned in tests/pd24-document-grounding.test.ts.
+ */
+const CHANGED_BY_PD_24 = new Set([
+  "src/lib/project-brain/conversation/prompt.ts",
+  "src/lib/project-brain/conversation/degraded.ts",
+]);
 const PB_PRESENT_01_MERGE = "20e1532b";
 const hasCommit = (ref) => {
   try {
@@ -433,7 +442,7 @@ test("presentation only: PB-PRESENT-01's own merge changed no reasoning, groundi
 });
 
 test("presentation only: reasoning, grounding, contract, persistence and the turn API are unchanged", { skip: BASE_REF ? false : "no origin/main in this checkout" }, () => {
-  for (const file of PB_PRESENT_01_FROZEN.filter((f) => !CHANGED_BY_PB_EXEC_01.has(f))) {
+  for (const file of PB_PRESENT_01_FROZEN.filter((f) => !CHANGED_BY_PB_EXEC_01.has(f) && !CHANGED_BY_PD_24.has(f))) {
     assert.ok(existsSync(file), `${file} exists`);
     const diff = execFileSync("git", ["diff", "--name-only", BASE_REF, "--", file], { encoding: "utf8" }).trim();
     assert.equal(diff, "", `${file} must be unchanged by PB-PRESENT-01`);

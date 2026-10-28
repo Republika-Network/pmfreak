@@ -2,6 +2,7 @@
 
 import { getAuthUser } from "@/lib/auth";
 import { resolveWriteWorkspace } from "@/lib/workspaces/resolve-write-workspace";
+import { requireWorkspaceRole } from "@/lib/workspace-access";
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/admin";
 import type { PmoTenant } from "./pmo-tenant-types";
 import { validatePmoTenantPayload } from "./pmo-tenant-validate";
@@ -59,6 +60,17 @@ export async function savePmoTenant(tenant: PmoTenant): Promise<PmoTenantSaveRes
     }
     workspaceId = resolution.workspaceId;
 
+    // Authorization BEFORE any service-role write (F5): activating the PMO rewrites the
+    // workspace's governance and renames the workspace, so it requires an owner/admin
+    // membership in the resolved workspace, read from workspace_memberships — never from
+    // the client or the display role.
+    try {
+      await requireWorkspaceRole(resolution.workspaceId, "admin");
+    } catch {
+      emit("error", "pmo.create.failed", { correlationId, userId, workspaceId, failureClass: "forbidden" });
+      return { status: "fatal_failure", error: "Only a workspace owner or admin can activate the PMO.", failureClass: "forbidden", correlationId };
+    }
+
     supabaseClient = createSupabaseServiceRoleClient({
       routeId: "pmo/save-pmo-tenant",
       operation: "upsert",
@@ -106,7 +118,6 @@ export async function savePmoTenant(tenant: PmoTenant): Promise<PmoTenantSaveRes
         name: tenant.identity.pmoName,
         command_center_type: commandCenterType,
         owner_type: defaultOwnerTypeFor(commandCenterType),
-        data_owner: user.id,
         source_context: tenant.contextSeed.strategicObjective || null,
       })
       .eq("id", resolution.workspaceId);
@@ -117,6 +128,23 @@ export async function savePmoTenant(tenant: PmoTenant): Promise<PmoTenantSaveRes
         userId,
         workspaceId,
         error: workspaceUpdateError.message,
+      });
+    }
+
+    // data_owner is recorded once, on first activation. Re-activation (by any owner/admin)
+    // never transfers it: the conditional update only matches while it is still unset.
+    const { error: dataOwnerError } = await supabaseClient
+      .from("workspaces")
+      .update({ data_owner: user.id })
+      .eq("id", resolution.workspaceId)
+      .is("data_owner", null);
+
+    if (dataOwnerError) {
+      emit("warn", "pmo.create.workspace_metadata_warn", {
+        correlationId,
+        userId,
+        workspaceId,
+        error: dataOwnerError.message,
       });
     }
 

@@ -8,12 +8,16 @@
 //   + project_milestones (bounded)        schedule
 //   + execution_tasks   (bounded)         non-governed project tasks
 //   + raid_items        (bounded, open)   DISCOVERY data, labelled as such
+//   + recommended_actions (bounded, open, setup/discovery only) DERIVED suggestions
+//   + processed uploads (document-context.ts, PD-24) question-ranked excerpts,
+//                                         UNVERIFIED quotations, never instructions
 //           ↓
 //   assembleProjectBrainContext(...)      pure: scope-guard, label, trust, bound
 //           ↓
 //   ProjectBrainContext                   source-addressable, budgeted
 //
-// It never reads another project, company-scoped legacy project memory, vault
+// Uploads are read through the caller's RLS-scoped client (a SECURITY INVOKER
+// RPC), never whole: at most a few ranked excerpts per turn. It never reads another project, company-scoped legacy project memory, vault
 // nutrients, operational/intervention memory, or any model-output store. Every
 // read is filtered by BOTH workspace_id and project_id, and every row is
 // re-checked against the scope in memory before it can become a source.
@@ -41,6 +45,7 @@ import type {
   ProjectBrainSourceFamily,
   ProjectBrainTrust,
 } from "./context-types";
+import { loadDocumentSources } from "./document-context";
 
 type Row = Record<string, unknown>;
 
@@ -53,6 +58,8 @@ export type ProjectBrainRawContext = {
   tasks: Row[] | null;
   raidItems: Row[] | null;
   history: ProjectBrainHistoryMessage[];
+  discoveryRecommendations?: Row[] | null;
+  documents?: Omit<ProjectBrainContextSource, "alias">[] | null;
 };
 
 const TRUST_AUTHORITY: Record<ProjectBrainTrust, SourceAuthorityLevel> = {
@@ -422,10 +429,19 @@ export function assembleProjectBrainContext(raw: ProjectBrainRawContext): Projec
   put("ONBOARDING", raw.project ? onboardingCandidates(scope, raw.project) : null);
   const summary = raw.summary;
   put("EVIDENCE", summary ? evidenceCandidates(scope, summary) : null);
+  // Re-checked here like every other family: a document outside the scope never becomes a source.
+  put("DOCUMENT", raw.documents === null ? null : (raw.documents ?? []).filter((source) =>
+    source.family === "DOCUMENT" && source.reference.workspaceId === scope.workspaceId && source.reference.projectId === scope.projectId));
   put("SIGNAL", summary ? signalCandidates(scope, summary) : null);
   put("RISK", summary ? riskIssueCandidates(scope, summary, "RISK") : null);
   put("ISSUE", summary ? riskIssueCandidates(scope, summary, "ISSUE") : null);
-  put("RECOMMENDATION", summary ? recommendationCandidates(scope, summary) : null);
+  // Governed recommendations first, then setup/discovery suggestions (DERIVED). If either
+  // read failed the family is reported unavailable, but what did load is still kept.
+  const governedRecommendations = summary ? recommendationCandidates(scope, summary) : [];
+  const discoveryRecommendations = (raw.discoveryRecommendations ?? []).filter((row) => inScope(row, scope) && isOpen(row)).map((row) =>
+    candidate(scope, "RECOMMENDATION", "DERIVED", "recommended_actions", row, `Discovery recommendation — ${str(row.title) ?? "Untitled"}`, joinParts([str(row.status), str(row.description)])));
+  byFamily.set("RECOMMENDATION", [...governedRecommendations, ...discoveryRecommendations]);
+  if (summary === null || raw.discoveryRecommendations === null) unavailable.push("RECOMMENDATION");
   put("DECISION", summary ? decisionCandidates(scope, summary) : null);
   put("ACTION", summary ? actionCandidates(scope, summary) : null);
   put("OUTCOME", summary ? outcomeCandidates(scope, summary) : null);
@@ -434,6 +450,8 @@ export function assembleProjectBrainContext(raw: ProjectBrainRawContext): Projec
   put("RAID_DISCOVERY", raw.raidItems ? raidDiscoveryCandidates(scope, raw.raidItems) : null);
 
   let truncated = false;
+  const loadedCounts: Partial<Record<ProjectBrainSourceFamily, number>> = {};
+  for (const [family, rows] of byFamily) loadedCounts[family] = rows.length;
   const selected: Candidate[] = [];
   let chars = 0;
   for (const { family, max } of SOURCE_FAMILY_BUDGET) {
@@ -457,6 +475,7 @@ export function assembleProjectBrainContext(raw: ProjectBrainRawContext): Projec
     sources: selected.map((source, index) => ({ ...source, alias: `S${index + 1}` })),
     unavailable,
     truncated,
+    loadedCounts,
     history: boundHistory(raw.history),
   };
 }
@@ -494,11 +513,12 @@ export async function loadProjectBrainContext(input: {
   client: SupabaseClient;
   scope: ProjectContextScope;
   userId: string;
+  question?: string;
   history: ProjectBrainHistoryMessage[];
 }): Promise<ProjectBrainContext> {
   const { client, scope, userId } = input;
   const { workspaceId, projectId } = scope;
-  const [project, summary, milestones, tasks, raidItems] = await Promise.all([
+  const [project, summary, milestones, tasks, raidItems, documents, discoveryRecommendations] = await Promise.all([
     settle(async () => {
       const { data, error } = await client
         .from("projects")
@@ -513,7 +533,9 @@ export async function loadProjectBrainContext(input: {
     settle(() => rows(client.from("project_milestones").select("id, workspace_id, project_id, title, description, status, target_date, forecast_date, completed_at, created_at, updated_at").eq("workspace_id", workspaceId).eq("project_id", projectId).order("target_date", { ascending: true, nullsFirst: false }).limit(SUPPLEMENTAL_READ_LIMIT)), "MILESTONE", scope),
     settle(() => rows(client.from("execution_tasks").select("id, workspace_id, project_id, title, status, priority, due_date, owner_name, progress_percent, created_at, updated_at").eq("workspace_id", workspaceId).eq("project_id", projectId).order("updated_at", { ascending: false }).limit(SUPPLEMENTAL_READ_LIMIT)), "TASK", scope),
     settle(() => rows(client.from("raid_items").select("id, workspace_id, project_id, category, title, description, status, owner, due_date, detected_at, last_detected_at").eq("workspace_id", workspaceId).eq("project_id", projectId).not("status", "in", "(closed,resolved)").order("last_detected_at", { ascending: false }).limit(SUPPLEMENTAL_READ_LIMIT)), "RAID_DISCOVERY", scope),
+    settle(() => loadDocumentSources(client, scope, input.question ?? ""), "DOCUMENT", scope),
+    settle(() => rows(client.from("recommended_actions").select("id,workspace_id,project_id,title,description,status,created_at").eq("workspace_id", workspaceId).eq("project_id", projectId).is("governance_event_id", null).not("status", "in", "(rejected,executed,converted_to_task)").order("created_at", { ascending: false }).limit(SUPPLEMENTAL_READ_LIMIT)), "DISCOVERY_RECOMMENDATIONS", scope),
   ]);
 
-  return assembleProjectBrainContext({ scope, project, summary, milestones, tasks, raidItems, history: input.history });
+  return assembleProjectBrainContext({ scope, project, summary, milestones, tasks, raidItems, documents, discoveryRecommendations, history: input.history });
 }

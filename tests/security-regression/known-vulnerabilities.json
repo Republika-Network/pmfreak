@@ -1,0 +1,4 @@
+{
+  "policy": "Each case asserts the SECURE behaviour and is expected to fail while the vulnerability is present. A case that starts passing fails the suite (UNEXPECTED PASS) until its fix PR converts it to a regular regression test and removes it from this list. Never weaken an assertion to move a case.",
+  "cases": []
+}

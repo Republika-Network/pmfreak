@@ -45,9 +45,11 @@ const REMEDIATION = "supabase/migrations/20260910000000_security_definer_effecti
 // 30 through P2-15; P2-16 adds three schedule-exposure RPCs that are service_role-only (trusted
 // server-side adapter boundary), so the authenticated count is unchanged. P2-18 adds one
 // authenticated RPC, propose_canonical_learning_candidate (null-actor rejection, then
-// can_write_operational_project), so both counts rise by one.
-const EXPECTED_TOTAL = 34;
-const EXPECTED_AUTHENTICATED = 24;
+// can_write_operational_project), so both counts rise by one. PD-14 adds one service_role-only
+// RPC, duplicate_project_within_limit, so the authenticated count is unchanged. Q12 adds its
+// service_role-only create twin, create_project_within_limit (authenticated count unchanged).
+const EXPECTED_TOTAL = 38;
+const EXPECTED_AUTHENTICATED = 21;
 
 // The four functions whose only legitimate invocation path is another
 // SECURITY DEFINER function or a privileged/scheduled context. No client role
@@ -196,16 +198,18 @@ test("service_role EXECUTE matches the matrix declaration for every function", (
 test("the trigger-only exception is explicitly represented, not inferred", () => {
   const matrix = loadMatrix(MATRIX_PATH);
   const triggers = matrix.functions.filter((f) => f.trigger_only);
-  assert.deepEqual(triggers.map((f) => f.signature), [TRIGGER_ONLY]);
-  const spec = triggers[0];
-  assert.equal(spec.intended_caller, "trigger_only");
-  assert.ok(/trigger/i.test(spec.rationale), "the trigger-only exception must carry a written rationale");
-  // and it is denied to every client principal in the reconstructed state
-  const fn = bySignature().get(TRIGGER_ONLY);
-  assert.equal(fn.isTrigger, true);
-  assert.equal(fn.acl.public, false);
-  assert.equal(fn.acl.anon, false);
-  assert.equal(fn.acl.authenticated, false);
+  // PD-26 added the BEFORE DELETE trigger on public.projects (deleted-project cleanup).
+  assert.deepEqual(triggers.map((f) => f.signature), [TRIGGER_ONLY, "public.enqueue_deleted_project_cleanup()"]);
+  for (const spec of triggers) {
+    assert.equal(spec.intended_caller, "trigger_only");
+    assert.ok(/trigger/i.test(spec.rationale), "the trigger-only exception must carry a written rationale");
+    // and it is denied to every client principal in the reconstructed state
+    const fn = bySignature().get(spec.signature);
+    assert.equal(fn.isTrigger, true);
+    assert.equal(fn.acl.public, false);
+    assert.equal(fn.acl.anon, false);
+    assert.equal(fn.acl.authenticated, false);
+  }
 });
 
 test("every SECURITY DEFINER function pins search_path", () => {

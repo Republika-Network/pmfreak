@@ -54,6 +54,7 @@ export function isOpenAIProviderConfigured(): boolean {
 
 export const openAIProvider: InferenceProvider = {
   id: "openai",
+  metering: "metered",
 
   async complete(request: InferenceRequest): Promise<InferenceResponse> {
     const apiKey = process.env.OPENAI_API_KEY;
@@ -62,6 +63,7 @@ export const openAIProvider: InferenceProvider = {
         "Missing OPENAI_API_KEY on the server.",
         "auth_error",
         "openai",
+        0,
       );
     }
 
@@ -115,6 +117,7 @@ export const openAIProvider: InferenceProvider = {
         "OpenAI returned an empty response.",
         "server_error",
         "openai",
+        fetchResult.attempts,
       );
     }
 
@@ -136,6 +139,7 @@ export const openAIProvider: InferenceProvider = {
         : undefined,
       finishReason: data.choices?.[0]?.finish_reason,
       latencyMs,
+      attempts: fetchResult.attempts,
     };
   },
 };

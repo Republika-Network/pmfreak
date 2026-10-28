@@ -143,14 +143,14 @@ export const requireSeatAvailability = async (
   return { ok: false, status: 402, code: "seat_limit_exceeded", seatLimit };
 };
 
-// PRIVILEGED_ACCESS: supabase.auth.admin.getUserById() is only available via service role — there is no scoped-client equivalent for reading another user's auth metadata.
+// PRIVILEGED_ACCESS: supabase.auth.admin.getUserById() is only available via service role — there is no scoped-client equivalent for confirming another user exists.
 // AUDIT_REF: service-role-risk-register.md
 const getCompanyIdByUserId = async (userId: string) => {
   const supabase = createSupabaseServiceRoleClient({ routeId: "feature-gates.getCompanyIdByUserId", operation: "lookup_user_company", reason: "feature_gate_precheck", systemActor: "system" });
   const { data, error } = await supabase.auth.admin.getUserById(userId);
   if (error || !data.user) return null;
-  const metadata = data.user.user_metadata ?? {};
-  return typeof metadata.company_id === "string" ? metadata.company_id : data.user.id;
+  // The company id is the user's own id, never user_metadata.company_id (user-editable, F1).
+  return data.user.id;
 };
 
 const upgradeRequired = (feature: string, requiredPlan: "pro" | "pmo") => ({ ok: false as const, error: "upgrade_required" as const, feature, requiredPlan });
@@ -172,6 +172,21 @@ export async function canCreateMoreProjects(userId: string) {
   return (count ?? 0) < limit
     ? { ok: true as const, plan: toPlan(subscription.plan), projectLimit: limit }
     : upgradeRequired("personal_projects", "pro");
+}
+
+/**
+ * The user's project limit, from the same subscription source canCreateMoreProjects uses.
+ * projectLimit null means unlimited (PMO). Returns null when the user cannot be resolved,
+ * which callers treat as upgrade_required.
+ */
+export async function resolveProjectLimit(userId: string): Promise<{ plan: Plan; projectLimit: number | null } | null> {
+  const companyId = await getCompanyIdByUserId(userId);
+  if (!companyId) return null;
+  const supabase = createSupabaseServiceRoleClient({ routeId: "feature-gates.resolveProjectLimit", operation: "read_subscription", reason: "feature_limit_enforcement", actorUserId: userId });
+  const subscription = await getCompanySubscription(companyId, { client: supabase });
+  const plan = toPlan(subscription.plan);
+  const limit = PROJECT_LIMITS[plan];
+  return { plan, projectLimit: limit > 2_147_483_647 ? null : limit };
 }
 
 export async function canUseAdvancedAi(userId: string) {

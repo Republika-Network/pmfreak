@@ -1,10 +1,13 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { AccessDeniedError } from "@/aoc/runtime-consumer";
-import { requireAuthenticatedUser, requireProjectAccess } from "@/lib/security/server-authorization";
+import { requireAuthenticatedUser, requireProjectAccess, requireProjectAccessAllowingArchived } from "@/lib/security/server-authorization";
+import { isArchivedProjectStatus } from "@/lib/projects/archived-project";
+import { drainDeletedProjectStorage } from "@/lib/project-evidence/deleted-project-storage-cleanup";
 import { requireWorkspaceRole as requireWorkspaceMinimumRole } from "@/lib/workspace-access";
 import { denyFromAccessError, denyResponse } from "@/lib/security/deny-response";
 import { safeLegacyErrorResponse } from "@/lib/security/safe-route-error";
 import {
+  ProjectHasRetainedHistoryError,
   deleteProject,
   normalizeProjectMethodology,
   normalizeProjectStatus,
@@ -47,14 +50,17 @@ export async function GET(_request: Request, { params }: Params) {
   return Response.json(project);
 }
 
-async function authorizeWrite(projectIdRaw: string) {
+// allowArchived: PD-25 keeps an archived project read-only, except for reactivation and
+// permanent deletion (requireProjectAccessAllowingArchived).
+async function authorizeWrite(projectIdRaw: string, { allowArchived = false }: { allowArchived?: boolean } = {}) {
   const projectId = projectIdRaw.trim();
   if (!projectId) {
     return { error: Response.json({ error: "projectId is required." }, { status: 400 }) } as const;
   }
   try {
     const { user } = await requireAuthenticatedUser();
-    await requireProjectAccess(projectId, "write");
+    if (allowArchived) await requireProjectAccessAllowingArchived(projectId, "write");
+    else await requireProjectAccess(projectId, "write");
     return { user, projectId } as const;
   } catch (error) {
     if (error instanceof AccessDeniedError) {
@@ -81,13 +87,16 @@ async function loadScopedProject(projectId: string) {
 
 export async function PATCH(request: Request, { params }: Params) {
   const { id } = await params;
-  const authorized = await authorizeWrite(id);
+  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+  // An archived project accepts exactly one kind of edit: leaving `archived` (reactivation).
+  const requestedStatus = body.status === undefined ? null : normalizeProjectStatus(body.status);
+  const reactivating = requestedStatus !== null && !isArchivedProjectStatus(requestedStatus);
+  const authorized = await authorizeWrite(id, { allowArchived: reactivating });
   if ("error" in authorized) return authorized.error;
 
   const scoped = await loadScopedProject(authorized.projectId);
   if (!scoped) return Response.json({ error: "Project not found." }, { status: 404 });
 
-  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
   const patch: UpdateProjectInput = {};
 
   if (typeof body.name === "string") {
@@ -155,17 +164,18 @@ export async function PATCH(request: Request, { params }: Params) {
 
 export async function DELETE(_request: Request, { params }: Params) {
   const { id } = await params;
-  const authorized = await authorizeWrite(id);
+  // Permanent deletion is the step after archival, so it is allowed for an archived project.
+  const authorized = await authorizeWrite(id, { allowArchived: true });
   if ("error" in authorized) return authorized.error;
 
   const scoped = await loadScopedProject(authorized.projectId);
   if (!scoped) return Response.json({ error: "Project not found." }, { status: 404 });
 
   // Hard-deleting a project cascades through documents, tasks, risks, and
-  // conversations with no way back. The projects table's DELETE RLS policy
-  // does not restrict by role (any workspace member passes it), so this
-  // app-layer check is the only gate distinguishing "can edit" from "can
-  // permanently destroy" — require at least admin.
+  // conversations with no way back — require at least admin. The projects
+  // table's DELETE RLS policy enforces the same owner/admin rule (F21,
+  // 20261024000000_project_data_role_aware_rls.sql); this check answers with
+  // a clean 403 first.
   try {
     await requireWorkspaceMinimumRole(scoped.workspace_id, "admin");
   } catch {
@@ -174,8 +184,22 @@ export async function DELETE(_request: Request, { params }: Params) {
 
   try {
     await deleteProject(scoped.workspace_id, authorized.projectId);
-    return Response.json({ deleted: true });
   } catch (error) {
+    if (error instanceof ProjectHasRetainedHistoryError) {
+      return Response.json({ error: error.message, code: "project_has_retained_history" }, { status: 409 });
+    }
     return safeLegacyErrorResponse("/api/projects/[id]", error, "Unable to delete project.");
   }
+
+  // PD-26: the delete enqueued this project's Storage cleanup in the same transaction. Remove the
+  // objects now; anything that fails stays queued and is retried by the next drain.
+  let storageCleanup: "completed" | "pending" = "pending";
+  try {
+    const summary = await drainDeletedProjectStorage({ projectId: authorized.projectId });
+    storageCleanup = summary.pending === 0 ? "completed" : "pending";
+    void drainDeletedProjectStorage({ maxJobs: 10 }).catch(() => {}); // earlier pending jobs, best-effort
+  } catch (error) {
+    console.warn("[storage_cleanup] drain_failed_after_project_delete", { projectId: authorized.projectId, error: error instanceof Error ? error.message : "unknown" });
+  }
+  return Response.json({ deleted: true, storageCleanup });
 }

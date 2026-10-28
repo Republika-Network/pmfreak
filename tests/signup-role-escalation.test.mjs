@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { isFounderOrInternalUser, toDisplayRole, DEFAULT_SIGNUP_ROLE } from "../src/lib/auth.ts";
+import { buildAuthUserContext, isFounderOrInternalUser, toDisplayRole, DEFAULT_SIGNUP_ROLE } from "../src/lib/auth.ts";
 import { buildSignupProfile } from "../src/app/signup/build-signup-profile.ts";
 import { canManageWorkspace, canInviteMembers, canManageBilling } from "../src/lib/workspace-access.ts";
 
@@ -78,45 +78,57 @@ test("toDisplayRole defaults unknown/garbage/missing metadata to viewer", () => 
 
 // ── isFounderOrInternalUser: metadata role can never satisfy the gate ───────
 
-const actor = (overrides) => ({
-  id: "u1",
-  email: "attacker@gmail.com",
-  fullName: "Attacker",
-  companyId: "c1",
-  companyName: "Attacker Co",
-  role: "viewer",
-  onboardingCompleted: true,
-  ...overrides,
-});
+const OPERATOR_ID = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+
+// A server-verified context (as getAuthUser() builds it), then display-role /
+// email fields overridden on the object — none of which the gate reads.
+const actor = (overrides = {}) => {
+  const { id = "0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d", ...fields } = overrides;
+  const context = buildAuthUserContext(
+    { id, email: "attacker@gmail.com", email_confirmed_at: "2026-10-01T12:00:00.000Z", user_metadata: { full_name: "Attacker", company_name: "Attacker Co" } },
+    { verifiedByAuthServer: true },
+  );
+  return Object.assign(context, { role: "viewer", onboardingCompleted: true }, fields);
+};
+
+const withOperators = (value, fn) => {
+  const previous = process.env.FOUNDER_OPERATOR_USER_IDS;
+  process.env.FOUNDER_OPERATOR_USER_IDS = value;
+  try {
+    fn();
+  } finally {
+    if (previous === undefined) delete process.env.FOUNDER_OPERATOR_USER_IDS;
+    else process.env.FOUNDER_OPERATOR_USER_IDS = previous;
+  }
+};
 
 test("user_metadata.role=admin is NOT sufficient to pass the founder/internal gate", () => {
-  assert.equal(isFounderOrInternalUser(actor({ role: "admin" })), false);
+  withOperators(OPERATOR_ID, () => assert.equal(isFounderOrInternalUser(actor({ role: "admin" })), false));
 });
 
 test("user_metadata.role=owner is NOT sufficient to pass the founder/internal gate", () => {
-  assert.equal(isFounderOrInternalUser(actor({ role: "owner" })), false);
+  withOperators(OPERATOR_ID, () => assert.equal(isFounderOrInternalUser(actor({ role: "owner" })), false));
 });
 
 test("a normal user cannot access founder actions regardless of display role", () => {
-  assert.equal(isFounderOrInternalUser(actor({ role: "viewer" })), false);
-  assert.equal(isFounderOrInternalUser(actor({ role: "pm" })), false);
+  withOperators(OPERATOR_ID, () => {
+    assert.equal(isFounderOrInternalUser(actor({ role: "viewer" })), false);
+    assert.equal(isFounderOrInternalUser(actor({ role: "pm" })), false);
+  });
 });
 
-test("a real founder (internal email domain) passes the gate even with role=viewer", () => {
-  assert.equal(isFounderOrInternalUser(actor({ email: "founder@pmfreak.ai", role: "viewer" })), true);
-  assert.equal(isFounderOrInternalUser(actor({ email: "ops@onchainfest.xyz", role: "viewer" })), true);
+test("an internal email domain no longer passes the gate (F6)", () => {
+  withOperators(OPERATOR_ID, () => {
+    assert.equal(isFounderOrInternalUser(actor({ email: "founder@pmfreak.ai", role: "viewer" })), false);
+    assert.equal(isFounderOrInternalUser(actor({ email: "ops@onchainfest.xyz", role: "viewer" })), false);
+  });
 });
 
-test("FOUNDER_EMAIL_ALLOWLIST env var grants founder access from a trusted server-side source", () => {
-  const previous = process.env.FOUNDER_EMAIL_ALLOWLIST;
-  process.env.FOUNDER_EMAIL_ALLOWLIST = "trusted-partner@example.com";
-  try {
-    assert.equal(isFounderOrInternalUser(actor({ email: "trusted-partner@example.com", role: "viewer" })), true);
-    assert.equal(isFounderOrInternalUser(actor({ email: "someone-else@example.com", role: "viewer" })), false);
-  } finally {
-    if (previous === undefined) delete process.env.FOUNDER_EMAIL_ALLOWLIST;
-    else process.env.FOUNDER_EMAIL_ALLOWLIST = previous;
-  }
+test("FOUNDER_OPERATOR_USER_IDS grants founder access by verified user id, even with role=viewer", () => {
+  withOperators(OPERATOR_ID, () => {
+    assert.equal(isFounderOrInternalUser(actor({ id: OPERATOR_ID, role: "viewer" })), true);
+    assert.equal(isFounderOrInternalUser(actor({ role: "viewer" })), false);
+  });
 });
 
 // ── No regression: workspace-role-based authorization is untouched ─────────

@@ -8,6 +8,27 @@ Reviewed: 2026-07-10 (Perilla 11 baseline + remediation); updated 2026-07-11
 1 = unexpected critical/high — and, since Perilla 12, hard failure if the
 forbidden `xlsx` package reappears in the tree at any version).
 
+## DEP-01 update (2026-10-26) — Next.js and transitive criticals/highs
+
+Before: `npm audit` → 2 critical, 5 high, 3 moderate. After: **0 critical,
+0 high, 3 moderate** (`check:dependency-security`: 3 accepted/below-threshold,
+0 unexpected). Patched versions per the GitHub Advisory Database.
+
+| Package | Before → after | Change | Advisories resolved |
+|---|---|---|---|
+| `next` (+ `@next/*`, `eslint-config-next`) | 16.3.2 → **16.4.3** | direct, exact pin | GHSA-p293-qw3h-jr36, GHSA-2xp9-vwfh-vxw4, GHSA-vcvr-r3jv-pc5j, GHSA-2464-fhr4-w9xw, GHSA-673q-mjm6-r5xr (critical); GHSA-cjq9-62q9-8jv4, GHSA-p3m5-59mp-jv5r (high); GHSA-3w37-wq28-93x7, GHSA-4jqv-mc3x-m676, GHSA-f87g-xv8r-7p7x, GHSA-mcj8-r9mp-w47p, GHSA-h694-7cp9-m8p3 (moderate); GHSA-39w2-rjm5-chcv (low). Minimum fix 16.4.1. |
+| `sharp` (via `next`) | 0.35.3 → 0.35.5 | transitive | GHSA-rgj7-g3m4-5g8c, GHSA-wq5f-xc86-pv6w (high) |
+| `dompurify` (via `jspdf ^3.3.1`) | 3.4.14 → 3.4.17 | lockfile only | GHSA-cg2g-xh64-v4q7 (critical), GHSA-mrv2-3pqr-j5jr (high), GHSA-p98j-92pf-mc4p, GHSA-6688-9rhm-gjv2, GHSA-c6gr-qvv4-5v3f (low). Not reached at runtime: the only `jspdf` use never calls `.html()`. |
+| `zod` (dev, via `eslint-plugin-react-hooks`) | 4.4.3 → 4.6.7 | lockfile only | GHSA-mrhx-c7xc-m3w5 (high) |
+| `brace-expansion` | 1.1.18 / 2.1.4 / 5.0.9 → 1.1.21 / 2.1.7 / 5.0.12 | lockfile only | GHSA-qhr7-859c-m2p7, GHSA-6j4f-fj2g-mc7p (high), GHSA-q2hr-2g5m-vwhr (moderate) |
+| `js-yaml` (dev) | 3.15.1 / 4.3.1 → 3.15.2 / 4.3.2 | lockfile only | GHSA-2883-xcg3-v3hh (high) |
+| `source-map-js` | 1.2.1 → 1.2.2 | lockfile only | GHSA-68fv-2mgg-jv7q (high) |
+
+Still open (moderate, unchanged): `uuid`/`exceljs` (accepted, unreachable;
+see below) and `qs` 6.15.3 via `stripe` (GHSA-x5fp-wj9c-mxmx,
+GHSA-4mjr-xmp4-gh2g; lockfile-only fix to 6.16.0 available, below the
+blocking threshold — billing routes are disabled in the closed beta).
+
 ## Perilla 12 update — RR-XLSX closed
 
 The accepted-with-condition `xlsx` high below is **resolved by removal**:

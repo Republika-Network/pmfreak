@@ -58,10 +58,18 @@ export interface InferenceResponse {
   usage?: InferenceUsage;
   finishReason?: string;
   latencyMs?: number;
+  /** HTTP attempts the provider made for this response (retries included). */
+  attempts?: number;
 }
 
 export interface InferenceProvider {
   readonly id: string;
+  /**
+   * B6: "metered" (the default when absent) means every call costs money, so the router
+   * prices, reserves and settles it. Only a provider that cannot bill (a local stub) may
+   * declare "unmetered".
+   */
+  readonly metering?: "metered" | "unmetered";
   complete(request: InferenceRequest): Promise<InferenceResponse>;
 }
 

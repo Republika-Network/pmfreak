@@ -225,14 +225,19 @@ test("no RLS policy authorizes admin/founder/owner/billing access via user_metad
   }
 });
 
-// current_company_id() is a pre-existing, documented exception: it reads
-// user_metadata.company_id (tenant identity, not a role/authority claim) for
-// the legacy pre-workspace tenant model. It is out of scope for this
-// perilla's bounded fix (see docs/security/supabase-rls-service-role-boundary.md
-// residual risks) — this test only pins that it is not used to grant role/
-// admin/owner/founder authority, which the migration scan above already
-// checks by excluding it (it never matches "role"/founder/owner keywords).
-test("current_company_id() is documented as a known residual risk (company_id identity, not role authority)", async () => {
+// current_company_id() keys every legacy company-scoped RLS policy. It used to
+// read user_metadata.company_id, which users can rewrite through GoTrue (F1);
+// PR-1 (20261021000000_current_company_id_from_auth_uid.sql) binds it to
+// auth.uid(). Pin that the EFFECTIVE (latest) definition never reads
+// user-editable metadata again, and that the residual-risk doc records it.
+test("current_company_id()'s effective definition never reads user-editable metadata (F1)", async () => {
+  const definitions = migrations.filter(({ text }) => /create\s+(or\s+replace\s+)?function\s+public\.current_company_id\s*\(/i.test(text));
+  assert.ok(definitions.length > 0, "no migration defines public.current_company_id()");
+  const latest = definitions[definitions.length - 1];
+  const body = latest.text.match(/function\s+public\.current_company_id\s*\([\s\S]*?\$\$([\s\S]*?)\$\$/i)?.[1] ?? "";
+  assert.match(body, /auth\.uid\(\)/, `${latest.name}: current_company_id() must resolve from auth.uid()`);
+  assert.doesNotMatch(body, /user_metadata|raw_user_meta_data|auth\.jwt\(\)/i, `${latest.name}: current_company_id() must not read JWT/user metadata`);
+
   const doc = await readSource("docs/security/supabase-rls-service-role-boundary.md");
   assert.match(doc, /current_company_id/);
 });

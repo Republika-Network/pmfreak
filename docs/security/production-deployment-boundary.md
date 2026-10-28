@@ -56,7 +56,7 @@ Full machine-readable inventory:
 | `STRIPE_WEBHOOK_SECRET` | server-only | yes | `src/app/api/billing/webhook/route.ts` | Forged billing events if leaked (Perilla 6). |
 | `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | public | no | Stripe.js client init | Designed to be public. |
 | `STRIPE_PRO_PRICE_ID` / `STRIPE_PMO_PRICE_ID` | server-only | no | checkout route, billing lifecycle | Not secret, but must stay server-sourced. |
-| `FOUNDER_EMAIL_ALLOWLIST` | server-only | no | `src/lib/auth.ts` | Empty = no extra grants (safe default), not fail-open. |
+| `FOUNDER_OPERATOR_USER_IDS` | server-only | no (but see note) | `src/lib/auth.ts` | Sole source of operator authority (F6): comma-separated user ids. Unset/empty/malformed = no operators (fails closed). **Set it before deploying PR-4** or founders are locked out of every operator surface. Replaces `FOUNDER_EMAIL_ALLOWLIST` (no longer read). |
 | `NEXT_PUBLIC_APP_URL` | public | yes | `src/lib/early-access.ts`, `src/lib/security/origin-policy.ts` | Missing/localhost in prod now fails `assertProductionEnvSafety()`. |
 | `NEXT_PUBLIC_SITE_URL` | public | no (legacy alias) | `src/app/signup/actions.ts` | Kept for backward compatibility — see residuals. |
 | `FEDERATION_WEBHOOK_SECRET` | server-only | no | federation webhook route | Missing = all events rejected (fails closed). |

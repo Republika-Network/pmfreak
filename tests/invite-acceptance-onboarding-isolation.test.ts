@@ -107,7 +107,9 @@ test("invite page: every server-side control the exemption relies on is still en
   assert.match(invitePageSource, /action: "per_token"/, "per-token abuse limit");
   assert.match(invitePageSource, /acceptWorkspaceInvite\(\{ token, userId: user\.id, userEmail: user\.email \}\)/,
     "the token comes from the route and the identity from the session, never from the client");
-  assert.match(invitePageSource, /redirect\("\/team"\)/, "canonical success destination");
+  // Success renders and selects the invited workspace through the validated switcher (PD-9);
+  // the workspace id is the accepted invitation's, never the request's.
+  assert.match(invitePageSource, /<OpenInvitedWorkspace workspaceId=\{accepted\.workspaceId\}/, "canonical success destination");
   // The page never takes workspace, role or invited email from the request.
   assert.doesNotMatch(invitePageSource, /searchParams/, "no client-supplied acceptance inputs");
 });

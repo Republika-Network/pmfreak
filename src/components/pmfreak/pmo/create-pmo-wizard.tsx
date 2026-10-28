@@ -23,31 +23,12 @@ import {
   useCommandCenterActivation,
   SUCCESS_CONFIRMATION_DURATION_MS,
 } from "@/components/pmfreak/activation/command-center-activation";
+import { clearScopedDraft, loadScopedDraft, saveScopedDraft } from "@/lib/drafts/draft-storage";
 
 // ─── Storage ──────────────────────────────────────────────────────────────────
 
-const PMO_DRAFT_KEY = "pmfreak.pmo.tenant.draft";
-
-function loadDraft(): Partial<PmoTenant> | null {
-  try {
-    const raw = localStorage.getItem(PMO_DRAFT_KEY);
-    return raw ? (JSON.parse(raw) as Partial<PmoTenant>) : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveDraft(data: Partial<PmoTenant>) {
-  try {
-    localStorage.setItem(PMO_DRAFT_KEY, JSON.stringify(data));
-  } catch {}
-}
-
-function clearDraft() {
-  try {
-    localStorage.removeItem(PMO_DRAFT_KEY);
-  } catch {}
-}
+// Scoped to the signed-in user and their workspace by the server-issued key (PD-21).
+const loadDraft = (draftKey: string | null) => loadScopedDraft<Partial<PmoTenant>>(draftKey);
 
 // ─── Default state ─────────────────────────────────────────────────────────────
 
@@ -706,7 +687,7 @@ function StepReview({
 
 // ─── Main Wizard ───────────────────────────────────────────────────────────────
 
-export function CreatePmoWizard() {
+export function CreatePmoWizard({ draftKey = null }: { draftKey?: string | null } = {}) {
   const router = useRouter();
   const [step, setStep] = useState(1);
   const [errors, setErrors] = useState<string[]>([]);
@@ -720,30 +701,30 @@ export function CreatePmoWizard() {
   const inFlightRef = useRef(false);
 
   const [identity, setIdentityState] = useState<PmoTenantIdentity>(() => {
-    const draft = loadDraft();
+    const draft = loadDraft(draftKey);
     return draft?.identity ?? DEFAULT_IDENTITY;
   });
   const [vault, setVaultState] = useState<VaultConfig>(() => {
-    const draft = loadDraft();
+    const draft = loadDraft(draftKey);
     return draft?.vault ?? DEFAULT_VAULT;
   });
   const [governance, setGovernanceState] = useState<GovernanceProfile>(() => {
-    const draft = loadDraft();
+    const draft = loadDraft(draftKey);
     return draft?.governance ?? DEFAULT_GOVERNANCE;
   });
   const [agents, setAgents] = useState<AgentActivationState[]>(() => {
-    const draft = loadDraft();
+    const draft = loadDraft(draftKey);
     return draft?.agents ?? DEFAULT_AGENT_STATES;
   });
   const [contextSeed, setContextSeedState] = useState<ContextSeed>(() => {
-    const draft = loadDraft();
+    const draft = loadDraft(draftKey);
     return draft?.contextSeed ?? DEFAULT_CONTEXT;
   });
 
   const wizardState: WizardState = { identity, vault, governance, agents, contextSeed };
 
   const persist = useCallback(
-    (patch: Partial<WizardState>) => saveDraft({ ...wizardState, ...patch }),
+    (patch: Partial<WizardState>) => saveScopedDraft(draftKey, { ...wizardState, ...patch }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [identity, vault, governance, agents, contextSeed]
   );
@@ -842,11 +823,9 @@ export function CreatePmoWizard() {
         return;
       }
 
-      // Persistence confirmed — safe to cache locally and clear the draft.
-      try {
-        localStorage.setItem("pmfreak.pmo.tenant", JSON.stringify(tenant));
-      } catch {}
-      clearDraft();
+      // Persistence confirmed — clear the draft. (The activated tenant used to be cached
+      // under a global key nothing read; it only left the configuration on the device. PD-21)
+      clearScopedDraft(draftKey);
 
       activation.markSuccess();
     } catch (err) {

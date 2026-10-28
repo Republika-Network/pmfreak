@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isArchivedProjectStatus, projectArchivedResponse } from "@/lib/projects/archived-project";
 import { getAuthUser } from "@/lib/auth";
 import { requireWorkspaceMember } from "@/lib/security/server-authorization";
 import { AccessDeniedError } from "@/aoc/runtime-consumer";
@@ -6,6 +7,7 @@ import { safeInternalErrorResponse } from "@/lib/security/safe-route-error";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createSupabaseVaultIntakeStore, ingestVaultDocument, type VaultDocumentSourceType } from "@/lib/vault/intake";
 import { materializeRecommendedActions } from "@/lib/recommended-actions";
+import { canWriteProjectData, normalizeWorkspaceRole, type WorkspaceRole } from "@/lib/workspace-access";
 
 const ROUTE_ID = "/api/vault/intake";
 
@@ -24,14 +26,29 @@ const SOURCE_TYPES = new Set<VaultDocumentSourceType>([
 export type VaultIntakeDeps = {
   getAuthUser: typeof getAuthUser;
   requireWorkspaceMember: typeof requireWorkspaceMember;
+  resolveWorkspaceRole: (workspaceId: string, userId: string) => Promise<WorkspaceRole | null>;
   createSupabaseServerClient: typeof createSupabaseServerClient;
   ingestVaultDocument: typeof ingestVaultDocument;
   materializeRecommendedActions: typeof materializeRecommendedActions;
 };
 
+/** The caller's own membership role, read through their RLS-scoped client. */
+async function resolveWorkspaceRole(workspaceId: string, userId: string): Promise<WorkspaceRole | null> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("workspace_memberships")
+    .select("role")
+    .eq("workspace_id", workspaceId)
+    .eq("user_id", userId)
+    .maybeSingle<{ role: string }>();
+  if (error) throw new Error(error.message);
+  return normalizeWorkspaceRole(data?.role);
+}
+
 const defaultDeps: VaultIntakeDeps = {
   getAuthUser,
   requireWorkspaceMember,
+  resolveWorkspaceRole,
   createSupabaseServerClient,
   ingestVaultDocument,
   materializeRecommendedActions,
@@ -70,15 +87,29 @@ export async function handleVaultIntake(request: Request, depsOverride: Partial<
     return safeInternalErrorResponse(ROUTE_ID, error);
   }
 
+  // F22-B: intake stores documents, signals and RAID items — document upload is an owner /
+  // admin / pm capability (rbac `upload_documents`); a viewer only reads. Also enforced by RLS.
+  let role: WorkspaceRole | null;
+  try {
+    role = await deps.resolveWorkspaceRole(workspaceId, user.id);
+  } catch (error) {
+    return safeInternalErrorResponse(ROUTE_ID, error);
+  }
+  if (!role || !canWriteProjectData(role)) {
+    return NextResponse.json({ error: "insufficient_role" }, { status: 403 });
+  }
+
   const supabase = await deps.createSupabaseServerClient();
   if (projectId) {
     const { data: project, error } = await supabase
       .from("projects")
-      .select("id, workspace_id")
+      .select("id, workspace_id, status")
       .eq("id", projectId)
-      .maybeSingle<{ id: string; workspace_id: string }>();
+      .maybeSingle<{ id: string; workspace_id: string; status: string }>();
     if (error || !project) return NextResponse.json({ error: "project_not_found" }, { status: 404 });
     if (project.workspace_id !== workspaceId) return NextResponse.json({ error: "workspace_mismatch" }, { status: 403 });
+    // PD-25: an archived project takes no new vault intake.
+    if (isArchivedProjectStatus(project.status)) return projectArchivedResponse();
   }
 
   const result = await deps.ingestVaultDocument({

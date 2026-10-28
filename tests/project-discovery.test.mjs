@@ -54,6 +54,20 @@ test('discovery repository persists new versions and logs lifecycle events', () 
   assert.match(repository, /durationMs/);
 });
 
+test('discovery resolves the tenant from projects, never from an evidence row (F22-A)', () => {
+  // A member of another workspace could store evidence against this project id before
+  // 20261025000000; legacy rows may still exist. The privileged regeneration must scope every
+  // read by the project's own workspace.
+  const body = repository.slice(repository.indexOf('export async function regenerateProjectDiscovery'));
+  // PD-25 added `status` to this read (an archived project derives no new discovery).
+  assert.match(body, /from\("projects"\)\s*\.select\("id,workspace_id(,status)?"\)\s*\.eq\("id", input\.projectId\)/);
+  assert.match(body, /const workspaceId = project\.workspace_id;/);
+  assert.match(body, /from\("project_evidence_content"\)[\s\S]*?\.eq\("project_id", input\.projectId\)\s*\.eq\("workspace_id", workspaceId\)/);
+  assert.match(body, /from\("project_discovery"\)[\s\S]*?\.eq\("workspace_id", workspaceId\)/);
+  assert.doesNotMatch(body, /typedEvidence\[0\]\.workspace_id|evidenceRows\?\.\[0\]\??\.workspace_id/);
+  assert.ok(body.indexOf('from("projects")') < body.indexOf('from("project_evidence_content")'), 'workspace is resolved before evidence is read');
+});
+
 test('project discovery API returns latest discovery with project read authorization', () => {
   assert.match(route, /export async function GET/);
   assert.match(route, /requireProjectAccess\(projectId, "read"\)/);

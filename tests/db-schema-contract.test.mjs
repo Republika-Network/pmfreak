@@ -90,7 +90,12 @@ test("projects.onboarding_payload is declared in database-contract.ts", () => {
 });
 
 test("save-project-onboarding.ts inserts onboarding_payload", () => {
-  assert.match(saveOnboarding, /onboarding_payload:/, "runtime must write onboarding_payload");
+  // Q12: the payload is handed to create_project_within_limit, which writes the column.
+  assert.match(saveOnboarding, /onboardingPayload: payload as unknown as Record<string, unknown>/, "runtime must write onboarding_payload");
+  assert.match(
+    readFileSync("supabase/migrations/20261028000000_q12_project_create_quota.sql", "utf8"),
+    /insert into public\.projects \(user_id, workspace_id, pmo_id, name, description, onboarding_payload\)/,
+  );
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -22,7 +22,7 @@ test('ingestion module exports expected functions', () => {
 });
 
 test('copilot route imports and uses ingestConversationIntoVault', () => {
-  assert.match(copilotRouteFile, /import \{ ingestConversationIntoVault \}/);
+  assert.match(copilotRouteFile, /import \{ ingestConversationIntoVault(, type ConversationVaultIngestionResult)? \}/);
   assert.match(copilotRouteFile, /await ingestConversationIntoVault\(/);
 });
 

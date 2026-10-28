@@ -434,7 +434,8 @@ test("I2: the route loads history through the conversation- AND workspace-scoped
   const service = readFileSync("src/lib/chat/context-chat-service.ts", "utf8");
   assert.match(service, /\.eq\("conversation_id", conversationId\)\s*\n\s*\.eq\("workspace_id", workspaceId\)/);
   const turn = readFileSync("src/lib/project-brain/conversation/turn-service.ts", "utf8");
-  assert.match(turn, /buildReportedContext\(await deps\.loadContext\(history\)/, "reports are built by the turn service from the bounded history, not by the loader");
+  // PD-24: the loader also receives the current question (for document excerpt ranking only).
+  assert.match(turn, /buildReportedContext\(await deps\.loadContext\(history, userMessage\.content\)/, "reports are built by the turn service from the bounded history, not by the loader");
 });
 
 // ═══ J. Prompt injection ════════════════════════════════════════════════════

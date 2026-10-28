@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { resolvePostAuthDestination } from "@/lib/auth/resolve-post-auth-destination";
 import { isSafeContinuationRoute } from "@/lib/auth/validate-continuation-route";
+import { buildAuthUserContext } from "@/lib/auth";
 import { resolveOnboardingState } from "@/lib/auth/resolve-onboarding-state";
 import { resolveCanonicalWorkspace } from "@/lib/workspaces/canonical-workspace-resolver";
 import { logContinuityIssue } from "@/lib/auth/auth-continuity-diagnostics";
@@ -37,7 +38,7 @@ export async function GET(request: Request) {
   // session cookies within the same request. Onboarding resolution only
   // picks the landing page; a failure there must not discard the session
   // verifyOtp just established (same rationale as src/app/signup/actions.ts).
-  const authUser = { id: data.user.id, email: data.user.email ?? null };
+  const authUser = buildAuthUserContext(data.user, { verifiedByAuthServer: true }) ?? { id: data.user.id, email: null };
   let onboardingState;
   try {
     onboardingState = await resolveOnboardingState(authUser, (await resolveCanonicalWorkspace(authUser.id)).workspaceId);

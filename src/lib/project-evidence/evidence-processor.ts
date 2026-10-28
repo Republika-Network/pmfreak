@@ -6,6 +6,16 @@ import { readSpreadsheetWorkbook } from "@/lib/spreadsheets/workbook-reader";
 import { createPrivilegedSupabaseClient } from "@/lib/security/privileged-access";
 import { getUploadProvider } from "@/lib/storage/upload-provider";
 import { regenerateProjectDiscoveryInBackground } from "@/lib/project-discovery/discovery-repository";
+import {
+  EvidenceExtractionError,
+  assertExtractedTextWithinLimit,
+  assertExtractionInputSize,
+  inspectOfficeArchive,
+  resolveExtractionLimits,
+  runInExtractionSlot,
+  withExtractionDeadline,
+  type ExtractionLimits,
+} from "@/lib/project-evidence/extraction-limits";
 
 export type EvidenceProcessingStatus = "completed" | "failed";
 
@@ -76,15 +86,30 @@ const resolveMimeType = (source: EvidenceSource) => {
   return source.file_type;
 };
 
-const extractPdfText = async (buffer: Buffer) => {
+// PD-22: pdf.js runs its worker in-process on Node, and by default loads it by import()-ing a
+// path next to its own module. Bundled into .next/server/chunks that file does not exist, so
+// every PDF failed with "Setting up fake worker failed". Importing the worker module (same
+// pdfjs-dist build pdf-parse uses) registers globalThis.pdfjsWorker, which pdf.js uses
+// instead of resolving any file — so it works bundled, traced or not. Loaded once, lazily.
+let pdfWorkerReady: Promise<unknown> | null = null;
+const ensurePdfWorker = () => (pdfWorkerReady ??= import("pdfjs-dist/legacy/build/pdf.worker.mjs"));
+
+// Only the first maxPdfPages pages are read, and a timed-out parser is destroyed (SEC-W3-2).
+const extractPdfText = async (buffer: Buffer, limits: ExtractionLimits) => {
+  await ensurePdfWorker();
   const parser = new PDFParse({ data: buffer });
-  const result = await parser.getText();
-  await parser.destroy();
-  return result.text;
+  try {
+    const result = await withExtractionDeadline(parser.getText({ first: limits.maxPdfPages }), limits, () => parser.destroy());
+    return result.text;
+  } finally {
+    await parser.destroy().catch(() => {});
+  }
 };
 
-const extractDocxText = async (buffer: Buffer) => {
-  const result = await mammoth.extractRawText({ buffer });
+// The archive is inflated under a budget before mammoth sees it (SEC-W3-2).
+const extractDocxText = async (buffer: Buffer, limits: ExtractionLimits) => {
+  await inspectOfficeArchive(buffer, "docx", limits);
+  const result = await withExtractionDeadline(mammoth.extractRawText({ buffer }), limits);
   return result.value;
 };
 
@@ -93,7 +118,9 @@ const extractDocxText = async (buffer: Buffer) => {
 // rejection, prototype-pollution canary, parse deadline) — see
 // src/lib/spreadsheets/workbook-reader.ts and
 // docs/security/spreadsheet-processing-boundary.md.
-const extractXlsxText = async (buffer: Buffer) => {
+const extractXlsxText = async (buffer: Buffer, limits: ExtractionLimits) => {
+  // The spreadsheet boundary trusts declared ZIP sizes; the actual inflation is bounded first (SEC-W3-2).
+  await inspectOfficeArchive(buffer, "xlsx", limits);
   const workbook = await readSpreadsheetWorkbook(buffer);
   return workbook.sheets
     .map((sheet) => {
@@ -107,7 +134,8 @@ const extractXlsxText = async (buffer: Buffer) => {
     .join("\n\n");
 };
 
-const extractPptxText = async (buffer: Buffer) => {
+const extractPptxText = async (buffer: Buffer, limits: ExtractionLimits) => {
+  await inspectOfficeArchive(buffer, "pptx", limits);
   const zip = await JSZip.loadAsync(buffer);
   const slidePaths = Object.keys(zip.files)
     .filter((name) => /^ppt\/slides\/slide\d+\.xml$/i.test(name))
@@ -161,8 +189,10 @@ export class EvidenceProcessor {
 
     try {
       const buffer = input.buffer ?? await getUploadProvider().download(source.storage_path);
-      const extracted = await this.extractText(buffer, source as EvidenceSource);
+      const limits = resolveExtractionLimits();
+      const extracted = await this.extractText(buffer, source as EvidenceSource, limits);
       const normalizedText = normalizeEvidenceText(extracted.text);
+      assertExtractedTextWithinLimit(normalizedText, limits);
       const contentHash = this.generateContentHash(normalizedText);
       const completedAt = new Date();
 
@@ -194,22 +224,25 @@ export class EvidenceProcessor {
         evidenceId: source.id,
         projectId: source.project_id,
         durationMs: Date.now() - startedAt.getTime(),
+        // A bounded rejection is reported by its code; nothing was stored for it.
+        ...(processingError instanceof EvidenceExtractionError ? { rejectedBy: processingError.code } : {}),
         error: processingError instanceof Error ? processingError.message : "unknown",
       });
       return "failed";
     }
   }
 
-  async extractText(buffer: Buffer, source: EvidenceSource): Promise<ExtractionResult> {
+  async extractText(buffer: Buffer, source: EvidenceSource, limits: ExtractionLimits = resolveExtractionLimits()): Promise<ExtractionResult> {
     const mimeType = resolveMimeType(source);
     const method = EXTRACTION_METHOD_BY_MIME[mimeType];
     if (!method) throw new Error(`Unsupported evidence file type: ${source.file_type}`);
+    assertExtractionInputSize(buffer, limits);
 
     if (mimeType === "text/plain") return { text: buffer.toString("utf-8"), method };
-    if (mimeType === "application/pdf") return { text: await extractPdfText(buffer), method };
-    if (mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") return { text: await extractDocxText(buffer), method };
-    if (mimeType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") return { text: await extractXlsxText(buffer), method };
-    if (mimeType === "application/vnd.openxmlformats-officedocument.presentationml.presentation") return { text: await extractPptxText(buffer), method };
+    if (mimeType === "application/pdf") return { text: await extractPdfText(buffer, limits), method };
+    if (mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") return { text: await extractDocxText(buffer, limits), method };
+    if (mimeType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") return { text: await extractXlsxText(buffer, limits), method };
+    if (mimeType === "application/vnd.openxmlformats-officedocument.presentationml.presentation") return { text: await withExtractionDeadline(extractPptxText(buffer, limits), limits), method };
     throw new Error(`Unsupported evidence file type: ${source.file_type}`);
   }
 
@@ -279,8 +312,9 @@ export class EvidenceProcessor {
 
 export const countWords = (text: string) => text.trim() ? text.trim().split(/\s+/).filter(Boolean).length : 0;
 
+// Extractions share a bounded pool of slots per process instead of all running at once (SEC-W3-2).
 export const processEvidenceInBackground = (input: EvidenceProcessorInput) => {
   setTimeout(() => {
-    void new EvidenceProcessor().processEvidence(input);
+    void runInExtractionSlot(() => new EvidenceProcessor().processEvidence(input));
   }, 0);
 };

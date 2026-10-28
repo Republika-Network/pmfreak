@@ -12,7 +12,7 @@ import { connection } from "next/server";
  * customer Project Intelligence Inbox. Authentication alone was never the right boundary
  * for it: every ordinary customer is authenticated, so `requireAuthenticatedUser` left a
  * certification instrument one URL away from the product. Founder/internal identity is
- * resolved server-side from the authenticated user's email; everyone else gets
+ * resolved server-side from the verified user id (FOUNDER_OPERATOR_USER_IDS); everyone else gets
  * `notFound()`. Registered as `founder-internal` in the route guard registry.
  */
 

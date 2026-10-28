@@ -1,5 +1,6 @@
 import { getAuthUser, type AuthUserContext } from "@/lib/auth";
 import { AccessDeniedError } from "@/lib/security/access-guards";
+import { runArchivedProjectLifecycleOperation } from "@/lib/projects/archived-project-lifecycle";
 import type { Permission, WorkspaceRole } from "@/lib/security/rbac";
 import { authorizeRuntimeAction, buildEnterpriseRuntimeRequest } from "@/aoc/runtime-consumer";
 import { resolveGovernanceAction } from "@/lib/aoc/runtime/governance-actions";
@@ -32,6 +33,18 @@ export async function requireWorkspaceRole(workspaceId: string, _allowedRoles: W
 
 export async function requireProjectAccess(projectId: string, permission: Permission = "read") {
   return evaluateCapability({ projectId, permission });
+}
+
+/**
+ * PD-25: `requireProjectAccess` refuses writes to an archived project. The three operations that
+ * lead OUT of that state — reactivation (status leaving `archived`), permanent deletion (the step
+ * after archival) and duplication (reads the source, writes a new project) — authorize through
+ * this instead. The same runtime evaluation runs (authentication, membership, project scope,
+ * role); only the archived-state rule is lifted, inside an explicit async scope that the
+ * project-permission adapter consults. A denial here is a denial: nothing is caught.
+ */
+export async function requireProjectAccessAllowingArchived(projectId: string, permission: Permission = "write") {
+  return runArchivedProjectLifecycleOperation(() => requireProjectAccess(projectId, permission));
 }
 
 export async function requireResourceWorkspaceAccess(input: { workspaceId?: string; projectId?: string; permission?: Permission }) {

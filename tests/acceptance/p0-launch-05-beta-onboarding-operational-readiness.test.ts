@@ -310,12 +310,11 @@ before(async () => {
   assert.ok(ownerUserId, `no authenticated principal for ${OWNER_A.email}. Run 'npm run seed:p2-13-founder' first; this gate never invents an identity.`);
 
   // company_id belongs to the INVITING USER, not to the workspace — resolved by
-  // the same rule the product uses (`feature-gates.getCompanyIdByUserId`):
-  // user_metadata.company_id when present, otherwise the user's own id.
+  // the same rule the product uses (`feature-gates.getCompanyIdByUserId`): the user's
+  // own id. user_metadata.company_id is user-editable and never trusted (F1).
   const owner = await supabase.auth.admin.getUserById(ownerUserId);
   assert.ok(!owner.error && owner.data.user, `could not resolve the inviting owner: ${owner.error?.message}`);
-  const ownerCompany = (owner.data.user.user_metadata ?? {}).company_id;
-  companyId = typeof ownerCompany === "string" ? ownerCompany : owner.data.user.id;
+  companyId = owner.data.user.id;
 
   // A NON-INVITED platform identity. Created deliberately, because the claim
   // this gate makes is that creating one confers no beta authority — which

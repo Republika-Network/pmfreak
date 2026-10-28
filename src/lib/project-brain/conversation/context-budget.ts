@@ -31,13 +31,17 @@ export const MAX_CONTEXT_CHARS = 24_000;
 /**
  * Per-family caps AND priority order. Earlier families survive the total budget
  * first: the project's own record, open governed risk/issues and decisions are
- * worth more to a status question than a discovery suggestion.
+ * worth more to a status question than a discovery suggestion. PD-24: excerpts
+ * that matched THIS question and open discovery RAID (the only risks most projects
+ * have) come next, ahead of the long tail, so a busy project cannot crowd them out.
  */
 export const SOURCE_FAMILY_BUDGET: ReadonlyArray<{ family: ProjectBrainSourceFamily; max: number }> = [
   { family: "PROJECT", max: 1 },
   { family: "RISK", max: 6 },
   { family: "ISSUE", max: 6 },
   { family: "DECISION", max: 6 },
+  { family: "DOCUMENT", max: 3 },
+  { family: "RAID_DISCOVERY", max: 6 },
   { family: "RECOMMENDATION", max: 6 },
   { family: "TASK", max: 8 },
   { family: "ACTION", max: 4 },
@@ -46,7 +50,6 @@ export const SOURCE_FAMILY_BUDGET: ReadonlyArray<{ family: ProjectBrainSourceFam
   { family: "SIGNAL", max: 6 },
   { family: "OUTCOME", max: 4 },
   { family: "ONBOARDING", max: 8 },
-  { family: "RAID_DISCOVERY", max: 6 },
 ];
 
 /** Supplemental direct reads (all project-scoped, all bounded). */

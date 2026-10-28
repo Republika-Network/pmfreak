@@ -5,6 +5,7 @@ import { headers } from "next/headers";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isSafeContinuationRoute } from "@/lib/auth/validate-continuation-route";
 import { resolvePostAuthDestination } from "@/lib/auth/resolve-post-auth-destination";
+import { buildAuthUserContext } from "@/lib/auth";
 import { resolveOnboardingState } from "@/lib/auth/resolve-onboarding-state";
 import { resolveCanonicalWorkspace } from "@/lib/workspaces/canonical-workspace-resolver";
 import { buildSignupProfile } from "./build-signup-profile";
@@ -68,7 +69,7 @@ export async function signupAction(formData: FormData) {
   // docs/audits/remediation/pmf-001-002-canonical-onboarding-honest-activation.md.
   // resolveOnboardingState/resolveCanonicalWorkspace both use the
   // service-role client (keyed by userId), independent of session cookies.
-  const authUser = data.user ? { id: data.user.id, email: data.user.email ?? null } : null;
+  const authUser = data.user ? (buildAuthUserContext(data.user, { verifiedByAuthServer: true }) ?? { id: data.user.id, email: null }) : null;
   // signUp above already established the session (cookies were queued via
   // this request's cookies() adapter, and data.session is confirmed
   // present above). An uncaught exception anywhere after that point —

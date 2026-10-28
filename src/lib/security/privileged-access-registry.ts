@@ -206,14 +206,54 @@ export const PRIVILEGED_ACCESS_REGISTRY: readonly PrivilegedAccessEntry[] = [
   },
   {
     file: "src/lib/feature-gates.ts",
-    purpose: "Feature gate enforcement: getCompanyIdByUserId uses supabase.auth.admin.getUserById() which is only available via the service role client — there is no scoped-client equivalent for reading another user's auth metadata. canCreateMoreProjects counts all user projects for limit enforcement.",
+    purpose: "Feature gate enforcement: getCompanyIdByUserId uses supabase.auth.admin.getUserById() which is only available via the service role client — there is no scoped-client equivalent for confirming another user exists; the company id is that user's own id (never user_metadata, F1). canCreateMoreProjects counts all user projects for limit enforcement.",
     riskLevel: "HIGH",
     mitigations: [
       "auth.admin API requires service role — no scoped alternative exists",
-      "Company ID resolved from user metadata, not user-controllable input",
+      "Company ID is the user's own id (F1), never user_metadata or other user-controllable input",
       "Project count enforced server-side, never trusted from client",
     ],
     strictCriteriaMet: "L1",
+    needsRlsBeforeSwap: false,
+  },
+  {
+    file: "src/lib/projects/save-project-onboarding.ts",
+    purpose: "Compensating rollback of the project row this saveProjectOnboarding request just inserted, when a later onboarding step fails. Project DELETE is owner/admin-only under RLS (F21), but owners, admins and pms may create projects, so the undo of a pm's own insert cannot use the user client.",
+    riskLevel: "MEDIUM",
+    mitigations: [
+      "Only reached on the failure path after this request's own insert succeeded; the insert itself uses the user's RLS client",
+      "Delete is constrained to the exact row: .eq(id).eq(workspace_id).eq(user_id) from this request's insert and authenticated user — never a caller-supplied id",
+      "A rollback that removes anything other than exactly one row is reported as project.create.rollback.failed",
+      "actorUserId and workspaceId recorded on the privileged client (privileged_client_used telemetry)",
+    ],
+    strictCriteriaMet: "L3",
+    needsRlsBeforeSwap: false,
+  },
+  {
+    file: "src/lib/quota/upload-quota.ts",
+    purpose: "Upload quota enforcement (PR-2, F3/F20): reserve/commit/cancel_upload_quota are EXECUTE-able by service_role only, so the client can never supply its own limit or write quota rows; the limit is derived from the company's own subscription row read with the same client.",
+    riskLevel: "HIGH",
+    mitigations: [
+      "Called only from /api/upload after getAuthUser(), project governance and the abuse rate limit",
+      "Refuses to run unless the company is the authenticated actor's own (companyId === actor user id)",
+      "actorUserId recorded on every privileged client (privileged_client_used telemetry)",
+      "C1 in-function guard and the RPCs' row locks / idempotency keys are unchanged",
+    ],
+    strictCriteriaMet: "L3",
+    needsRlsBeforeSwap: false,
+  },
+  {
+    file: "src/lib/quota/project-quota.ts",
+    purpose: "Project limit enforcement for creation (Q12) and duplication (PD-14): create_project_within_limit and duplicate_project_within_limit are EXECUTE-able by service_role only, so the client can never supply its own project limit; each re-checks the actor's owner/admin/pm membership and the PMO (and source) workspace, serialises per actor with the same advisory lock, counts and inserts in one transaction.",
+    riskLevel: "HIGH",
+    mitigations: [
+      "Duplicate: called only from duplicateProject after requireProjectAccess(write) and an RLS-scoped read of the source project",
+      "Create: called only from createMinimalProject, saveProjectOnboarding and the Command Center activateContextAction, after each resolves the workspace from the caller's own membership and refuses non-writer roles",
+      "actorUserId is the authenticated user; the limit comes from that user's own subscription (resolveProjectLimit), never the request",
+      "The RPCs re-verify workspace writer role, source project and PMO workspace inside the transaction (they bypass RLS)",
+      "actorUserId recorded on every privileged client (privileged_client_used telemetry)",
+    ],
+    strictCriteriaMet: "L3",
     needsRlsBeforeSwap: false,
   },
   {
@@ -335,7 +375,7 @@ export const PRIVILEGED_ACCESS_REGISTRY: readonly PrivilegedAccessEntry[] = [
     riskLevel: "MEDIUM",
     mitigations: [
       "Authenticated AuthUserContext required by signature",
-      "isFounderOrInternalUser(user) skips the trial-gate branch entirely for founders/internal — never widened to trust user_metadata.role or display role",
+      "isFounderOrInternalUser(user) skips the trial-gate branch entirely for founders/internal — never widened to trust user_metadata.role or display role; since PR-4 (F6) only a server-verified context of an email-confirmed user listed in FOUNDER_OPERATOR_USER_IDS bypasses, and the post-login/signup/confirm callers pass such a context",
       "Trial expiry write uses a scoped, parameterized `.update().eq().eq().lt()` call (Perilla 5: previously called a generic `execute_sql` RPC with the trial id interpolated into an inline query string — a raw-SQL-shaped pattern removed in favor of the query builder; the RPC also does not exist in any migration, so the sweep was silently a no-op, meaning trials never actually transitioned to expired via this path)",
       "Expiry is idempotent (only updates a trial matched by id AND still active AND past trial_end_at)",
     ],
@@ -410,6 +450,7 @@ export const PRIVILEGED_ACCESS_REGISTRY: readonly PrivilegedAccessEntry[] = [
     riskLevel: "MEDIUM",
     mitigations: [
       "projectId is only ever sourced from an already-processed evidence row, never client input at this layer",
+      "The workspace is read from projects, never from evidence rows; evidence and discovery are read by (project_id, workspace_id), and composite foreign keys forbid evidence or discovery rows whose workspace differs from their project's (F22-A)",
       "Payload hash comparison skips redundant version writes (idempotent by construction)",
       "Errors logged with requestId/projectId, re-thrown to the caller rather than swallowed",
     ],
@@ -424,18 +465,22 @@ export const PRIVILEGED_ACCESS_REGISTRY: readonly PrivilegedAccessEntry[] = [
       "getAuthUser() required before any query",
       "workspaceId always comes from resolveCanonicalWorkspace(user.id), never a client-supplied field",
       "Invite emails validated (non-empty, RFC-shaped) before insert",
+      "Owner/admin membership required (requireWorkspaceRole(workspaceId, \"admin\"), read from workspace_memberships) before any service-role write (PR-3, F5)",
+      "Invite role and domain focus must belong to the closed PMO_ROLES_ORDERED / PMO_DOMAIN_FOCUS_OPTIONS sets; any other value rejects the batch",
     ],
     strictCriteriaMet: "L1",
     needsRlsBeforeSwap: false,
   },
   {
     file: "src/lib/pmo/save-pmo-tenant.ts",
-    purpose: "PMO onboarding completion ('use server' action): upserts workspace_governance and updates workspaces for the caller's own resolved workspace, then calls supabase.auth.admin.updateUserById to mark onboarding_completed — the auth.admin API is only available via service role, with no scoped-client equivalent, which is why the whole flow (including the workspace_governance/workspaces writes, both of which do have member-scoped RLS policies that would otherwise permit a scoped write) shares one privileged client: the rollback-on-failure path deletes the just-inserted workspace_governance row with the same client that wrote it, avoiding a second auth context resolution mid-transaction.",
+    purpose: "PMO onboarding completion ('use server' action): upserts workspace_governance and updates workspaces for the caller's own resolved workspace, and ensures the default PMO; workspaces has no client UPDATE policy, and workspace_governance writes are owner/admin-only under RLS (PR-3), so the flow shares one privileged client after authorizing the caller: the rollback-on-failure path deletes the just-inserted workspace_governance row with the same client that wrote it, avoiding a second auth context resolution mid-transaction.",
     riskLevel: "MEDIUM",
     mitigations: [
       "getAuthUser() required before any query",
       "workspaceId always comes from resolveCanonicalWorkspace(user.id), never a client-supplied field",
       "Explicit rollback (delete) of the workspace_governance row if a later step in the same flow throws",
+      "Owner/admin membership required (requireWorkspaceRole(workspaceId, \"admin\"), read from workspace_memberships) before any service-role write (PR-3, F5)",
+      "data_owner is set only while unset (first activation); re-activation never transfers it",
       "no longer writes any onboarding_completed flag — activation state is derived from the real pmos/projects rows this flow already writes",
     ],
     strictCriteriaMet: "L1",
@@ -443,11 +488,12 @@ export const PRIVILEGED_ACCESS_REGISTRY: readonly PrivilegedAccessEntry[] = [
   },
   {
     file: "src/lib/pmo/save-workspace-governance.ts",
-    purpose: "PMO governance wizard ('use server' action): upserts workspace_governance for the caller's own resolved workspace. workspace_governance has a member-scoped 'for all' RLS policy (20260527091000_workspace_governance.sql) that would permit a scoped write for this exact operation — service role is used here for consistency with save-pmo-tenant.ts's write to the same table, not because RLS blocks it. Documented as a SWAP candidate rather than swapped in this pass to avoid touching the shared onboarding-wizard write path without a live-DB regression pass.",
+    purpose: "PMO governance wizard ('use server' action): upserts workspace_governance for the caller's own resolved workspace. workspace_governance writes are owner/admin-only under RLS since 20261023000000_workspace_governance_role_aware_rls.sql (PR-3), the same rule this action enforces before writing — service role is used here for consistency with save-pmo-tenant.ts's write to the same table, not because RLS blocks it. Documented as a SWAP candidate rather than swapped in this pass to avoid touching the shared onboarding-wizard write path without a live-DB regression pass.",
     riskLevel: "MEDIUM",
     mitigations: [
       "getAuthUser() required before any query",
       "workspaceId always comes from resolveCanonicalWorkspace(user.id), never a client-supplied field",
+      "Owner/admin membership required (requireWorkspaceRole(workspaceId, \"admin\"), read from workspace_memberships) before any service-role write (PR-3, F5)"
     ],
     needsRlsBeforeSwap: false,
   },
@@ -539,12 +585,13 @@ export const PRIVILEGED_ACCESS_REGISTRY: readonly PrivilegedAccessEntry[] = [
   {
     file: "src/lib/ai/usage-accounting.ts",
     purpose:
-      "Perilla 11 — records one ai_usage_events row per inference call and reads back the workspace's daily estimated cost for the AI_DAILY_COST_LIMIT_USD ceiling. ai_usage_events is operational accounting, not tenant-authored data, and is service-role-only by design (no authenticated/anon policy at all — 20260821000000_ai_usage_events.sql), so both the write and the ceiling read must use the privileged client regardless of caller identity.",
+      "Perilla 11 — records one ai_usage_events row per inference call. B6 — reserves and settles AI spend through reserve_ai_cost()/settle_ai_cost() on ai_cost_reservations, the ledger the workspace, user and deployment-wide daily cost ceilings are enforced from (20261103000000_b6_ai_cost_reservations.sql). Both tables are operational accounting, not tenant-authored data, and service-role-only by design (no authenticated/anon policy or EXECUTE at all), so the write, the reservation and the settlement must use the privileged client regardless of caller identity.",
     riskLevel: "MEDIUM",
     mitigations: [
       "Writes only provider/model/operation identifiers, token counts, estimated cost, status, and ids — never prompt or response content",
       "Recording is best-effort and wrapped in try/catch: a failure logs a redacted warning and never propagates caller data or errors",
-      "The daily-cost read filters by workspace_id + created_at only and returns a single aggregate number to the router's ceiling check",
+      "Reservation inputs (scope ids, model, amount, limits) are computed server-side by the router from the authenticated request scope and the allowlisted price table — no client value reaches the RPCs; both RPCs are EXECUTE-able by service_role only",
+      "Fails closed: when this client is unavailable or an RPC errors, the router refuses the AI call instead of sending it unaccounted",
     ],
     strictCriteriaMet: "L3",
     needsRlsBeforeSwap: false,
@@ -561,6 +608,19 @@ export const PRIVILEGED_ACCESS_REGISTRY: readonly PrivilegedAccessEntry[] = [
       "Persisted attribution is the verified human actor, never the service role; logged to security telemetry via createPrivilegedSupabaseClient",
     ],
     strictCriteriaMet: "L3",
+    needsRlsBeforeSwap: false,
+  },
+  {
+    file: "src/lib/project-evidence/deleted-project-storage-cleanup.ts",
+    purpose: "PD-26 deleted-project Storage cleanup: removes the uploaded objects of a project that no longer exists. The project row is gone, so there is no project-scoped session to act through; the private pmfreak-documents bucket and storage_cleanup_jobs are service-role only by design; and the job must complete (or be retried) regardless of the deleting user's request lifetime.",
+    riskLevel: "MEDIUM",
+    mitigations: [
+      "Acts only on queued storage_cleanup_jobs rows, which are inserted exclusively by the BEFORE DELETE trigger on public.projects inside the deleting transaction (20261101000000_pd26_deleted_project_storage_cleanup.sql)",
+      "Object names come from list_deleted_project_storage_objects(), which returns nothing while the project exists, and every path is re-validated as <uploader uuid>/<this project uuid>/<file> before removal",
+      "Removal is idempotent and bounded per job (batch size and batch count); a failure is recorded on the job and retried by the next drain, never swallowed",
+      "Never reads or writes evidence rows, audit, security or provenance tables; every client carries routeId, operation, reason and a system actor",
+    ],
+    strictCriteriaMet: "L2",
     needsRlsBeforeSwap: false,
   },
 ] as const;

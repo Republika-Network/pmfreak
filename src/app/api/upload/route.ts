@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { getAuthUser } from "@/lib/auth";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { getCompanySubscription } from "@/lib/billing";
 import { cancelUploadQuota, commitUploadQuota, reserveUploadQuota } from "@/lib/quota/upload-quota";
 import { enforceRuntimeAuthorization } from "@/aoc/runtime-consumer";
 import { getUploadProvider, type StorageProvider } from "@/lib/storage/upload-provider";
 import { processEvidenceInBackground } from "@/lib/project-evidence/evidence-processor";
+import { EvidenceExtractionError, inspectOfficeArchive, officeArchiveKindForMime, resolveExtractionLimits } from "@/lib/project-evidence/extraction-limits";
+import { PROJECT_ARCHIVED_MESSAGE } from "@/lib/projects/archived-project";
 import { extractOperationalMemoryCandidates, appendOperationalMemory } from "@/lib/operational-memory-v1";
 import { abuseDenyResponse, buildAbuseKey, enforceAbuseLimit } from "@/lib/security/abuse-protection";
 
@@ -59,7 +60,9 @@ type UploadErrorResponse = {
     | "UPLOAD_LIMIT_REACHED"
     | "INGESTION_FAILED"
     | "TOO_MANY_FILES"
-    | "TOTAL_SIZE_EXCEEDED";
+    | "TOTAL_SIZE_EXCEEDED"
+    | "UNSAFE_DOCUMENT"
+    | "PROJECT_ARCHIVED";
 };
 
 const ALLOWED_MIME_TYPES = new Set([
@@ -220,6 +223,12 @@ export async function POST(request: Request) {
     resourceType: "document",
   });
   if (governance.response) {
+    // PD-25: an authorized writer on an archived project is refused as a state conflict (409),
+    // before any quota is reserved or anything is stored.
+    if (governance.response.status === 409) {
+      console.warn("[upload] upload_failed", { requestId, reason: "project_archived", projectId });
+      return errorResponse(409, PROJECT_ARCHIVED_MESSAGE, "PROJECT_ARCHIVED");
+    }
     console.warn("[security] upload_project_access_denied", { requestId, decision: governance.decision });
     console.warn("[upload] upload_failed", { requestId, reason: "governance_denied", projectId });
     return errorResponse(403, "Invalid project context.", "INVALID_PROJECT");
@@ -240,8 +249,6 @@ export async function POST(request: Request) {
     console.warn("[upload] upload_failed", { requestId, reason: "rate_limited" });
     return abuseDenyResponse(abuseDecision);
   }
-
-  const subscription = await getCompanySubscription(user.companyId);
 
   const incomingFiles = formData.getAll("documents");
 
@@ -272,11 +279,13 @@ export async function POST(request: Request) {
 
   // Atomic quota reservation: check + reserve in a single PostgreSQL transaction.
   // Concurrent requests for the same company serialise on the company_usage row lock,
-  // so two simultaneous requests can never both pass the quota check.
+  // so two simultaneous requests can never both pass the quota check. The quota engine
+  // derives the limit from the company's own subscription; the actor is the authenticated
+  // user resolved above, never a request parameter.
+  const quotaActor = { userId: user.id, companyId: user.companyId };
   const quotaReservation = await reserveUploadQuota({
-    companyId: user.companyId,
+    actor: quotaActor,
     uploadAmount: files.length,
-    plan: subscription.plan,
     requestId,
   });
 
@@ -306,7 +315,7 @@ export async function POST(request: Request) {
       rollbackUploads(provider, refs, requestId),
       cancelUploadQuota({
         reservationId: quotaReservation.reservationId,
-        companyId: user.companyId,
+        actor: quotaActor,
         requestId,
         uploadAmount: files.length,
       }),
@@ -365,6 +374,20 @@ export async function POST(request: Request) {
 
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
+
+    // SEC-W3-2: a ZIP-based document is inflated under a budget before it is stored or charged,
+    // so a decompression bomb is refused here instead of being parsed later in the background.
+    const archiveKind = officeArchiveKindForMime(file.type);
+    if (archiveKind) {
+      try {
+        await inspectOfficeArchive(buffer, archiveKind, resolveExtractionLimits());
+      } catch (inspectionError) {
+        const reason = inspectionError instanceof EvidenceExtractionError ? inspectionError.code : "not_a_document";
+        console.warn("[upload] file_validation_failed", { ...fileCtx, reason: "unsafe_document", detail: reason });
+        await rollbackAndCancel(uploadedRefs);
+        return errorResponse(400, `Document rejected: ${safeFileName} (${reason}).`, "UNSAFE_DOCUMENT");
+      }
+    }
 
     let storageRef: string;
     try {
@@ -437,7 +460,7 @@ export async function POST(request: Request) {
 
   await commitUploadQuota({
     reservationId: quotaReservation.reservationId,
-    companyId: user.companyId,
+    actor: quotaActor,
     requestId,
     uploadAmount: files.length,
   });

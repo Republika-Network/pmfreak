@@ -22,7 +22,7 @@ import {
   createWorkspaceConcurrencyGate,
   createProviderCircuitBreaker,
 } from "../src/lib/ai/runtime-guardrails.ts";
-import { estimateCostUsd, recordAiUsage, getWorkspaceDailyCostUsd } from "../src/lib/ai/usage-accounting.ts";
+import { estimateCostUsd, recordAiUsage, createSupabaseAiCostLedger } from "../src/lib/ai/usage-accounting.ts";
 import { resilientFetch } from "../src/lib/ai/resilient-fetch.ts";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -235,6 +235,8 @@ test("estimateCostUsd prices known models and returns null (not 0) for unknown o
   assert.equal(cost, 2.0); // 0.40 input + 1.60 output
   assert.equal(estimateCostUsd("some-unknown-model", 1000, 1000), null);
   assert.equal(estimateCostUsd("gpt-4.1-mini", undefined, undefined), null);
+  // B6: the dated snapshot OpenAI returns is priced, not NULL.
+  assert.equal(estimateCostUsd("gpt-4.1-mini-2025-04-14", 1_000_000, 1_000_000), 2.0);
 });
 
 test("recordAiUsage writes an accounting row (audit record is generated)", async () => {
@@ -284,26 +286,32 @@ test("recordAiUsage never throws into the caller when accounting fails", async (
   );
 });
 
-test("getWorkspaceDailyCostUsd sums the day's estimated cost; null when unavailable", async () => {
-  const client = {
-    from() {
-      return {
-        select() {
-          return {
-            eq() {
-              return {
-                async gte() {
-                  return { data: [{ estimated_cost_usd: 1.25 }, { estimated_cost_usd: null }, { estimated_cost_usd: 0.75 }], error: null };
-                },
-              };
-            },
-          };
-        },
-      };
-    },
+test("B6 cost ledger fails closed: no service-role client or an RPC error is 'unavailable', never 'allowed'", async () => {
+  const input = {
+    reservationKey: "k",
+    workspaceId: "11111111-1111-4111-8111-111111111111",
+    userId: null,
+    operation: "op",
+    provider: "openai",
+    model: "gpt-4.1-mini",
+    priceVersion: "v",
+    amountUsd: 0.01,
+    limits: { workspaceUsd: 25, userUsd: 10, globalUsd: 50 },
   };
-  assert.equal(await getWorkspaceDailyCostUsd("ws-1", () => client), 2.0);
-  assert.equal(await getWorkspaceDailyCostUsd("ws-1", () => null), null);
+  assert.equal((await createSupabaseAiCostLedger(() => null).reserve(input)).reason, "unavailable");
+  const erroring = { rpc: async () => ({ data: null, error: { message: "boom" } }) };
+  assert.equal((await createSupabaseAiCostLedger(() => erroring).reserve(input)).reason, "unavailable");
+  const throwing = { rpc: async () => { throw new Error("network"); } };
+  assert.equal((await createSupabaseAiCostLedger(() => throwing).reserve(input)).reason, "unavailable");
+  const garbage = { rpc: async () => ({ data: { ok: "yes" }, error: null }) };
+  assert.equal((await createSupabaseAiCostLedger(() => garbage).reserve(input)).reason, "unavailable");
+  const calls = [];
+  const ok = { rpc: async (fn, args) => { calls.push([fn, args]); return { data: { ok: true, reservation_id: "r-1" }, error: null }; } };
+  assert.deepEqual(await createSupabaseAiCostLedger(() => ok).reserve(input), { ok: true, reservationId: "r-1" });
+  assert.equal(calls[0][0], "reserve_ai_cost");
+  assert.equal(calls[0][1].p_global_limit_usd, 50);
+  // A failed settle never throws; the reservation simply keeps counting in full.
+  assert.deepEqual(await createSupabaseAiCostLedger(() => throwing).settle({ reservationId: "r-1", outcome: "settled", settledUsd: 0.001, reason: "success" }), { ok: false });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -316,8 +324,13 @@ test("router enforces chain depth, daily ceilings, concurrency, breaker, and acc
   assert.match(source, /assertChainDepthAllowed\(request\.chainDepth, limits\.maxChainDepth\)/);
   assert.match(source, /scope: "ai\.workspace_daily_requests"/);
   assert.match(source, /daily_request_ceiling/);
-  assert.match(source, /getWorkspaceDailyCostUsd\(request\.workspaceId\)/);
+  assert.match(source, /await reserveProviderCall\(/);
+  assert.match(source, /cost\.ledger\.reserve\(/);
+  assert.match(source, /cost\.ledger\.settle\(/);
   assert.match(source, /daily_cost_ceiling/);
+  assert.match(source, /model_not_priced/);
+  assert.match(source, /cost_accounting_unavailable/);
+  assert.match(source, /budget_scope_missing/);
   assert.match(source, /workspaceConcurrencyGate\.acquire\(/);
   assert.match(source, /providerCircuitBreaker\.assertCallAllowed\(/);
   assert.match(source, /providerCircuitBreaker\.recordFailure\(/);
@@ -325,15 +338,17 @@ test("router enforces chain depth, daily ceilings, concurrency, breaker, and acc
   assert.match(source, /recordAiUsage\(/);
   // Defaults applied when the caller sets no tighter bounds.
   assert.match(source, /timeoutMs: request\.timeoutMs \?\? limits\.requestTimeoutMs/);
-  assert.match(source, /maxAttempts: request\.maxAttempts \?\? limits\.maxAttempts/);
+  assert.match(source, /maxAttempts: clampAttempts\(request\.maxAttempts \?\? limits\.maxAttempts\)/);
 });
 
 test("daily request ceiling fails closed (abuse store) and cost ceiling blocks when reached", () => {
   const source = read("src/lib/ai/providers/router.ts");
-  const dailyBlock = source.match(/const daily = await enforceAbuseLimit\(\{[\s\S]*?\}\);[\s\S]*?if \(!daily\.allowed\)[\s\S]*?daily_request_ceiling/);
+  const dailyBlock = source.match(/const daily = await deps\.enforceLimit\([\s\S]*?\);[\s\S]*?if \(!daily\.allowed\)[\s\S]*?daily_request_ceiling/);
   assert.ok(dailyBlock, "daily request ceiling must deny when the abuse store denies");
-  const costBlock = source.match(/spentUsd !== null && spentUsd >= limits\.dailyWorkspaceCostLimitUsd/);
-  assert.ok(costBlock, "cost ceiling must block once the daily estimate reaches the limit");
+  // B6: the cost ceiling is a reservation the ledger must GRANT; anything else refuses.
+  const costBlock = source.match(/if \(reserved\.ok\) return[\s\S]*?daily_cost_ceiling[\s\S]*?cost_accounting_unavailable/);
+  assert.ok(costBlock, "cost ceiling must refuse unless a reservation was granted");
+  assert.doesNotMatch(source, /spentUsd !== null/, "no fail-open cost read may remain");
 });
 
 test("ai_usage_events migration is service-role-only with the workspace/day index", () => {

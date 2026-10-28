@@ -750,6 +750,7 @@ type Call = { table: string; op: string };
 function recordingClient(fixtures: Record<string, Array<Record<string, unknown>>>) {
   const calls: Call[] = [];
   const rpcs: string[] = [];
+  const rpcArgs: Array<{ name: string; args?: Record<string, unknown> }> = [];
   const builder = (table: string) => {
     const filters: Array<(row: Record<string, unknown>) => boolean> = [];
     let single = false;
@@ -783,17 +784,19 @@ function recordingClient(fixtures: Record<string, Array<Record<string, unknown>>
   };
   const client = {
     from: (table: string) => builder(table),
-    rpc: (name: string) => {
+    rpc: (name: string, args?: Record<string, unknown>) => {
       rpcs.push(name);
+      rpcArgs.push({ name, args });
+      if (name === "project_brain_document_texts") return Promise.resolve({ data: [], error: null });
       return Promise.resolve({ data: { openRecommendations: 0, openExecutionDecisionIds: [] }, error: null });
     },
   };
-  return { client, calls, rpcs };
+  return { client, calls, rpcs, rpcArgs };
 }
 
 test("H1: loading the Project Brain context performs reads only — no insert/update/upsert/delete, only read RPCs", async () => {
   const raw = rawContext();
-  const { client, calls, rpcs } = recordingClient({
+  const { client, calls, rpcs, rpcArgs } = recordingClient({
     projects: [raw.project!, { ...raw.project!, id: PROJECT_B, name: "PROJECT-B" }],
     risk_issue_records: raw.summary!.risksIssues,
     evidence_items: raw.summary!.evidence,
@@ -802,9 +805,11 @@ test("H1: loading the Project Brain context performs reads only — no insert/up
     raid_items: raw.raidItems!,
     workspace_memberships: [{ workspace_id: WS, user_id: USER, role: "PM" }],
   });
-  const context = await loadProjectBrainContext({ client: client as never, scope: scopeA, userId: USER, history: [] });
+  const context = await loadProjectBrainContext({ client: client as never, scope: scopeA, userId: USER, history: [], question: "Is the Stripe onboarding delay documented?" });
   assert.deepEqual(calls.filter((c) => c.op !== "select"), [], "context loading must never write");
-  for (const name of rpcs) assert.ok(["get_operational_assurance_summary", "get_governed_execution_root"].includes(name), `unexpected RPC ${name}`);
+  // PD-24 deliberately adds ONE read-only RPC: bounded heads of processed uploads (SECURITY INVOKER).
+  for (const name of rpcs) assert.ok(["get_operational_assurance_summary", "get_governed_execution_root", "project_brain_document_texts"].includes(name), `unexpected RPC ${name}`);
+  assert.deepEqual(rpcArgs.filter((c) => c.name === "project_brain_document_texts").map((c) => c.args), [{ p_workspace_id: WS, p_project_id: PROJECT_A, p_limit: 24 }], "documents are read once, for this project only");
   const tablesRead = new Set(calls.map((c) => c.table));
   for (const forbidden of ["project_memories", "operational_memory_entries", "vault_nutrients", "intervention_memory", "project_memory_snapshots", "runtime_conversation_state"]) {
     assert.ok(!tablesRead.has(forbidden), `${forbidden} is not Project Brain context`);

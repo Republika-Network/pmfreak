@@ -104,9 +104,9 @@ if (!workspaceId || !email || !role || !inviter) {
       try {
         // The product's OWN actor gate: owner/admin membership in this workspace.
         const actor = await requireWorkspaceInviteActor({ userId: inviterUser.id, workspaceId }, getClient);
-        // company_id belongs to the inviting user (feature-gates.getCompanyIdByUserId).
-        const metadataCompany = (inviterUser.user_metadata ?? {}).company_id;
-        const companyId = typeof metadataCompany === "string" ? metadataCompany : inviterUser.id;
+        // company_id belongs to the inviting user: their own id (feature-gates.getCompanyIdByUserId),
+        // never user_metadata.company_id, which is user-editable (F1).
+        const companyId = inviterUser.id;
 
         const created = await createWorkspaceInvitationRecord(
           { workspaceId, companyId, inviterUserId: inviterUser.id, actorRole: actor.role, email, role },

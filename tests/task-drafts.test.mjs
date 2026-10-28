@@ -311,6 +311,11 @@ test("status route validates draftId and status", () => {
   assert.match(statusRoute, /status/);
 });
 
+test("status route requires project write access, not read (F22-B)", () => {
+  assert.match(statusRoute, /requireProjectAccess\(draft\.project_id, "write"\)/);
+  assert.doesNotMatch(statusRoute, /requireProjectAccess\([^)]*"read"\)/);
+});
+
 test("status route only allows reviewed, approved, discarded", () => {
   assert.match(statusRoute, /ALLOWED_STATUS_UPDATES/);
   assert.match(statusRoute, /"reviewed"/);

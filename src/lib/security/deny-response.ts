@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isProjectArchivedDenial, projectArchivedResponse } from "@/lib/projects/archived-project";
 import { AccessDeniedError } from "@/lib/security/access-guards";
 import { logSecurityEvent, type SecurityEventType } from "@/lib/security/telemetry";
 import { sdkRuntimeError } from "@/lib/aoc/contracts/envelope-helpers";
@@ -53,6 +54,8 @@ export function denyResponse(input: DenyInput) {
 }
 
 export function denyFromAccessError(error: AccessDeniedError, input: Omit<DenyInput, "reason">) {
+  // PD-25: a write to an archived project is a state conflict, not a permission failure.
+  if (isProjectArchivedDenial(error.metadata.reason)) return projectArchivedResponse();
   return denyResponse({
     ...input,
     reason: String(error.metadata.reason ?? "access_denied"),

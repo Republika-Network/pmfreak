@@ -74,7 +74,9 @@ const STEP_DEFINITIONS: StepDefinition[] = [
   {
     id: "pmo_created",
     phase: "foundation",
-    minimumActionRole: "pm",
+    // PMO activation (savePmoTenant) rewrites workspace governance and renames the
+    // workspace — owner/admin only (PR-3, F5).
+    minimumActionRole: "admin",
     route: "/create-command-center",
     blockedBy: [],
     requiredIn: (mode) => mode === "team",

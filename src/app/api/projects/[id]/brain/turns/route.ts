@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { AccessDeniedError, bootstrapRuntimeConsumer, enforceRuntimeAuthorization, requireProjectPermission } from "@/aoc/runtime-consumer";
 import { denyFromAccessError, denyResponse } from "@/lib/security/deny-response";
+import { isArchivedProjectStatus, projectArchivedResponse } from "@/lib/projects/archived-project";
 import { safeLegacyErrorResponse } from "@/lib/security/safe-route-error";
 import { abuseDenyResponse, enforceAbuseLimit } from "@/lib/security/abuse-protection";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -195,6 +196,11 @@ export async function POST(request: Request, context: RouteContext) {
     });
     if (governance.response) return governance.response;
 
+    // PD-25: an archived project's conversation stays readable (GET) but takes no new turns.
+    const supabase = await createSupabaseServerClient();
+    const { data: projectState } = await supabase.from("projects").select("status").eq("id", projectId).maybeSingle<{ status: string }>();
+    if (isArchivedProjectStatus(projectState?.status)) return projectArchivedResponse();
+
     // See src/lib/security/abuse-protection-registry.ts ("ai.module_output.project_brain_turn").
     const abuse = await enforceAbuseLimit({ scope: "ai.module_output", action: "project_brain_turn", identifier: userId, limit: 120, windowSeconds: 3600 });
     if (!abuse.allowed) return abuseDenyResponse(abuse);
@@ -202,14 +208,13 @@ export async function POST(request: Request, context: RouteContext) {
     const access = await resolveProjectBrainGenerativeAccess({ userId });
 
     const scope = { type: "project" as const, workspaceId, projectId };
-    const supabase = await createSupabaseServerClient();
     const result = await runProjectBrainRequest(
       {
         scope: { workspaceId, projectId },
         userId,
         generativeEntitled: access.entitled,
         store: buildStore(scope, userId),
-        loadContext: (history) => loadProjectBrainContext({ client: supabase, scope: { workspaceId, projectId }, userId, history }),
+        loadContext: (history, question) => loadProjectBrainContext({ client: supabase, scope: { workspaceId, projectId }, userId, history, question }),
         infer: runInference,
         now: () => new Date(),
       },

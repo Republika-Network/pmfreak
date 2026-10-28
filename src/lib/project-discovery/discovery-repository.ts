@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isArchivedProjectStatus } from "@/lib/projects/archived-project";
 
 import { createPrivilegedSupabaseClient } from "@/lib/security/privileged-access";
 import { generateProjectDiscovery, type DiscoveryEvidenceContent, type ProjectDiscoveryModel } from "@/lib/project-discovery/discovery-agent";
@@ -98,10 +99,32 @@ export async function regenerateProjectDiscovery(input: { projectId: string; req
   console.info("[project_discovery] Discovery Started", { requestId: input.requestId, projectId: input.projectId });
 
   try {
+    // The tenant is the project's own workspace, read from `projects` — never from an evidence
+    // row, which a member of another workspace could have written against this project id (F22-A).
+    const { data: project, error: projectError } = await supabase
+      .from("projects")
+      .select("id,workspace_id,status")
+      .eq("id", input.projectId)
+      .maybeSingle<{ id: string; workspace_id: string; status: string }>();
+
+    if (projectError) throw new Error(`Unable to resolve project workspace: ${projectError.message}`);
+    if (!project?.workspace_id) {
+      console.warn("[project_discovery] Discovery Skipped", { requestId: input.requestId, projectId: input.projectId, reason: "project_not_found" });
+      return null;
+    }
+    // PD-25: an upload accepted just before archival still finishes extracting, but derives no
+    // new discovery, RAID items or recommendations on the now read-only project.
+    if (isArchivedProjectStatus(project.status)) {
+      console.warn("[project_discovery] Discovery Skipped", { requestId: input.requestId, projectId: input.projectId, reason: "project_archived" });
+      return null;
+    }
+    const workspaceId = project.workspace_id;
+
     const { data: evidenceRows, error: evidenceError } = await supabase
       .from("project_evidence_content")
       .select("id,evidence_id,project_id,workspace_id,source_file_name,extracted_text,created_at")
       .eq("project_id", input.projectId)
+      .eq("workspace_id", workspaceId)
       .order("created_at", { ascending: true });
 
     if (evidenceError) throw new Error(`Unable to load canonical evidence: ${evidenceError.message}`);
@@ -112,7 +135,6 @@ export async function regenerateProjectDiscovery(input: { projectId: string; req
       return null;
     }
 
-    const workspaceId = typedEvidence[0].workspace_id;
     const discovery = generateProjectDiscovery(typedEvidence);
     const discoveryPayloadHash = hashDiscoveryPayload(discovery);
 

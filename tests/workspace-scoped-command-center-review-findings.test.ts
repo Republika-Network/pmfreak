@@ -33,7 +33,8 @@ test("P1 activation: the preferred-workspace write path is gone", () => {
   // so matching the bare identifier would pass on the comment alone.
   assert.doesNotMatch(activateAction, /from "@\/lib\/workspaces\/resolve-write-workspace"/);
   assert.match(activateAction, /const ensured = \{ workspaceId: access\.workspaceId/);
-  assert.match(activateAction, /workspace_id: ensured\.workspaceId/);
+  // Q12: the insert runs inside create_project_within_limit, in the authorized workspace.
+  assert.match(activateAction, /createProjectWithinLimit\(\{\s*actorUserId: user\.id,\s*workspaceId: ensured\.workspaceId,/);
 });
 
 test("P1 activation: the route binds the authorized workspace into the form action", () => {

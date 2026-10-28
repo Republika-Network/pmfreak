@@ -23,7 +23,7 @@ export type AuthUserContext = {
    *
    * Never branch authorization logic on this field. The trustworthy sources
    * for elevated privilege are workspace membership (`workspace_memberships.role`,
-   * see `@/lib/workspace-access`) and the founder/internal allowlist
+   * see `@/lib/workspace-access`) and the server-configured operator user ids
    * (`isFounderOrInternalUser` below).
    */
   role: UserRole;
@@ -67,28 +67,56 @@ export const toDisplayRole = (role: unknown): UserRole => {
 // a redundant call risks silently consuming/rotating the refresh token a
 // second time while the first rotation's replacement was never written back
 // to cookies — see docs/audits/remediation/release-gate-01-auth-session-persistence.md.
+//
+// `verifiedByAuthServer: true` may only be passed for a user object GoTrue
+// itself just returned (`auth.getUser()`, or the `user` of a successful
+// sign-in / sign-up / verifyOtp response) — never for `getSession()`, whose
+// user is decoded from the request cookie without server verification. Only
+// such contexts can satisfy `isFounderOrInternalUser`.
 export type MinimalSupabaseUser = {
   id: string;
   email?: string | null;
+  email_confirmed_at?: string | null;
   user_metadata?: Record<string, unknown> | null;
 };
 
-export const buildAuthUserContext = (user: MinimalSupabaseUser): AuthUserContext | null => {
+/**
+ * Identity facts recorded at the moment a context is built from a GoTrue
+ * user, keyed by the context object itself. The operator decision reads only
+ * this record — never the context's (mutable, copyable) fields — so a plain
+ * object literal, a spread copy, or a context whose `id` was reassigned after
+ * construction is never an operator.
+ */
+type VerifiedIdentity = { readonly userId: string; readonly emailConfirmed: boolean };
+const verifiedIdentities = new WeakMap<object, VerifiedIdentity>();
+
+const isConfirmedAt = (value: unknown) => typeof value === "string" && !Number.isNaN(Date.parse(value));
+
+export const buildAuthUserContext = (
+  user: MinimalSupabaseUser,
+  options?: { verifiedByAuthServer?: boolean },
+): AuthUserContext | null => {
   if (!user.email) {
     return null;
   }
 
   const metadata = user.user_metadata ?? {};
 
-  return {
+  const context: AuthUserContext = {
     id: user.id,
     email: user.email,
     fullName: typeof metadata.full_name === "string" ? metadata.full_name : user.email,
-    companyId: typeof metadata.company_id === "string" ? metadata.company_id : user.id,
+    // Tenant identity is the authenticated user id, never user_metadata.company_id:
+    // user_metadata is user-editable via GoTrue (F1). Matches public.current_company_id().
+    companyId: user.id,
     companyName: typeof metadata.company_name === "string" ? metadata.company_name : "Independent",
     role: toDisplayRole(metadata.role),
     onboardingCompleted: metadata.onboarding_completed === true,
   };
+  if (options?.verifiedByAuthServer === true) {
+    verifiedIdentities.set(context, { userId: user.id, emailConfirmed: isConfirmedAt(user.email_confirmed_at) });
+  }
+  return context;
 };
 
 export const getAuthUser = cache(async (): Promise<AuthUserContext | null> => {
@@ -133,7 +161,7 @@ export const getAuthUser = cache(async (): Promise<AuthUserContext | null> => {
     return null;
   }
 
-  return buildAuthUserContext(user);
+  return buildAuthUserContext(user, { verifiedByAuthServer: true });
 });
 
 export const requireAuthUser = async () => {
@@ -147,93 +175,83 @@ export const requireAuthUser = async () => {
   return user;
 };
 
-const INTERNAL_EMAIL_DOMAINS = ["@pmfreak.ai", "@onchainfest.xyz"];
+// Operator authority is granted to explicit, immutable auth user ids only —
+// never to an email address or domain (F6). Server-only; never sent to clients.
+const FOUNDER_OPERATOR_USER_IDS_ENV = "FOUNDER_OPERATOR_USER_IDS";
 
-const founderEmailAllowlist = (): Set<string> =>
-  new Set(
-    (process.env.FOUNDER_EMAIL_ALLOWLIST ?? "")
-      .split(",")
-      .map((entry) => entry.trim().toLowerCase())
-      .filter(Boolean),
-  );
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-// Requires a "local@domain.tld"-shaped string. Deliberately rejects anything
-// that doesn't have a dot in the domain part, so a missing/garbage email
-// value fails closed at `deny_invalid_email` rather than reaching the
-// endsWith/Set comparisons below with unpredictable input.
-const EMAIL_SHAPE_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+type OperatorConfig = { readonly status: "ok"; readonly userIds: ReadonlySet<string> } | { readonly status: "absent" | "invalid" };
+
+/**
+ * Parses FOUNDER_OPERATOR_USER_IDS (comma-separated auth.users ids). Unset or
+ * empty is "absent"; any entry that is not a UUID makes the whole value
+ * "invalid" — a typo (or a leftover email) must fail closed for everyone
+ * rather than silently shrink or widen the operator set.
+ */
+const readOperatorConfig = (): OperatorConfig => {
+  const entries = (process.env[FOUNDER_OPERATOR_USER_IDS_ENV] ?? "")
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+  if (entries.length === 0) return { status: "absent" };
+  if (!entries.every((entry) => UUID_PATTERN.test(entry))) return { status: "invalid" };
+  return { status: "ok", userIds: new Set(entries) };
+};
 
 export type FounderAccessDecision =
   | "allow"
-  | "deny_missing_email"
-  | "deny_invalid_email"
-  | "deny_not_founder_or_internal";
+  | "deny_unverified_identity"
+  | "deny_email_unconfirmed"
+  | "deny_operators_not_configured"
+  | "deny_operators_misconfigured"
+  | "deny_not_operator";
 
 export type FounderAccessResult = {
   allowed: boolean;
   decision: FounderAccessDecision;
-  normalizedEmail?: string;
-  source?: "internal_domain" | "allowlist";
 };
 
 /**
- * Centralized founder/internal access decision. This is the ONLY function
+ * Centralized founder/internal operator decision. This is the ONLY function
  * that may authorize founder/internal-only surfaces (early access
- * administration, trial license mutations, internal summaries, trial-expiry
- * bypass). Its input shape is deliberately `{ email }` only — there is no
- * `role`, `actorRole`, `isFounder`, `isAdmin`, or `permissions` parameter for
- * a caller to smuggle elevated identity through, and the function never
- * reads `user_metadata`, a display role, or anything from a request body.
+ * administration, founder-program operator routes, trust/governance internal
+ * routes, internal summaries, trial-expiry bypass).
  *
- * The only trusted sources are:
- *   - `INTERNAL_EMAIL_DOMAINS`: a fixed, server-controlled list of internal
- *     domains, matched with `endsWith("@domain")` — the "@" is part of the
- *     match, so "attacker@evilpmfreak.ai" and "attacker@pmfreak.ai.evil.com"
- *     both fail (neither ends with the literal "@pmfreak.ai").
- *   - `FOUNDER_EMAIL_ALLOWLIST`: a server-only environment variable, parsed
- *     into a `Set` of trimmed/lowercased exact emails — membership is exact
- *     equality, never substring or prefix matching.
+ * Allows only when, in order:
+ *   1. `user` is a context `buildAuthUserContext` built from a user GoTrue
+ *      verified (`getAuthUser()` / `requireAuthUser()`); anything else — a
+ *      request body, a hand-built `{ email }` / `{ id }` object, a spread
+ *      copy, a cookie-decoded `getSession()` user — is
+ *      `deny_unverified_identity`;
+ *   2. that GoTrue user had a confirmed email (`email_confirmed_at`) — defense
+ *      in depth on top of the id allowlist;
+ *   3. FOUNDER_OPERATOR_USER_IDS is configured and valid (fails closed when
+ *      absent or malformed);
+ *   4. the verified user id is listed in it (exact match).
  *
- * Fails closed: missing, non-string, or malformed email input is denied
- * before either trusted source is even consulted.
+ * Email addresses and domains grant nothing: there is no internal-domain
+ * list, FOUNDER_EMAIL_ALLOWLIST is no longer read, and `user_metadata`,
+ * display role and request input are never consulted.
  */
-export const evaluateFounderOrInternalAccess = (input: { email?: string | null }): FounderAccessResult => {
-  const raw = input.email;
-  if (typeof raw !== "string" || raw.trim().length === 0) {
-    return { allowed: false, decision: "deny_missing_email" };
+export const evaluateFounderOrInternalAccess = (user: unknown): FounderAccessResult => {
+  const identity = typeof user === "object" && user !== null ? verifiedIdentities.get(user) : undefined;
+  if (!identity) return { allowed: false, decision: "deny_unverified_identity" };
+  if (!identity.emailConfirmed) return { allowed: false, decision: "deny_email_unconfirmed" };
+
+  const config = readOperatorConfig();
+  if (config.status !== "ok") {
+    return { allowed: false, decision: config.status === "absent" ? "deny_operators_not_configured" : "deny_operators_misconfigured" };
   }
 
-  const normalizedEmail = raw.trim().toLowerCase();
-  if (!EMAIL_SHAPE_PATTERN.test(normalizedEmail)) {
-    return { allowed: false, decision: "deny_invalid_email" };
-  }
-
-  const internalDomain = INTERNAL_EMAIL_DOMAINS.some((domain) => normalizedEmail.endsWith(domain));
-  if (internalDomain) {
-    return { allowed: true, decision: "allow", normalizedEmail, source: "internal_domain" };
-  }
-
-  if (founderEmailAllowlist().has(normalizedEmail)) {
-    return { allowed: true, decision: "allow", normalizedEmail, source: "allowlist" };
-  }
-
-  return { allowed: false, decision: "deny_not_founder_or_internal", normalizedEmail };
+  return config.userIds.has(identity.userId.toLowerCase())
+    ? { allowed: true, decision: "allow" }
+    : { allowed: false, decision: "deny_not_operator" };
 };
 
 /**
- * Gates founder/internal-only surfaces (early access administration, trial
- * bypass, etc). Deliberately does NOT consult `user.role` — that field is
- * sourced from client-writable `user_metadata` at signup and must never be
- * treated as an authorization signal. Thin wrapper over
- * `evaluateFounderOrInternalAccess`, which is the actual decision logic and
- * the seam covered by direct unit tests.
+ * Gates founder/internal-only surfaces. Pass the context returned by
+ * `getAuthUser()` / `requireAuthUser()` (or a server-verified
+ * `buildAuthUserContext`) itself — see `evaluateFounderOrInternalAccess`.
  */
-/**
- * Deliberately narrowed to its actual dependency (email only), not the full
- * AuthUserContext — callers resolving onboarding state immediately after a
- * fresh sign-in/sign-up (before any cookie round-trip can be assumed to have
- * propagated) can pass a minimal `{ email }` built directly from the
- * sign-in/sign-up response instead of round-tripping through getAuthUser().
- */
-export const isFounderOrInternalUser = (user: { email: string | null | undefined }) =>
-  evaluateFounderOrInternalAccess({ email: user.email }).allowed;
+export const isFounderOrInternalUser = (user: object) => evaluateFounderOrInternalAccess(user).allowed;
