@@ -12,10 +12,22 @@ const STATIC_SERVER_ACTION_ORIGINS = ["pmfreak-mu.vercel.app"];
 
 const runtimeEnvironment = getRuntimeEnvironment();
 
+// CP-5: pdf.js (loaded through pdf-parse by the evidence processor) polyfills DOMMatrix,
+// Path2D and ImageData from @napi-rs/canvas with a runtime require that file tracing
+// cannot follow. Without the package in the function, evaluating the route module throws
+// "DOMMatrix is not defined", so every request to that route is a 500 before authentication
+// runs. The native binary is the Linux glibc build the Vercel runtime loads.
+const PDFJS_CANVAS_TRACE = ["./node_modules/@napi-rs/canvas/**", "./node_modules/@napi-rs/canvas-linux-x64-gnu/**"];
+
 const nextConfig: NextConfig = {
   // Next defaults this to false; pinned explicitly so a future change can't
   // silently start publishing source maps in production without review.
   productionBrowserSourceMaps: false,
+  // Every route whose module graph loads pdf.js (tests/cp5-pdfjs-canvas-tracing.test.mjs).
+  outputFileTracingIncludes: {
+    "/api/upload": PDFJS_CANVAS_TRACE,
+    "/api/project-evidence-content": PDFJS_CANVAS_TRACE,
+  },
   experimental: {
     serverActions: {
       allowedOrigins: runtimeEnvironment === "production" ? STATIC_SERVER_ACTION_ORIGINS : [...STATIC_SERVER_ACTION_ORIGINS, ...DEV_ONLY_SERVER_ACTION_ORIGINS],
